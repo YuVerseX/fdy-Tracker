@@ -1,0 +1,52 @@
+/.claude
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# 数据和日志
+data/
+*.db
+*.log
+*.err
+*.out
+.tmp-*
+logs/*
+!logs/.gitkeep
+
+# 环境变量
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 临时文件
+debug_*.html
+debug_*.py
+test_*.html
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/logs/*
+!frontend/logs/.gitkeep

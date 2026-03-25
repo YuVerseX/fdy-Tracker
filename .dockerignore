@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# 数据和日志（容器内会重新生成）
+data/
+logs/
+.env
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# 文档
+docs/
+
+# 前端（后端镜像不需要）
+frontend/
+
+# Claude
+.claude/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
