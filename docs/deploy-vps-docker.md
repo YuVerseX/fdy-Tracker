@@ -5,6 +5,13 @@
 - `api`：FastAPI 后端
 - `web`：Nginx 托管前端静态文件，并反代 `/api`
 
+这是**源码构建型**部署方式，适合：
+
+- 你先追求本地和服务器都能直接 build
+- 你愿意通过 `git pull + docker compose up -d --build` 更新
+
+如果你准备用 1Panel 直接拉镜像更新，优先看 `deploy-1panel-ghcr.md`。
+
 ## 适用场景
 
 - 你只有一台 VPS

@@ -35,6 +35,7 @@
 - Vue 前端列表页、详情页、管理页
 - Docker 基础运行配置
 - 单机 VPS 的 Docker 双容器部署基线
+- GitHub Actions 自动发布 GHCR 镜像
 
 ## 快速开始
 
@@ -105,6 +106,21 @@ docker compose down
 
 更完整的 VPS 步骤见 `docs/deploy-vps-docker.md`。
 
+### GHCR 镜像部署
+
+仓库已补 GitHub Actions 自动发布镜像流程：
+
+- 后端镜像：`ghcr.io/yuversex/fdy-tracker-api`
+- 前端镜像：`ghcr.io/yuversex/fdy-tracker-web`
+
+发布触发方式：
+
+- push 到 `main`
+- push `v*` tag
+- 手动触发 workflow
+
+如果你在 VPS / 1Panel 上直接拉镜像，优先使用根目录 `docker-compose.ghcr.yml`。对应说明见 `docs/deploy-1panel-ghcr.md`。
+
 ## 项目结构
 
 ```text
@@ -130,6 +146,7 @@ fdy-Tracker/
 - `CONTRIBUTING.md`：本地开发和提交流程
 - `docs/README.md`：文档导航
 - `docs/deploy-vps-docker.md`：单机 VPS Docker 部署说明
+- `docs/deploy-1panel-ghcr.md`：1Panel / GHCR 镜像部署说明
 - `docs/archive/`：历史规划和历史整理记录
 
 ## 配置说明
@@ -142,6 +159,8 @@ fdy-Tracker/
 - `OPENAI_BASE_URL`
 - `AI_ANALYSIS_MODEL`
 - `WEB_PORT`
+- `GHCR_NAMESPACE`
+- `IMAGE_TAG`
 
 前端配置见 `frontend/.env.example`。
 

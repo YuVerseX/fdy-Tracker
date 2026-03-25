@@ -16,6 +16,8 @@
   - 记录当前主数据源的页面结构和抓取思路
 - [VPS Docker 部署说明](./deploy-vps-docker.md)
   - 记录单机服务器部署步骤、目录挂载和更新方式
+- [1Panel / GHCR 镜像部署说明](./deploy-1panel-ghcr.md)
+  - 记录用 GitHub 自动发镜像、1Panel 直接拉镜像的部署方式
 
 ## 历史归档
 
