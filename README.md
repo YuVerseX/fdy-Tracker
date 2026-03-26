@@ -141,7 +141,7 @@ fdy-Tracker/
 ├── frontend/             # 前端
 ├── tests/                # 回归测试
 ├── scripts/              # 手工脚本
-├── docs/                 # 文档与归档
+├── docs/                 # 项目文档
 ├── data/                 # 本地数据，不提交
 ├── logs/                 # 本地日志，不提交
 ├── README.md
@@ -162,7 +162,6 @@ fdy-Tracker/
 - `docs/test-strategy.md`：测试分层和执行口径
 - `docs/deploy-vps-docker.md`：单机 VPS Docker 部署说明
 - `docs/deploy-1panel-ghcr.md`：1Panel / GHCR 镜像部署说明
-- `docs/archive/`：历史规划和历史整理记录
 
 ## 配置说明
 

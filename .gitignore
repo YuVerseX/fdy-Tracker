@@ -44,6 +44,9 @@ debug_*.html
 debug_*.py
 test_*.html
 
+# 私有开发资料（本地可保留，公开仓库不提交）
+docs/archive/
+
 # 前端
 frontend/node_modules/
 frontend/dist/
