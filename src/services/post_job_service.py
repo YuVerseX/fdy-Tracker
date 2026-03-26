@@ -15,6 +15,10 @@ from sqlalchemy.orm import Session, selectinload
 from src.config import settings
 from src.database.models import Post, PostJob
 from src.services.ai_analysis_service import (
+    JOB_PAYLOAD_CONTENT_MAX_LENGTH,
+    build_attachment_ai_context,
+    build_ai_field_map,
+    build_ai_job_summary,
     build_field_map,
     extract_json_object,
     extract_response_output_text,
@@ -42,6 +46,10 @@ COUNSELOR_SCOPE_DEDICATED = "dedicated"
 COUNSELOR_SCOPE_CONTAINS = "contains"
 COUNSELOR_SCOPES = (
     COUNSELOR_SCOPE_NONE,
+    COUNSELOR_SCOPE_DEDICATED,
+    COUNSELOR_SCOPE_CONTAINS,
+)
+COUNSELOR_RELATED_SCOPES = (
     COUNSELOR_SCOPE_DEDICATED,
     COUNSELOR_SCOPE_CONTAINS,
 )
@@ -86,6 +94,12 @@ def normalize_job_count(value: Any) -> str:
     if normalized.isdigit():
         return f"{normalized}人"
     return normalized
+
+
+def normalize_counselor_scope_value(value: Any) -> str:
+    """把帖子上的 scope 收敛成稳定值"""
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in COUNSELOR_SCOPES else COUNSELOR_SCOPE_NONE
 
 
 def get_job_source_type(job: PostJob | dict[str, Any]) -> str:
@@ -219,6 +233,36 @@ def count_displayable_jobs(job_list: list[PostJob] | list[dict[str, Any]]) -> in
 def count_displayable_counselor_jobs(job_list: list[PostJob] | list[dict[str, Any]]) -> int:
     """统计可展示的辅导员岗位数量"""
     return sum(1 for job in filter_displayable_jobs(job_list) if bool(get_job_value(job, "is_counselor")))
+
+
+def get_post_counselor_state(post: Post) -> dict[str, Any]:
+    """兼容历史数据，统一读取帖子辅导员相关状态"""
+    normalized_scope = normalize_counselor_scope_value(getattr(post, "counselor_scope", None))
+    counselor_job_count = count_displayable_counselor_jobs(getattr(post, "jobs", []) or [])
+    has_counselor_job = bool(getattr(post, "has_counselor_job", False)) or counselor_job_count > 0
+    is_related = bool(getattr(post, "is_counselor", False)) or has_counselor_job or normalized_scope in COUNSELOR_RELATED_SCOPES
+
+    if normalized_scope == COUNSELOR_SCOPE_NONE:
+        if is_dedicated_counselor_title(getattr(post, "title", "")) and is_related:
+            normalized_scope = COUNSELOR_SCOPE_DEDICATED
+        elif has_counselor_job:
+            normalized_scope = COUNSELOR_SCOPE_CONTAINS
+
+    if normalized_scope in COUNSELOR_RELATED_SCOPES:
+        has_counselor_job = True
+        is_related = True
+
+    return {
+        "counselor_scope": normalized_scope,
+        "has_counselor_job": has_counselor_job,
+        "is_counselor_related": is_related,
+        "counselor_jobs_count": counselor_job_count,
+    }
+
+
+def is_counselor_related_post(post: Post) -> bool:
+    """判断帖子是否应该算进“所有辅导员相关”口径"""
+    return bool(get_post_counselor_state(post)["is_counselor_related"])
 
 
 def serialize_post_job(job: PostJob | dict[str, Any]) -> dict[str, Any]:
@@ -452,6 +496,7 @@ def get_job_extraction_system_prompt() -> str:
     return (
         "你是招聘岗位抽取助手。"
         "只提取和辅导员相关的岗位，不要输出其他岗位。"
+        "输入里可能包含附件解析摘要、已有岗位候选、正文和结构化字段，优先利用这些结构化信息。"
         "如果这是综合招聘公告，只保留岗位名称里明确出现辅导员、专职辅导员、学生辅导员、思政辅导员的岗位。"
         "输出必须是一个 JSON 对象，字段固定为 jobs。"
         "jobs 是数组，元素字段固定为：job_name、recruitment_count、education_requirement、major_requirement、location、political_status、is_counselor、confidence_score。"
@@ -461,6 +506,7 @@ def get_job_extraction_system_prompt() -> str:
 
 def build_post_job_payload(post: Post, local_jobs: list[dict[str, Any]]) -> str:
     """构造岗位级 AI 抽取上下文"""
+    attachment_summaries = build_attachment_ai_context(post.attachments or [])
     return json.dumps(
         {
             "title": post.title,
@@ -468,7 +514,7 @@ def build_post_job_payload(post: Post, local_jobs: list[dict[str, Any]]) -> str:
             "counselor_scope": post.counselor_scope or COUNSELOR_SCOPE_NONE,
             "is_counselor": bool(post.is_counselor),
             "source_name": post.source.name if post.source else "",
-            "fields": build_field_map(post.fields),
+            "fields": build_ai_field_map(post.fields),
             "attachments": [
                 {
                     "filename": attachment.filename,
@@ -477,8 +523,9 @@ def build_post_job_payload(post: Post, local_jobs: list[dict[str, Any]]) -> str:
                 }
                 for attachment in (post.attachments or [])
             ],
-            "local_jobs": local_jobs,
-            "content": truncate_text(post.content or "", max_length=8000),
+            "attachment_summaries": attachment_summaries,
+            "local_jobs": build_ai_job_summary(local_jobs),
+            "content": truncate_text(post.content or "", max_length=JOB_PAYLOAD_CONTENT_MAX_LENGTH),
         },
         ensure_ascii=False,
         indent=2,
@@ -615,6 +662,24 @@ def update_post_counselor_flags(post: Post, jobs: list[dict[str, Any]]) -> None:
         post.confidence_score = None
 
 
+def reconcile_post_counselor_flags(post: Post) -> bool:
+    """按当前统一口径修正历史帖子标记"""
+    state = get_post_counselor_state(post)
+    changed = False
+
+    if normalize_counselor_scope_value(getattr(post, "counselor_scope", None)) != state["counselor_scope"]:
+        post.counselor_scope = state["counselor_scope"]
+        changed = True
+    if bool(getattr(post, "has_counselor_job", False)) != state["has_counselor_job"]:
+        post.has_counselor_job = state["has_counselor_job"]
+        changed = True
+    if bool(getattr(post, "is_counselor", False)) != state["is_counselor_related"]:
+        post.is_counselor = state["is_counselor_related"]
+        changed = True
+
+    return changed
+
+
 async def sync_post_jobs(db: Session, post: Post, use_ai: bool = False) -> dict[str, int | bool | str]:
     """同步单条帖子岗位级结果"""
     local_jobs = collect_local_jobs(post)
@@ -726,6 +791,30 @@ async def backfill_post_jobs(
 
     db.commit()
     return result
+
+
+def backfill_post_counselor_flags(db: Session, limit: int | None = None) -> dict[str, int]:
+    """启动时补齐历史帖子辅导员标记，避免默认筛选口径打架"""
+    query = db.query(Post).options(selectinload(Post.jobs)).order_by(
+        Post.publish_date.desc(),
+        Post.id.desc(),
+    )
+    if limit and limit > 0:
+        query = query.limit(limit)
+
+    posts = query.all()
+    updated = 0
+    for post in posts:
+        if reconcile_post_counselor_flags(post):
+            updated += 1
+
+    if updated:
+        db.commit()
+
+    return {
+        "updated": updated,
+        "scanned": len(posts),
+    }
 
 
 def get_job_index_summary(db: Session) -> dict[str, int]:

@@ -1,7 +1,8 @@
 """管理任务记录服务"""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Any, Dict, List
 from uuid import uuid4
 
@@ -11,6 +12,31 @@ from src.config import settings
 
 MAX_TASK_RUNS = 50
 RUNNING_STATUSES = {"queued", "pending", "running", "processing"}
+DEFAULT_RUNNING_TASK_STALE_HOURS = 6
+RUNNING_TASK_STALE_HOURS = {
+    "manual_scrape": 2,
+    "scheduled_scrape": 2,
+    "ai_analysis": 6,
+    "job_extraction": 6,
+    "attachment_backfill": 12,
+    "duplicate_backfill": 12,
+}
+TASK_RUNS_LOCK = RLock()
+
+
+class TaskAlreadyRunningError(RuntimeError):
+    """同类任务已在运行中"""
+
+    def __init__(
+        self,
+        task_type: str,
+        running_task: Dict[str, Any],
+        conflict_task_types: List[str] | None = None
+    ):
+        super().__init__(f"任务已在运行中: {task_type}")
+        self.task_type = task_type
+        self.running_task = running_task
+        self.conflict_task_types = conflict_task_types or [task_type]
 
 
 def get_task_runs_path() -> Path:
@@ -49,6 +75,22 @@ def _write_task_runs(task_runs: List[Dict[str, Any]]) -> None:
         logger.warning(f"写入管理任务记录失败: {exc}")
 
 
+def _parse_datetime_value(value: str | None) -> datetime | None:
+    """解析 ISO 时间字符串"""
+    if not value or not isinstance(value, str):
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
+
+
 def _normalize_datetime_value(value: datetime | str | None) -> str:
     """标准化时间字段"""
     if value is None:
@@ -74,6 +116,22 @@ def _normalize_datetime_value(value: datetime | str | None) -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_progress_value(value: int | float | str | None, fallback: int | None = None) -> int | None:
+    """标准化进度值，范围 0~100"""
+    if value is None:
+        value = fallback
+
+    if value is None:
+        return None
+
+    try:
+        normalized = int(float(value))
+    except (TypeError, ValueError):
+        return fallback
+
+    return max(0, min(normalized, 100))
+
+
 def _calculate_duration_ms(started_at: str | None, finished_at: str | None) -> int | None:
     """计算任务耗时"""
     if not started_at or not finished_at:
@@ -88,31 +146,207 @@ def _calculate_duration_ms(started_at: str | None, finished_at: str | None) -> i
     return max(int((finished_dt - started_dt).total_seconds() * 1000), 0)
 
 
+def _get_running_task_stale_delta(task_type: str | None) -> timedelta:
+    """按任务类型返回运行状态过期阈值"""
+    hours = RUNNING_TASK_STALE_HOURS.get(task_type or "", DEFAULT_RUNNING_TASK_STALE_HOURS)
+    return timedelta(hours=hours)
+
+
+def _build_stale_task_run(task_run: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    """把异常遗留的运行中任务自动转成失败"""
+    started_at_value = _normalize_datetime_value(task_run.get("started_at"))
+    finished_at_value = now.astimezone(timezone.utc).isoformat()
+    duration_ms = _calculate_duration_ms(started_at_value, finished_at_value)
+    details = dict(task_run.get("details") or {})
+    failure_reason = details.get("failure_reason") or "任务运行状态已过期，可能是服务重启或异常中断"
+    details["failure_reason"] = failure_reason
+
+    stale_summary = task_run.get("summary") or "任务运行状态已过期"
+    if "状态过期" not in stale_summary:
+        stale_summary = f"{stale_summary}（状态过期，已自动结束）"
+
+    stale_task_run = {
+        **task_run,
+        "status": "failed",
+        "summary": stale_summary,
+        "phase": "状态过期，已自动结束",
+        "details": details,
+        "finished_at": finished_at_value,
+        "heartbeat_at": finished_at_value,
+        "failure_reason": failure_reason,
+        "progress": _normalize_progress_value(task_run.get("progress"), fallback=95),
+    }
+    if duration_ms is not None:
+        stale_task_run["duration_ms"] = duration_ms
+
+    return stale_task_run
+
+
+def _cleanup_stale_running_tasks(task_runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """清理遗留过久的运行中任务，避免永远卡住后续调度"""
+    now = datetime.now(timezone.utc)
+    normalized_runs: List[Dict[str, Any]] = []
+    has_changes = False
+
+    for task_run in task_runs:
+        if task_run.get("status") not in RUNNING_STATUSES:
+            normalized_runs.append(task_run)
+            continue
+
+        started_at = _parse_datetime_value(task_run.get("started_at"))
+        heartbeat_at = _parse_datetime_value(task_run.get("heartbeat_at"))
+        last_seen_at = heartbeat_at or started_at
+        if last_seen_at is None:
+            normalized_runs.append(task_run)
+            continue
+
+        stale_after = _get_running_task_stale_delta(task_run.get("task_type"))
+        if now - last_seen_at <= stale_after:
+            normalized_runs.append(task_run)
+            continue
+
+        logger.warning(
+            "检测到过期的运行中任务，自动归档为失败: "
+            f"task_id={task_run.get('id')} task_type={task_run.get('task_type')}"
+        )
+        normalized_runs.append(_build_stale_task_run(task_run, now))
+        has_changes = True
+
+    if has_changes:
+        _write_task_runs(normalized_runs)
+
+    return normalized_runs
+
+
+def _load_task_runs_with_cleanup() -> List[Dict[str, Any]]:
+    """读取任务记录并顺手清理过期状态"""
+    return _cleanup_stale_running_tasks(_read_task_runs())
+
+
+def _normalize_conflict_task_types(
+    task_type: str,
+    conflict_task_types: List[str] | None = None
+) -> List[str]:
+    """归一化互斥任务类型"""
+    task_types: List[str] = []
+    for item in [task_type, *(conflict_task_types or [])]:
+        normalized = (item or "").strip()
+        if normalized and normalized not in task_types:
+            task_types.append(normalized)
+    return task_types
+
+
+def _find_running_task(
+    task_runs: List[Dict[str, Any]],
+    task_types: List[str] | None = None
+) -> Dict[str, Any] | None:
+    """从现有记录里找出正在运行的任务"""
+    allowed_task_types = set(task_types or [])
+    for task_run in task_runs:
+        if task_run.get("status") not in RUNNING_STATUSES:
+            continue
+        if allowed_task_types and task_run.get("task_type") not in allowed_task_types:
+            continue
+        return task_run
+    return None
+
+
 def load_task_runs(limit: int = 20) -> List[Dict[str, Any]]:
     """读取最近的管理任务记录"""
-    return _read_task_runs()[:limit]
+    with TASK_RUNS_LOCK:
+        return _load_task_runs_with_cleanup()[:limit]
+
+
+def find_running_task(task_types: List[str] | None = None) -> Dict[str, Any] | None:
+    """查找指定类型里当前还在运行的任务"""
+    with TASK_RUNS_LOCK:
+        current_runs = _load_task_runs_with_cleanup()
+        return _find_running_task(current_runs, task_types)
 
 
 def start_task_run(
     task_type: str,
     summary: str,
     params: Dict[str, Any] | None = None,
-    details: Dict[str, Any] | None = None
+    details: Dict[str, Any] | None = None,
+    conflict_task_types: List[str] | None = None
 ) -> Dict[str, Any]:
     """创建运行中的任务记录"""
-    current_runs = _read_task_runs()
-    task_run = {
-        "id": uuid4().hex,
-        "task_type": task_type,
-        "status": "running",
-        "summary": summary,
-        "params": params or {},
-        "details": details or {},
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "finished_at": None
-    }
-    _write_task_runs([task_run, *current_runs])
-    return task_run
+    with TASK_RUNS_LOCK:
+        current_runs = _load_task_runs_with_cleanup()
+        normalized_conflict_task_types = _normalize_conflict_task_types(task_type, conflict_task_types)
+        running_task = _find_running_task(current_runs, normalized_conflict_task_types)
+        if running_task is not None:
+            raise TaskAlreadyRunningError(
+                task_type=task_type,
+                running_task=running_task,
+                conflict_task_types=normalized_conflict_task_types,
+            )
+
+        task_run = {
+            "id": uuid4().hex,
+            "task_type": task_type,
+            "status": "running",
+            "summary": summary,
+            "phase": "任务已提交，等待后台执行",
+            "progress": 0,
+            "params": params or {},
+            "details": details or {},
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None
+        }
+        _write_task_runs([task_run, *current_runs])
+        return task_run
+
+
+def update_task_run(
+    task_id: str,
+    *,
+    status: str | None = None,
+    summary: str | None = None,
+    phase: str | None = None,
+    progress: int | float | str | None = None,
+    details: Dict[str, Any] | None = None,
+    heartbeat_at: datetime | str | None = None,
+) -> Dict[str, Any] | None:
+    """更新运行中任务的阶段、进度和心跳"""
+    with TASK_RUNS_LOCK:
+        current_runs = _load_task_runs_with_cleanup()
+        updated_run: Dict[str, Any] | None = None
+        next_runs: List[Dict[str, Any]] = []
+
+        for task_run in current_runs:
+            if task_run.get("id") != task_id or updated_run is not None:
+                next_runs.append(task_run)
+                continue
+
+            merged_details = dict(task_run.get("details") or {})
+            if details:
+                merged_details.update(details)
+
+            normalized_progress = _normalize_progress_value(
+                progress,
+                fallback=_normalize_progress_value(task_run.get("progress"), fallback=0)
+            )
+            resolved_heartbeat = _normalize_datetime_value(heartbeat_at)
+
+            updated_run = {
+                **task_run,
+                "status": status or task_run.get("status"),
+                "summary": summary if summary is not None else task_run.get("summary", ""),
+                "phase": phase if phase is not None else task_run.get("phase", ""),
+                "progress": normalized_progress if normalized_progress is not None else task_run.get("progress"),
+                "details": merged_details if details is not None else task_run.get("details", {}),
+                "heartbeat_at": resolved_heartbeat,
+            }
+            next_runs.append(updated_run)
+
+        if updated_run is None:
+            return None
+
+        _write_task_runs(next_runs)
+        return updated_run
 
 
 def record_task_run(
@@ -123,45 +357,61 @@ def record_task_run(
     params: Dict[str, Any] | None = None,
     task_id: str | None = None,
     started_at: datetime | str | None = None,
-    finished_at: datetime | str | None = None
+    finished_at: datetime | str | None = None,
+    phase: str | None = None,
+    progress: int | float | str | None = None,
 ) -> Dict[str, Any]:
     """记录一次管理任务执行结果"""
-    current_runs = _read_task_runs()
-    existing_run: Dict[str, Any] | None = None
-    remaining_runs: List[Dict[str, Any]] = []
+    with TASK_RUNS_LOCK:
+        current_runs = _load_task_runs_with_cleanup()
+        existing_run: Dict[str, Any] | None = None
+        remaining_runs: List[Dict[str, Any]] = []
 
-    for task_run in current_runs:
-        if task_id and task_run.get("id") == task_id and existing_run is None:
-            existing_run = task_run
-            continue
-        remaining_runs.append(task_run)
+        for task_run in current_runs:
+            if task_id and task_run.get("id") == task_id and existing_run is None:
+                existing_run = task_run
+                continue
+            remaining_runs.append(task_run)
 
-    started_at_value = _normalize_datetime_value(
-        started_at or (existing_run or {}).get("started_at")
-    )
-    finished_at_value = _normalize_datetime_value(finished_at)
-    duration_ms = _calculate_duration_ms(started_at_value, finished_at_value)
+        started_at_value = _normalize_datetime_value(
+            started_at or (existing_run or {}).get("started_at")
+        )
+        finished_at_value = _normalize_datetime_value(finished_at)
+        existing_progress = _normalize_progress_value((existing_run or {}).get("progress"), fallback=0)
+        duration_ms = _calculate_duration_ms(started_at_value, finished_at_value)
 
-    final_details = details or {}
-    failure_reason = final_details.get("failure_reason") or final_details.get("error")
+        final_details = details or {}
+        failure_reason = final_details.get("failure_reason") or final_details.get("error")
+        if status == "success":
+            final_progress = _normalize_progress_value(progress, fallback=100)
+            final_phase = phase or "执行完成"
+        elif status == "failed":
+            final_progress = _normalize_progress_value(progress, fallback=max(existing_progress or 0, 95))
+            final_phase = phase or "执行失败"
+        else:
+            final_progress = _normalize_progress_value(progress, fallback=existing_progress)
+            final_phase = phase or (existing_run or {}).get("phase", "")
 
-    task_run = {
-        "id": (existing_run or {}).get("id") or task_id or uuid4().hex,
-        "task_type": task_type or (existing_run or {}).get("task_type"),
-        "status": status,
-        "summary": summary,
-        "params": params if params is not None else (existing_run or {}).get("params", {}),
-        "details": final_details,
-        "started_at": started_at_value,
-        "finished_at": finished_at_value
-    }
-    if duration_ms is not None:
-        task_run["duration_ms"] = duration_ms
-    if failure_reason:
-        task_run["failure_reason"] = failure_reason
+        task_run = {
+            "id": (existing_run or {}).get("id") or task_id or uuid4().hex,
+            "task_type": task_type or (existing_run or {}).get("task_type"),
+            "status": status,
+            "summary": summary,
+            "phase": final_phase,
+            "progress": final_progress,
+            "params": params if params is not None else (existing_run or {}).get("params", {}),
+            "details": final_details,
+            "started_at": started_at_value,
+            "heartbeat_at": finished_at_value,
+            "finished_at": finished_at_value
+        }
+        if duration_ms is not None:
+            task_run["duration_ms"] = duration_ms
+        if failure_reason:
+            task_run["failure_reason"] = failure_reason
 
-    _write_task_runs([task_run, *remaining_runs])
-    return task_run
+        _write_task_runs([task_run, *remaining_runs])
+        return task_run
 
 
 def get_task_summary() -> Dict[str, Any]:

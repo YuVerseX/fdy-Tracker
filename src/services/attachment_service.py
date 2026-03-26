@@ -1,10 +1,12 @@
 """附件下载与解析服务"""
+from io import BytesIO
 import json
 import re
 from hashlib import sha1
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+import zipfile
 
 from loguru import logger
 
@@ -31,6 +33,37 @@ EXCEL_FILE_TYPES = {"xls", "xlsx"}
 PDF_FILE_TYPES = {"pdf"}
 PARSABLE_FILE_TYPES = EXCEL_FILE_TYPES | PDF_FILE_TYPES
 ATTACHMENT_PARSE_SIDECAR_VERSION = 2
+OLE_XLS_MAGIC = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
+ZIP_MAGIC = b"PK\x03\x04"
+NON_AUTHORITATIVE_ATTACHMENT_SUFFIXES = {
+    "",
+    "jsp",
+    "do",
+    "action",
+    "download",
+    "php",
+    "asp",
+    "aspx",
+    "ashx",
+}
+AUTHORITATIVE_NON_EXCEL_SUFFIXES = {
+    "doc",
+    "docx",
+    "ppt",
+    "pptx",
+    "pdf",
+    "txt",
+    "rtf",
+    "zip",
+    "rar",
+    "7z",
+    "jpg",
+    "jpeg",
+    "png",
+    "gif",
+    "bmp",
+    "webp",
+}
 TARGET_POSITION_KEYWORDS = ("专职辅导员", "辅导员", "学生辅导员", "思政辅导员")
 FIELD_ALIASES = {
     "岗位名称": ["岗位名称", "岗位", "招聘岗位", "岗位类别", "岗位名称及代码", "岗位代码及名称"],
@@ -88,7 +121,60 @@ def get_attachment_sidecar_path(local_path: str | Path) -> Path:
 def resolve_attachment_file_type(local_path: str | Path, file_type: str = "") -> str:
     """统一解析附件类型"""
     path = Path(local_path)
-    return (file_type or path.suffix.lstrip(".")).lower()
+    normalized_file_type = (file_type or "").strip().lower()
+    suffix_file_type = path.suffix.lstrip(".").lower()
+
+    should_infer_excel_from_content = (
+        suffix_file_type in EXCEL_FILE_TYPES
+        or (
+            normalized_file_type in EXCEL_FILE_TYPES
+            and suffix_file_type in NON_AUTHORITATIVE_ATTACHMENT_SUFFIXES
+        )
+    )
+    if should_infer_excel_from_content:
+        inferred_excel_type = infer_excel_file_type_from_content(path)
+        # 仅在当前上下文本来就像 Excel 时才信内容纠偏，避免把 .doc 这类 OLE 容器误判成 xls
+        if inferred_excel_type:
+            return inferred_excel_type
+
+    if suffix_file_type in PARSABLE_FILE_TYPES:
+        return suffix_file_type
+    if suffix_file_type in AUTHORITATIVE_NON_EXCEL_SUFFIXES:
+        return suffix_file_type
+    if normalized_file_type in PARSABLE_FILE_TYPES:
+        return normalized_file_type
+    if suffix_file_type:
+        return suffix_file_type
+    return normalized_file_type
+
+
+def infer_excel_file_type_from_content(local_path: str | Path) -> str:
+    """基于文件内容识别 xls/xlsx，识别失败返回空字符串"""
+    path = Path(local_path)
+    if not path.exists() or not path.is_file():
+        return ""
+
+    try:
+        header = path.read_bytes()[:8]
+    except Exception:
+        return ""
+
+    if header.startswith(OLE_XLS_MAGIC):
+        return "xls"
+
+    if not header.startswith(ZIP_MAGIC):
+        return ""
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.namelist()
+    except Exception:
+        return ""
+
+    if any(member.startswith("xl/") for member in members):
+        return "xlsx"
+
+    return ""
 
 
 def read_attachment_parse_result(local_path: str | Path) -> Optional[Dict]:
@@ -138,6 +224,9 @@ def should_refresh_attachment_parse_result(
         return True
 
     if current_result.get("sidecar_version") != ATTACHMENT_PARSE_SIDECAR_VERSION:
+        return True
+    stored_file_type = (current_result.get("file_type") or "").strip().lower()
+    if stored_file_type in PARSABLE_FILE_TYPES and stored_file_type != normalized_type:
         return True
 
     stat = path.stat()
@@ -332,7 +421,13 @@ def load_xlsx_rows(file_path: Path) -> List[List[str]]:
         logger.warning("openpyxl 不可用，无法解析 xlsx 附件")
         return []
 
-    workbook = load_workbook(file_path, read_only=True, data_only=True)
+    try:
+        workbook = load_workbook(file_path, read_only=True, data_only=True)
+    except Exception as exc:
+        if file_path.suffix.lower() == ".xls":
+            workbook = load_workbook(BytesIO(file_path.read_bytes()), read_only=True, data_only=True)
+        else:
+            raise
     try:
         all_rows: List[List[str]] = []
         for sheet in workbook.worksheets:
@@ -355,6 +450,37 @@ def load_xls_rows(file_path: Path) -> List[List[str]]:
         for row_idx in range(sheet.nrows):
             rows.append([normalize_cell_text(cell) for cell in sheet.row_values(row_idx)])
     return rows
+
+
+def load_excel_rows_with_fallback(file_path: Path, file_type: str) -> tuple[List[List[str]], str]:
+    """按首选类型读取 Excel，必要时在 xls/xlsx 间兜底"""
+    normalized_type = resolve_attachment_file_type(file_path, file_type)
+    loaders = []
+
+    if normalized_type == "xlsx":
+        loaders = [("xlsx", load_xlsx_rows), ("xls", load_xls_rows)]
+    elif normalized_type == "xls":
+        loaders = [("xls", load_xls_rows), ("xlsx", load_xlsx_rows)]
+    else:
+        return [], normalized_type
+
+    last_error: Exception | None = None
+    for index, (candidate_type, loader) in enumerate(loaders):
+        try:
+            return loader(file_path), candidate_type
+        except Exception as exc:
+            last_error = exc
+            if index == len(loaders) - 1:
+                raise
+            logger.warning(
+                "Excel 附件按声明类型解析失败，尝试切换解析器重试: "
+                f"path={file_path} declared={normalized_type} failed={candidate_type} error={exc}"
+            )
+
+    if last_error is not None:
+        raise last_error
+
+    return [], normalized_type
 
 
 def load_pdf_text(file_path: Path) -> str:
@@ -422,18 +548,10 @@ def build_attachment_parse_payload(local_path: str, file_type: str) -> Dict[str,
     path = Path(local_path)
     normalized_type = resolve_attachment_file_type(path, file_type)
 
-    if normalized_type == "xlsx":
-        rows = load_xlsx_rows(path)
+    if normalized_type in EXCEL_FILE_TYPES:
+        rows, resolved_excel_type = load_excel_rows_with_fallback(path, normalized_type)
         return {
-            "parser": "table",
-            "text_length": 0,
-            "fields": parse_excel_rows(rows),
-            "jobs": parse_excel_job_rows(rows),
-        }
-
-    if normalized_type == "xls":
-        rows = load_xls_rows(path)
-        return {
+            "file_type": resolved_excel_type,
             "parser": "table",
             "text_length": 0,
             "fields": parse_excel_rows(rows),
@@ -443,6 +561,7 @@ def build_attachment_parse_payload(local_path: str, file_type: str) -> Dict[str,
     if normalized_type == "pdf":
         text = load_pdf_text(path)
         return {
+            "file_type": normalized_type,
             "parser": "pdfplumber",
             "text_length": len(text),
             "fields": parse_pdf_text_fields(text),
@@ -450,6 +569,7 @@ def build_attachment_parse_payload(local_path: str, file_type: str) -> Dict[str,
         }
 
     return {
+        "file_type": normalized_type,
         "parser": None,
         "text_length": 0,
         "fields": [],
@@ -464,20 +584,21 @@ def parse_attachment_file(local_path: str, file_type: str) -> List[Dict[str, str
 
 def read_attachment_jobs(local_path: str | Path, file_type: str = "") -> List[Dict[str, object]]:
     """读取附件岗位级结果，必要时回源解析"""
+    normalized_type = resolve_attachment_file_type(local_path, file_type)
     parse_result = read_attachment_parse_result(local_path)
-    if parse_result and not should_refresh_attachment_parse_result(local_path, file_type, parse_result):
+    if parse_result and not should_refresh_attachment_parse_result(local_path, normalized_type, parse_result):
         return parse_result.get("jobs", [])
 
     path = Path(local_path)
     if not path.exists():
         return []
 
-    parse_payload = build_attachment_parse_payload(str(path), file_type or path.suffix.lstrip("."))
+    parse_payload = build_attachment_parse_payload(str(path), normalized_type)
     write_attachment_parse_result(
         path,
         {
             "filename": path.name,
-            "file_type": file_type or path.suffix.lstrip("."),
+            "file_type": parse_payload.get("file_type") or normalized_type,
             "parser": parse_payload.get("parser"),
             "text_length": parse_payload.get("text_length", 0),
             "fields": parse_payload.get("fields", []),
@@ -580,13 +701,14 @@ async def ensure_attachments_processed(fetcher, attachments) -> Dict[str, object
             continue
 
         try:
-            parse_payload = build_attachment_parse_payload(attachment.local_path, attachment.file_type or "")
+            normalized_type = resolve_attachment_file_type(attachment.local_path, attachment.file_type or "")
+            parse_payload = build_attachment_parse_payload(attachment.local_path, normalized_type)
             fields = parse_payload["fields"]
             write_attachment_parse_result(
                 attachment.local_path,
                 {
                     "filename": attachment.filename,
-                    "file_type": attachment.file_type,
+                    "file_type": parse_payload.get("file_type") or normalized_type,
                     "parser": parse_payload["parser"],
                     "text_length": parse_payload["text_length"],
                     "fields": fields,

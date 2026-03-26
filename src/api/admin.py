@@ -1,28 +1,51 @@
 """后台管理接口"""
+import asyncio
+from contextlib import suppress
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from src.database.database import get_db
+from src.database.database import SessionLocal, get_db
 from src.database.models import Post, PostJob, Source
-from src.services.ai_analysis_service import get_analysis_summary, is_openai_ready, run_ai_analysis
+from src.services.ai_analysis_service import (
+    get_analysis_summary,
+    get_insight_summary,
+    is_openai_ready,
+    run_ai_analysis,
+)
 from src.scheduler.jobs import (
     load_scheduler_config,
     serialize_scheduler_config,
     update_scheduler_config,
 )
 from src.services.admin_task_service import (
+    TaskAlreadyRunningError,
     get_task_summary,
     load_task_runs,
     record_task_run,
     start_task_run,
+    update_task_run,
+)
+from src.services.duplicate_service import (
+    backfill_unchecked_duplicate_posts,
+    get_duplicate_summary,
 )
 from src.services.post_job_service import backfill_post_jobs, get_job_index_summary
 from src.services.scraper_service import backfill_existing_attachments, scrape_and_save
 
 router = APIRouter()
+SCRAPE_TASK_TYPES = ["manual_scrape", "scheduled_scrape", "duplicate_backfill"]
+TASK_TYPE_LABELS = {
+    "manual_scrape": "手动抓取最新数据",
+    "scheduled_scrape": "定时抓取",
+    "attachment_backfill": "历史附件补处理",
+    "duplicate_backfill": "历史去重补齐",
+    "ai_analysis": "OpenAI 分析",
+    "job_extraction": "岗位级抽取",
+    "ai_job_extraction": "岗位级抽取",
+}
 
 
 class RunScrapeRequest(BaseModel):
@@ -35,6 +58,11 @@ class BackfillAttachmentsRequest(BaseModel):
     """历史附件补处理请求"""
     source_id: Optional[int] = Field(default=None, ge=1)
     limit: int = Field(default=100, ge=1, le=1000)
+
+
+class BackfillDuplicatesRequest(BaseModel):
+    """历史去重补齐请求"""
+    limit: int = Field(default=200, ge=1, le=2000)
 
 
 class RunAIAnalysisRequest(BaseModel):
@@ -59,6 +87,414 @@ class UpdateSchedulerConfigRequest(BaseModel):
     interval_seconds: int = Field(default=7200, ge=60, le=86400)
     default_source_id: int = Field(default=1, ge=1)
     default_max_pages: int = Field(default=5, ge=1, le=50)
+
+
+def _get_task_type_label(task_type: str) -> str:
+    """把任务类型转成人看得懂的名字"""
+    return TASK_TYPE_LABELS.get(task_type, task_type)
+
+
+def _start_task_or_raise_conflict(
+    *,
+    task_type: str,
+    summary: str,
+    params: dict,
+    conflict_task_types: list[str] | None = None
+) -> dict:
+    """创建任务记录，已在运行时直接抛 409"""
+    try:
+        return start_task_run(
+            task_type=task_type,
+            summary=summary,
+            params=params,
+            conflict_task_types=conflict_task_types,
+        )
+    except TaskAlreadyRunningError as exc:
+        running_task_type = exc.running_task.get("task_type") or task_type
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{_get_task_type_label(running_task_type)}已经在运行了，"
+                "请先等当前任务结束后再试。若刚才页面超时了，先点“刷新记录”确认后台状态。"
+            )
+        ) from exc
+
+
+async def _run_with_heartbeat(
+    *,
+    task_id: str,
+    phase: str,
+    progress: int,
+    awaitable,
+    heartbeat_interval_seconds: int = 20,
+):
+    """执行长任务时持续刷新心跳，避免管理页误判卡住。"""
+    stop_event = asyncio.Event()
+
+    async def _heartbeat_loop():
+        while True:
+            if stop_event.is_set():
+                break
+            update_task_run(
+                task_id=task_id,
+                status="running",
+                phase=phase,
+                progress=progress,
+            )
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=heartbeat_interval_seconds)
+            except asyncio.TimeoutError:
+                continue
+
+    update_task_run(
+        task_id=task_id,
+        status="running",
+        phase=phase,
+        progress=progress,
+    )
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+    try:
+        return await awaitable
+    finally:
+        stop_event.set()
+        with suppress(Exception):
+            await heartbeat_task
+
+
+async def _run_duplicate_backfill_in_background(
+    task_id: str,
+    started_at: str | None,
+    params: dict,
+) -> None:
+    """后台执行历史去重补齐并写任务记录。"""
+    db = SessionLocal()
+    try:
+        def _on_progress(phase: str, progress: int) -> None:
+            update_task_run(
+                task_id=task_id,
+                status="running",
+                phase=phase,
+                progress=progress,
+            )
+
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在准备历史去重补齐",
+            progress=10,
+        )
+        result = backfill_unchecked_duplicate_posts(
+            db,
+            limit=params["limit"],
+            progress_callback=_on_progress,
+        )
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在整理去重结果",
+            progress=97,
+        )
+        record_task_run(
+            task_type="duplicate_backfill",
+            status="success",
+            summary=(
+                f"历史去重补齐完成，检查 {result['selected']} 条，"
+                f"新增重复组 {result['groups']} 个，折叠 {result['duplicates']} 条，"
+                f"剩余未检查 {result['remaining_unchecked']} 条"
+            ),
+            details={
+                **params,
+                **result
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="去重补齐完成",
+            progress=100,
+        )
+    except Exception as exc:
+        record_task_run(
+            task_type="duplicate_backfill",
+            status="failed",
+            summary="历史去重补齐失败",
+            details={
+                **params,
+                "error": str(exc)
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="去重补齐失败",
+            progress=100,
+        )
+    finally:
+        db.close()
+
+
+async def _run_scrape_task_in_background(
+    task_id: str,
+    started_at: str | None,
+    params: dict,
+) -> None:
+    """后台执行手动抓取并写任务记录。"""
+    db = SessionLocal()
+    try:
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在准备抓取任务",
+            progress=10,
+        )
+        processed_records = await _run_with_heartbeat(
+            task_id=task_id,
+            phase="正在抓取源站并写入数据库",
+            progress=55,
+            awaitable=scrape_and_save(
+                db,
+                source_id=params["source_id"],
+                max_pages=params["max_pages"]
+            ),
+        )
+        details = {
+            **params,
+            "processed_records": processed_records
+        }
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在整理抓取结果",
+            progress=90,
+        )
+        record_task_run(
+            task_type="manual_scrape",
+            status="success",
+            summary=f"手动抓取完成，新增或更新 {processed_records} 条记录",
+            details=details,
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="抓取完成",
+            progress=100,
+        )
+    except Exception as exc:
+        record_task_run(
+            task_type="manual_scrape",
+            status="failed",
+            summary="手动抓取失败",
+            details={
+                **params,
+                "error": str(exc)
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="抓取失败",
+            progress=100,
+        )
+    finally:
+        db.close()
+
+
+async def _run_attachment_backfill_in_background(
+    task_id: str,
+    started_at: str | None,
+    params: dict,
+) -> None:
+    """后台执行历史附件补处理并写任务记录。"""
+    db = SessionLocal()
+    try:
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在准备历史附件补处理",
+            progress=10,
+        )
+        result = await _run_with_heartbeat(
+            task_id=task_id,
+            phase="正在补处理历史附件",
+            progress=60,
+            awaitable=backfill_existing_attachments(
+                db,
+                source_id=params["source_id"],
+                limit=params["limit"]
+            ),
+        )
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在整理附件补处理结果",
+            progress=90,
+        )
+        record_task_run(
+            task_type="attachment_backfill",
+            status="success",
+            summary=(
+                f"历史附件补处理完成，更新 {result['posts_updated']} 条帖子，"
+                f"新增解析 {result['attachments_parsed']} 个附件"
+            ),
+            details={
+                **params,
+                **result
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="附件补处理完成",
+            progress=100,
+        )
+    except Exception as exc:
+        record_task_run(
+            task_type="attachment_backfill",
+            status="failed",
+            summary="历史附件补处理失败",
+            details={
+                **params,
+                "error": str(exc)
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="附件补处理失败",
+            progress=100,
+        )
+    finally:
+        db.close()
+
+
+async def _run_ai_analysis_in_background(
+    task_id: str,
+    started_at: str | None,
+    params: dict,
+) -> None:
+    """后台执行 AI 分析并写任务记录。"""
+    db = SessionLocal()
+    try:
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在准备 AI 分析任务",
+            progress=10,
+        )
+        result = await _run_with_heartbeat(
+            task_id=task_id,
+            phase="正在批量执行 AI 分析",
+            progress=65,
+            awaitable=run_ai_analysis(
+                db,
+                source_id=params["source_id"],
+                limit=params["limit"],
+                only_unanalyzed=params["only_unanalyzed"]
+            ),
+        )
+        insight_success_count = result.get("insight_success_count", 0)
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在整理 AI 分析结果",
+            progress=90,
+        )
+        record_task_run(
+            task_type="ai_analysis",
+            status="success",
+            summary=(
+                f"AI 分析完成，处理 {result['posts_analyzed']} 条，"
+                f"OpenAI 成功 {result['success_count']} 条，统计提取 {insight_success_count} 条，规则回退 {result['fallback_count']} 条"
+            ),
+            details={
+                **params,
+                **result
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="AI 分析完成",
+            progress=100,
+        )
+    except Exception as exc:
+        record_task_run(
+            task_type="ai_analysis",
+            status="failed",
+            summary="AI 分析失败",
+            details={
+                **params,
+                "error": str(exc)
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="AI 分析失败",
+            progress=100,
+        )
+    finally:
+        db.close()
+
+
+async def _run_job_extraction_in_background(
+    task_id: str,
+    started_at: str | None,
+    params: dict,
+) -> None:
+    """后台执行岗位级抽取并写任务记录。"""
+    db = SessionLocal()
+    try:
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在准备岗位级抽取任务",
+            progress=10,
+        )
+        result = await _run_with_heartbeat(
+            task_id=task_id,
+            phase="正在抽取岗位数据",
+            progress=65,
+            awaitable=backfill_post_jobs(
+                db,
+                source_id=params["source_id"],
+                limit=params["limit"],
+                only_unindexed=params["only_unindexed"],
+                use_ai=params["use_ai"],
+            ),
+        )
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在整理岗位抽取结果",
+            progress=90,
+        )
+        record_task_run(
+            task_type="job_extraction",
+            status="success",
+            summary=(
+                f"岗位级抽取完成，更新 {result['posts_updated']} 条帖子，"
+                f"写入 {result['jobs_saved']} 条岗位，AI 参与 {result['ai_posts']} 条"
+            ),
+            details={
+                **params,
+                **result,
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="岗位抽取完成",
+            progress=100,
+        )
+    except Exception as exc:
+        record_task_run(
+            task_type="job_extraction",
+            status="failed",
+            summary="岗位级抽取失败",
+            details={
+                **params,
+                "error": str(exc)
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="岗位抽取失败",
+            progress=100,
+        )
+    finally:
+        db.close()
 
 
 @router.get("/admin/task-runs")
@@ -132,6 +568,12 @@ async def get_admin_analysis_summary(db: Session = Depends(get_db)):
     return get_analysis_summary(db)
 
 
+@router.get("/admin/insight-summary")
+async def get_admin_insight_summary(db: Session = Depends(get_db)):
+    """获取 AI 统计字段摘要"""
+    return get_insight_summary(db)
+
+
 @router.get("/admin/job-summary")
 async def get_admin_job_summary(db: Session = Depends(get_db)):
     """获取岗位级抽取摘要"""
@@ -144,64 +586,71 @@ async def get_admin_job_summary(db: Session = Depends(get_db)):
     }
 
 
-@router.post("/admin/run-scrape")
+@router.get("/admin/duplicate-summary")
+async def get_admin_duplicate_summary(db: Session = Depends(get_db)):
+    """获取重复治理摘要"""
+    return get_duplicate_summary(db)
+
+
+@router.post("/admin/backfill-duplicates", status_code=202)
+async def backfill_duplicates_task(
+    request: BackfillDuplicatesRequest,
+    background_tasks: BackgroundTasks
+):
+    """补齐历史去重检查"""
+    params = {
+        "limit": request.limit
+    }
+    running_task = _start_task_or_raise_conflict(
+        task_type="duplicate_backfill",
+        summary="历史去重补齐进行中",
+        params=params,
+        conflict_task_types=SCRAPE_TASK_TYPES,
+    )
+    background_tasks.add_task(
+        _run_duplicate_backfill_in_background,
+        running_task["id"],
+        running_task.get("started_at"),
+        params,
+    )
+    return {
+        "message": "历史去重补齐任务已提交，后台执行中",
+        "task_run": running_task
+    }
+
+
+@router.post("/admin/run-scrape", status_code=202)
 async def run_scrape_task(
     request: RunScrapeRequest,
-    db: Session = Depends(get_db)
+    background_tasks: BackgroundTasks
 ):
     """手动抓取最新数据"""
     params = {
         "source_id": request.source_id,
         "max_pages": request.max_pages
     }
-    running_task = start_task_run(
+    running_task = _start_task_or_raise_conflict(
         task_type="manual_scrape",
         summary="手动抓取进行中",
-        params=params
+        params=params,
+        conflict_task_types=SCRAPE_TASK_TYPES,
     )
-    try:
-        processed_records = await scrape_and_save(
-            db,
-            source_id=request.source_id,
-            max_pages=request.max_pages
-        )
-        details = {
-            **params,
-            "processed_records": processed_records
-        }
-        task_run = record_task_run(
-            task_type="manual_scrape",
-            status="success",
-            summary=f"手动抓取完成，新增或更新 {processed_records} 条记录",
-            details=details,
-            params=params,
-            task_id=running_task["id"],
-            started_at=running_task.get("started_at")
-        )
-        return {
-            "message": task_run["summary"],
-            "task_run": task_run
-        }
-    except Exception as exc:
-        task_run = record_task_run(
-            task_type="manual_scrape",
-            status="failed",
-            summary="手动抓取失败",
-            details={
-                **params,
-                "error": str(exc)
-            },
-            params=params,
-            task_id=running_task["id"],
-            started_at=running_task.get("started_at")
-        )
-        raise HTTPException(status_code=500, detail=task_run["summary"]) from exc
+    background_tasks.add_task(
+        _run_scrape_task_in_background,
+        running_task["id"],
+        running_task.get("started_at"),
+        params,
+    )
+    return {
+        "message": "手动抓取任务已提交，后台执行中",
+        "task_run": running_task
+    }
 
 
-@router.post("/admin/run-ai-analysis")
+@router.post("/admin/run-ai-analysis", status_code=202)
 async def run_ai_analysis_task(
     request: RunAIAnalysisRequest,
-    db: Session = Depends(get_db)
+    background_tasks: BackgroundTasks
 ):
     """批量运行 AI 分析"""
     if not is_openai_ready():
@@ -215,113 +664,54 @@ async def run_ai_analysis_task(
         "limit": request.limit,
         "only_unanalyzed": request.only_unanalyzed
     }
-    running_task = start_task_run(
+    running_task = _start_task_or_raise_conflict(
         task_type="ai_analysis",
         summary="AI 分析进行中",
-        params=params
+        params=params,
     )
-    try:
-        result = await run_ai_analysis(
-            db,
-            source_id=request.source_id,
-            limit=request.limit,
-            only_unanalyzed=request.only_unanalyzed
-        )
-        task_run = record_task_run(
-            task_type="ai_analysis",
-            status="success",
-            summary=(
-                f"AI 分析完成，处理 {result['posts_analyzed']} 条，"
-                f"OpenAI 成功 {result['success_count']} 条，规则回退 {result['fallback_count']} 条"
-            ),
-            details={
-                **params,
-                **result
-            },
-            params=params,
-            task_id=running_task["id"],
-            started_at=running_task.get("started_at")
-        )
-        return {
-            "message": task_run["summary"],
-            "task_run": task_run
-        }
-    except Exception as exc:
-        task_run = record_task_run(
-            task_type="ai_analysis",
-            status="failed",
-            summary="AI 分析失败",
-            details={
-                **params,
-                "error": str(exc)
-            },
-            params=params,
-            task_id=running_task["id"],
-            started_at=running_task.get("started_at")
-        )
-        raise HTTPException(status_code=500, detail=task_run["summary"]) from exc
+    background_tasks.add_task(
+        _run_ai_analysis_in_background,
+        running_task["id"],
+        running_task.get("started_at"),
+        params,
+    )
+    return {
+        "message": "AI 分析任务已提交，后台执行中",
+        "task_run": running_task
+    }
 
 
-@router.post("/admin/backfill-attachments")
+@router.post("/admin/backfill-attachments", status_code=202)
 async def backfill_attachments_task(
     request: BackfillAttachmentsRequest,
-    db: Session = Depends(get_db)
+    background_tasks: BackgroundTasks
 ):
     """补处理历史附件"""
     params = {
         "source_id": request.source_id,
         "limit": request.limit
     }
-    running_task = start_task_run(
+    running_task = _start_task_or_raise_conflict(
         task_type="attachment_backfill",
         summary="历史附件补处理中",
-        params=params
+        params=params,
     )
-    try:
-        result = await backfill_existing_attachments(
-            db,
-            source_id=request.source_id,
-            limit=request.limit
-        )
-        task_run = record_task_run(
-            task_type="attachment_backfill",
-            status="success",
-            summary=(
-                f"历史附件补处理完成，更新 {result['posts_updated']} 条帖子，"
-                f"新增解析 {result['attachments_parsed']} 个附件"
-            ),
-            details={
-                **params,
-                **result
-            },
-            params=params,
-            task_id=running_task["id"],
-            started_at=running_task.get("started_at")
-        )
-        return {
-            "message": task_run["summary"],
-            "task_run": task_run
-        }
-    except Exception as exc:
-        task_run = record_task_run(
-            task_type="attachment_backfill",
-            status="failed",
-            summary="历史附件补处理失败",
-            details={
-                **params,
-                "error": str(exc)
-            },
-            params=params,
-            task_id=running_task["id"],
-            started_at=running_task.get("started_at")
-        )
-        raise HTTPException(status_code=500, detail=task_run["summary"]) from exc
+    background_tasks.add_task(
+        _run_attachment_backfill_in_background,
+        running_task["id"],
+        running_task.get("started_at"),
+        params,
+    )
+    return {
+        "message": "历史附件补处理任务已提交，后台执行中",
+        "task_run": running_task
+    }
 
 
-@router.post("/admin/run-job-extraction")
+@router.post("/admin/run-job-extraction", status_code=202)
 async def run_job_extraction_task(
     request: RunJobExtractionRequest,
-    db: Session = Depends(get_db)
+    background_tasks: BackgroundTasks
 ):
     """批量重建岗位级结果"""
     resolved_only_unindexed = request.only_unindexed
@@ -340,49 +730,18 @@ async def run_job_extraction_task(
         "only_unindexed": resolved_only_unindexed,
         "use_ai": request.use_ai,
     }
-    running_task = start_task_run(
+    running_task = _start_task_or_raise_conflict(
         task_type="job_extraction",
         summary="岗位级抽取进行中",
-        params=params
+        params=params,
     )
-    try:
-        result = await backfill_post_jobs(
-            db,
-            source_id=request.source_id,
-            limit=request.limit,
-            only_unindexed=resolved_only_unindexed,
-            use_ai=request.use_ai,
-        )
-        task_run = record_task_run(
-            task_type="job_extraction",
-            status="success",
-            summary=(
-                f"岗位级抽取完成，更新 {result['posts_updated']} 条帖子，"
-                f"写入 {result['jobs_saved']} 条岗位，AI 参与 {result['ai_posts']} 条"
-            ),
-            details={
-                **params,
-                **result,
-            },
-            params=params,
-            task_id=running_task["id"],
-            started_at=running_task.get("started_at")
-        )
-        return {
-            "message": task_run["summary"],
-            "task_run": task_run
-        }
-    except Exception as exc:
-        task_run = record_task_run(
-            task_type="job_extraction",
-            status="failed",
-            summary="岗位级抽取失败",
-            details={
-                **params,
-                "error": str(exc)
-            },
-            params=params,
-            task_id=running_task["id"],
-            started_at=running_task.get("started_at")
-        )
-        raise HTTPException(status_code=500, detail=task_run["summary"]) from exc
+    background_tasks.add_task(
+        _run_job_extraction_in_background,
+        running_task["id"],
+        running_task.get("started_at"),
+        params,
+    )
+    return {
+        "message": "岗位级抽取任务已提交，后台执行中",
+        "task_run": running_task
+    }

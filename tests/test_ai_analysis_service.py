@@ -1,15 +1,31 @@
 import unittest
 from datetime import datetime, timezone
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from src.database.models import Base, Post, PostAnalysis, Source
+from src.services.attachment_service import write_attachment_parse_result
 from src.services.ai_analysis_service import (
+    AIAnalysisResult,
+    AIInsightResult,
+    build_post_analysis_payload,
+    build_post_insight_payload,
     build_rule_based_result,
     call_base_url_analysis,
+    call_openai_analysis,
+    call_openai_insight,
     coerce_ai_analysis_payload,
     extract_json_object,
     get_analysis_runtime_status,
+    get_insight_summary,
     infer_event_type,
+    run_ai_analysis,
 )
 
 
@@ -149,6 +165,434 @@ class AIAnalysisServiceTestCase(unittest.TestCase):
         self.assertEqual(outcome.result.event_type, "招聘公告")
         self.assertEqual(outcome.result.city, "南京")
         self.assertEqual(outcome.raw_result["transport"], "base_url_http")
+
+    def test_call_openai_analysis_should_build_user_prompt_for_sdk_parse(self):
+        post = SimpleNamespace(
+            id=1,
+            title="南京师范大学2026年公开招聘专职辅导员公告",
+            content="工作地点：南京市。",
+            is_counselor=True,
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            fields=[],
+            attachments=[],
+            source=SimpleNamespace(name="江苏省人社厅")
+        )
+        fake_response = SimpleNamespace(
+            output_parsed=AIAnalysisResult(
+                event_type="招聘公告",
+                recruitment_stage="招聘启动",
+                school_name="南京师范大学",
+                city="南京",
+                should_track=True,
+                tracking_priority="high",
+                summary="测试摘要",
+                tags=["辅导员相关"],
+                entities=["南京师范大学"],
+            )
+        )
+        fake_client = MagicMock()
+        fake_client.responses.parse.return_value = fake_response
+
+        with patch("src.services.ai_analysis_service.get_openai_client", return_value=fake_client), \
+             patch("src.services.ai_analysis_service.settings.OPENAI_BASE_URL", ""), \
+             patch("src.services.ai_analysis_service.settings.AI_ANALYSIS_MODEL", "gpt-5.4"):
+            outcome = call_openai_analysis(post)
+
+        self.assertEqual(outcome.provider, "openai")
+        parse_kwargs = fake_client.responses.parse.call_args.kwargs
+        self.assertEqual(parse_kwargs["input"][1]["role"], "user")
+        self.assertIn("南京师范大学2026年公开招聘专职辅导员公告", parse_kwargs["input"][1]["content"])
+
+    def test_build_post_analysis_payload_should_include_attachment_parse_summary(self):
+        with TemporaryDirectory() as temp_dir:
+            attachment_path = Path(temp_dir) / "jobs.xlsx"
+            attachment_path.write_bytes(b"fake")
+            write_attachment_parse_result(
+                attachment_path,
+                {
+                    "filename": "岗位表.xlsx",
+                    "file_type": "xlsx",
+                    "parser": "table",
+                    "text_length": 0,
+                    "fields": [
+                        {"field_name": "学历要求", "field_value": "硕士研究生及以上"},
+                        {"field_name": "工作地点", "field_value": "南京"}
+                    ],
+                    "jobs": [
+                        {
+                            "job_name": "专职辅导员",
+                            "recruitment_count": "2人",
+                            "education_requirement": "硕士研究生及以上",
+                            "location": "南京",
+                            "political_status": "中共党员",
+                            "source_type": "attachment",
+                            "is_counselor": True,
+                        }
+                    ]
+                }
+            )
+            post = SimpleNamespace(
+                id=1,
+                title="南京师范大学2026年公开招聘专职辅导员公告",
+                content="详见附件岗位表。",
+                is_counselor=True,
+                counselor_scope="dedicated",
+                has_counselor_job=True,
+                publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                fields=[],
+                attachments=[
+                    SimpleNamespace(
+                        filename="岗位表.xlsx",
+                        file_type="xlsx",
+                        file_size=1234,
+                        is_downloaded=True,
+                        local_path=str(attachment_path),
+                    )
+                ],
+                source=SimpleNamespace(name="江苏省人社厅")
+            )
+
+            payload = json.loads(build_post_analysis_payload(post))
+
+        self.assertEqual(payload["counselor_scope"], "dedicated")
+        self.assertTrue(payload["has_counselor_job"])
+        self.assertEqual(payload["attachment_summaries"][0]["parsed_field_count"], 2)
+        self.assertEqual(payload["attachment_summaries"][0]["parsed_job_count"], 1)
+        self.assertEqual(payload["attachment_summaries"][0]["parsed_jobs_preview"][0]["job_name"], "专职辅导员")
+        self.assertEqual(payload["job_summary"][0]["job_name"], "专职辅导员")
+        self.assertNotIn("raw_payload", payload["job_summary"][0])
+
+    def test_build_post_analysis_payload_should_truncate_long_fields_and_content(self):
+        long_major_requirement = "思想政治教育、心理学、教育学" * 50
+        post = SimpleNamespace(
+            id=2,
+            title="某高校2026年公开招聘专职辅导员公告",
+            content="正文内容" * 2500,
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            fields=[
+                SimpleNamespace(field_name="专业要求", field_value=long_major_requirement),
+                SimpleNamespace(field_name="岗位名称", field_value="专职辅导员"),
+            ],
+            jobs=[
+                SimpleNamespace(
+                    job_name="专职辅导员",
+                    recruitment_count="2人",
+                    education_requirement="硕士研究生及以上",
+                    major_requirement=long_major_requirement,
+                    location="南京",
+                    political_status="中共党员",
+                    source_type="attachment",
+                    is_counselor=True,
+                )
+            ],
+            attachments=[],
+            source=SimpleNamespace(name="江苏省人社厅")
+        )
+
+        payload = json.loads(build_post_analysis_payload(post))
+
+        self.assertTrue(payload["fields"]["专业要求"].endswith("[内容已截断]"))
+        self.assertTrue(payload["content"].endswith("[内容已截断]"))
+        self.assertEqual(payload["job_summary"][0]["job_name"], "专职辅导员")
+        self.assertTrue(payload["job_summary"][0]["major_requirement"].endswith("[内容已截断]"))
+
+    def test_build_post_insight_payload_should_include_job_and_attachment_context(self):
+        with TemporaryDirectory() as temp_dir:
+            attachment_path = Path(temp_dir) / "jobs.xlsx"
+            attachment_path.write_bytes(b"fake")
+            write_attachment_parse_result(
+                attachment_path,
+                {
+                    "filename": "岗位表.xlsx",
+                    "file_type": "xlsx",
+                    "parser": "table",
+                    "text_length": 0,
+                    "fields": [
+                        {"field_name": "报名截止时间", "field_value": "2026年4月1日"}
+                    ],
+                    "jobs": [
+                        {
+                            "job_name": "专职辅导员",
+                            "recruitment_count": "3人",
+                            "education_requirement": "硕士研究生及以上",
+                            "location": "南京",
+                            "political_status": "中共党员",
+                            "source_type": "attachment",
+                            "is_counselor": True,
+                        }
+                    ]
+                }
+            )
+            post = SimpleNamespace(
+                id=3,
+                title="南京某高校2026年公开招聘专职辅导员公告",
+                content="详见附件岗位表。",
+                is_counselor=True,
+                counselor_scope="dedicated",
+                has_counselor_job=True,
+                publish_date=datetime(2026, 3, 10, tzinfo=timezone.utc),
+                fields=[SimpleNamespace(field_name="报名截止时间", field_value="2026年4月1日")],
+                jobs=[
+                    SimpleNamespace(
+                        job_name="专职辅导员",
+                        recruitment_count="3人",
+                        education_requirement="硕士研究生及以上",
+                        major_requirement="思想政治教育",
+                        location="南京",
+                        political_status="中共党员",
+                        source_type="attachment",
+                        is_counselor=True,
+                    )
+                ],
+                attachments=[
+                    SimpleNamespace(
+                        filename="岗位表.xlsx",
+                        file_type="xlsx",
+                        file_size=4096,
+                        is_downloaded=True,
+                        local_path=str(attachment_path),
+                    )
+                ],
+                source=SimpleNamespace(name="江苏省人社厅")
+            )
+
+            payload = json.loads(build_post_insight_payload(post))
+
+        self.assertEqual(payload["job_summary"][0]["recruitment_count"], "3人")
+        self.assertEqual(payload["attachment_summaries"][0]["parsed_job_count"], 1)
+        self.assertEqual(payload["fields"]["报名截止时间"], "2026年4月1日")
+
+    def test_call_openai_insight_should_build_user_prompt_for_sdk_parse(self):
+        post = SimpleNamespace(
+            id=4,
+            title="南京某高校2026年公开招聘专职辅导员公告",
+            content="报名截止时间为2026年4月1日。",
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+            publish_date=datetime(2026, 3, 10, tzinfo=timezone.utc),
+            fields=[],
+            jobs=[],
+            attachments=[],
+            source=SimpleNamespace(name="江苏省人社厅"),
+        )
+        fake_response = SimpleNamespace(
+            output_parsed=AIInsightResult(
+                recruitment_count_total=3,
+                counselor_recruitment_count=3,
+                degree_floor="硕士",
+                city_list=["南京"],
+                gender_restriction="不限",
+                political_status_required="中共党员",
+                deadline_text="2026年4月1日",
+                deadline_date="2026-04-01",
+                deadline_status="报名中",
+                has_written_exam=True,
+                has_interview=True,
+                has_attachment_job_table=True,
+                evidence_summary="附件岗位表列出了 3 个专职辅导员名额。",
+            )
+        )
+        fake_client = MagicMock()
+        fake_client.responses.parse.return_value = fake_response
+
+        with patch("src.services.ai_analysis_service.get_openai_client", return_value=fake_client), \
+             patch("src.services.ai_analysis_service.settings.OPENAI_BASE_URL", ""), \
+             patch("src.services.ai_analysis_service.settings.AI_ANALYSIS_MODEL", "gpt-5.4"):
+            outcome = call_openai_insight(post)
+
+        self.assertEqual(outcome.provider, "openai")
+        parse_kwargs = fake_client.responses.parse.call_args.kwargs
+        self.assertEqual(parse_kwargs["input"][1]["role"], "user")
+        self.assertIn("南京某高校2026年公开招聘专职辅导员公告", parse_kwargs["input"][1]["content"])
+
+
+class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp_dir = TemporaryDirectory()
+        db_path = Path(self.temp_dir.name) / "test_ai_insight.db"
+        self.engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False}
+        )
+        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        Base.metadata.create_all(bind=self.engine)
+        self.db = self.SessionLocal()
+
+        source = Source(
+            id=1,
+            name="江苏省人社厅",
+            province="江苏",
+            source_type="government_website",
+            base_url="https://example.com",
+            scraper_class="JiangsuHRSSScraper",
+            is_active=True,
+        )
+        self.db.add(source)
+        self.db.flush()
+
+        self.db.add_all([
+            Post(
+                id=1,
+                source_id=1,
+                title="南京高校专职辅导员公告",
+                content="报名截止时间为2026年4月1日。",
+                publish_date=datetime(2026, 3, 10, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/1",
+                original_url="https://example.com/posts/1",
+                is_counselor=True,
+                counselor_scope="dedicated",
+                has_counselor_job=True,
+            ),
+            Post(
+                id=2,
+                source_id=1,
+                title="苏州高校辅导员公告",
+                content="另行通知。",
+                publish_date=datetime(2026, 3, 11, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/2",
+                original_url="https://example.com/posts/2",
+                is_counselor=True,
+                counselor_scope="contains",
+                has_counselor_job=True,
+            ),
+        ])
+        self.db.add(PostAnalysis(
+            post_id=1,
+            analysis_status="success",
+            analysis_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            event_type="招聘公告",
+            recruitment_stage="招聘启动",
+            tracking_priority="high",
+            school_name="南京高校",
+            city="南京",
+            should_track=True,
+            summary="测试",
+            tags_json="[]",
+            entities_json="[]",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        ))
+        self.db.commit()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self.engine.dispose()
+        self.temp_dir.cleanup()
+
+    def test_get_insight_summary_should_return_distributions(self):
+        from src.database.models import PostInsight
+
+        self.db.add_all([
+            PostInsight(
+                post_id=1,
+                insight_status="success",
+                insight_provider="openai",
+                model_name="gpt-5.4",
+                prompt_version="v1",
+                recruitment_count_total=3,
+                counselor_recruitment_count=3,
+                degree_floor="硕士",
+                city_list_json=json.dumps(["南京"], ensure_ascii=False),
+                gender_restriction="不限",
+                political_status_required="中共党员",
+                deadline_text="2026年4月1日",
+                deadline_date=datetime(2026, 4, 1, tzinfo=timezone.utc),
+                deadline_status="报名中",
+                has_written_exam=True,
+                has_interview=True,
+                has_attachment_job_table=True,
+                evidence_summary="附件岗位表列出了 3 个专职辅导员名额。",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 10, tzinfo=timezone.utc),
+            ),
+            PostInsight(
+                post_id=2,
+                insight_status="failed",
+                insight_provider="openai",
+                model_name="gpt-5.4",
+                prompt_version="v1",
+                error_message="模型超时",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 11, tzinfo=timezone.utc),
+            ),
+        ])
+        self.db.commit()
+
+        summary = get_insight_summary(self.db)
+
+        self.assertEqual(summary["overview"]["insight_posts"], 1)
+        self.assertEqual(summary["overview"]["failed_insight_posts"], 1)
+        self.assertEqual(summary["overview"]["posts_with_deadline"], 1)
+        self.assertEqual(summary["degree_floor_distribution"][0]["degree_floor"], "硕士")
+        self.assertEqual(summary["deadline_status_distribution"][0]["deadline_status"], "报名中")
+        self.assertEqual(summary["city_distribution"][0]["city"], "南京")
+
+    async def test_run_ai_analysis_should_backfill_missing_insight_for_existing_openai_analysis(self):
+        from src.database.models import PostInsight
+
+        self.db.add(PostInsight(
+            post_id=2,
+            insight_status="success",
+            insight_provider="rule",
+            model_name="rule-based",
+            prompt_version="v1",
+            recruitment_count_total=1,
+            counselor_recruitment_count=1,
+            degree_floor="本科",
+            city_list_json=json.dumps(["苏州"], ensure_ascii=False),
+            gender_restriction="未说明",
+            political_status_required="",
+            deadline_text="",
+            deadline_status="未说明",
+            has_written_exam=None,
+            has_interview=None,
+            has_attachment_job_table=False,
+            evidence_summary="",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 11, tzinfo=timezone.utc),
+        ))
+        self.db.commit()
+
+        with patch(
+            "src.services.ai_analysis_service.call_openai_analysis",
+            side_effect=AssertionError("不该重复跑 analysis"),
+        ), patch(
+            "src.services.ai_analysis_service.call_openai_insight",
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIInsightResult(
+                    recruitment_count_total=3,
+                    counselor_recruitment_count=3,
+                    degree_floor="硕士",
+                    city_list=["南京"],
+                    gender_restriction="不限",
+                    political_status_required="中共党员",
+                    deadline_text="2026年4月1日",
+                    deadline_date="2026-04-01",
+                    deadline_status="报名中",
+                    has_written_exam=True,
+                    has_interview=True,
+                    has_attachment_job_table=True,
+                    evidence_summary="附件岗位表列出了 3 个专职辅导员名额。",
+                ),
+                error_message="",
+                raw_result={"deadline_status": "报名中"},
+            ),
+        ):
+            result = await run_ai_analysis(self.db, limit=10, only_unanalyzed=True)
+
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 1).first()
+        self.assertEqual(result["insight_success_count"], 1)
+        self.assertIsNotNone(saved_insight)
+        self.assertEqual(saved_insight.deadline_status, "报名中")
 
 
 if __name__ == "__main__":

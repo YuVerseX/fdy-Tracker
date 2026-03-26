@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+- 管理任务改为 `202` 异步提交，后台执行并记录 `running -> success/failed` 状态流转
+- 管理任务记录新增 `phase`、`progress`、`heartbeat_at`，管理页支持进度条、卡住提示与任务重试
+- 重复治理一期完成：软去重字段、去重摘要、历史补齐任务、默认隐藏重复记录
+- 去重补齐进度细化：候选比对阶段可持续更新任务进度
+- 新增 `SECURITY.md` 安全策略说明
+- 新增 `docs/release-checklist.md` 发布检查清单
+- 补 GitHub Actions `CI` 工作流（后端 unittest + 前端 build）
 - 文档入口重写，统一以根目录 `README.md` 和 `STATUS.md` 为准
 - 补充 `LICENSE`、`CONTRIBUTING.md`、`CHANGELOG.md`
 - 历史规划和历史整理记录迁入 `docs/archive/`

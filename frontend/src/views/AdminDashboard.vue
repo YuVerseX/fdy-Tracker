@@ -68,6 +68,7 @@
             </div>
             <div class="mt-1 text-xs text-gray-500">模型 {{ analysisRuntime.model_name || '--' }}</div>
             <div class="mt-1 text-xs text-gray-500">待 OpenAI {{ analysisOverview.openai_pending_posts || 0 }} 条</div>
+            <div class="mt-1 text-xs text-gray-500">待统计 {{ insightOverview.pending_insight_posts || 0 }} 条</div>
           </article>
 
           <article class="rounded-lg bg-white/80 px-4 py-4 shadow-sm ring-1 ring-black/5">
@@ -107,6 +108,68 @@
               {{ item }}
             </div>
           </div>
+        </div>
+      </section>
+
+      <section class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-semibold text-sky-900">重复治理</h2>
+            <p class="mt-1 text-sm text-gray-500">默认隐藏重复帖子，只保留主记录给前台使用。</p>
+          </div>
+          <button
+            @click="fetchDuplicateSummary"
+            :disabled="duplicateLoading"
+            class="inline-flex items-center justify-center rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700"
+          >
+            {{ duplicateLoading ? '刷新中...' : '刷新重复摘要' }}
+          </button>
+        </div>
+
+        <div class="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="rounded-lg bg-rose-50 px-4 py-3">
+            <div class="text-xs text-gray-500">重复组数</div>
+            <div class="mt-1 text-xl font-semibold text-rose-700">{{ duplicateSummary.overview.duplicate_groups }}</div>
+          </div>
+          <div class="rounded-lg bg-amber-50 px-4 py-3">
+            <div class="text-xs text-gray-500">折叠帖子</div>
+            <div class="mt-1 text-xl font-semibold text-amber-700">{{ duplicateSummary.overview.duplicate_posts }}</div>
+          </div>
+          <div class="rounded-lg bg-emerald-50 px-4 py-3">
+            <div class="text-xs text-gray-500">主记录</div>
+            <div class="mt-1 text-xl font-semibold text-emerald-700">{{ duplicateSummary.overview.primary_posts }}</div>
+          </div>
+          <div class="rounded-lg bg-slate-50 px-4 py-3">
+            <div class="text-xs text-gray-500">未检查</div>
+            <div class="mt-1 text-xl font-semibold text-slate-700">{{ duplicateSummary.overview.unchecked_posts }}</div>
+          </div>
+        </div>
+
+        <div class="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">单次补齐条数</label>
+              <input
+                v-model.number="duplicateBackfillForm.limit"
+                type="number"
+                min="1"
+                max="2000"
+                class="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-600 focus:border-transparent"
+              />
+            </div>
+            <div class="flex items-end justify-start sm:justify-end">
+              <button
+                @click="runDuplicateBackfillTask"
+                :disabled="duplicateBackfillBusy"
+                class="inline-flex items-center justify-center rounded-lg bg-sky-700 px-4 py-2.5 text-white transition-colors duration-200 hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {{ duplicateBackfillBusy ? '补齐中...' : '执行历史去重补齐' }}
+              </button>
+            </div>
+          </div>
+          <p class="mt-3 text-xs text-gray-500">
+            用来处理“未检查”积压。建议先用 200~500 试跑，确认耗时后再逐步放大。
+          </p>
         </div>
       </section>
 
@@ -250,10 +313,10 @@
 
           <button
             @click="runScrapeTask"
-            :disabled="scrapeRunning"
+            :disabled="scrapeBusy"
             class="mt-6 inline-flex items-center justify-center rounded-lg bg-sky-700 px-4 py-2.5 text-white transition-colors duration-200 hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {{ scrapeRunning ? '抓取中...' : '开始抓取' }}
+            {{ scrapeBusy ? '抓取中...' : '开始抓取' }}
           </button>
         </section>
 
@@ -300,10 +363,10 @@
 
           <button
             @click="runBackfillTask"
-            :disabled="backfillRunning"
+            :disabled="backfillBusy"
             class="mt-6 inline-flex items-center justify-center rounded-lg bg-amber-600 px-4 py-2.5 text-white transition-colors duration-200 hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {{ backfillRunning ? '补处理中...' : '开始补处理' }}
+            {{ backfillBusy ? '补处理中...' : '开始补处理' }}
           </button>
         </section>
       </div>
@@ -410,10 +473,10 @@
             <div class="mt-6 flex flex-wrap gap-3">
               <button
                 @click="runAiAnalysisTask"
-                :disabled="analysisRunning || !openaiReady"
+                :disabled="analysisBusy || !openaiReady"
                 class="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-4 py-2.5 text-white transition-colors duration-200 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {{ analysisRunning ? '分析中...' : '开始 OpenAI 分析' }}
+                {{ analysisBusy ? '分析中...' : '开始 OpenAI 分析' }}
               </button>
               <button
                 @click="fetchAnalysisSummary"
@@ -512,10 +575,10 @@
               <div class="mt-4 flex flex-wrap gap-3">
                 <button
                   @click="runJobExtractionTask"
-                  :disabled="jobsRunning"
+                  :disabled="jobsBusy"
                   class="inline-flex items-center justify-center rounded-lg bg-cyan-600 px-4 py-2.5 text-white transition-colors duration-200 hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {{ jobsRunning ? '抽取中...' : '开始岗位抽取' }}
+                  {{ jobsBusy ? '抽取中...' : '开始岗位抽取' }}
                 </button>
                 <button
                   @click="fetchJobSummary"
@@ -586,17 +649,173 @@
       </section>
 
       <section class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div class="flex items-center gap-3">
+              <h2 class="text-lg font-semibold text-sky-900">AI 统计看板</h2>
+              <span class="inline-flex items-center rounded-full bg-fuchsia-100 px-3 py-1 text-xs font-medium text-fuchsia-700">
+                统计摘要
+              </span>
+            </div>
+            <p class="mt-1 text-sm text-gray-500">把 AI 和规则抽出来的稳定字段单独看，方便判断数据覆盖率、截止节奏和区域分布。</p>
+          </div>
+          <button
+            @click="fetchInsightSummary"
+            :disabled="insightLoading"
+            class="inline-flex items-center justify-center rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors duration-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ insightLoading ? '刷新中...' : '刷新统计看板' }}
+          </button>
+        </div>
+
+        <div class="mt-6 rounded-lg border border-fuchsia-200 bg-fuchsia-50 px-4 py-4 text-sm text-fuchsia-900">
+          <p>
+            当前已提取 {{ insightOverview.insight_posts || 0 }} 条统计结果，
+            覆盖率 {{ formatPercent(insightOverview.insight_posts, analysisOverview.total_posts) }}；
+            其中 OpenAI 占 {{ formatPercent(insightOverview.openai_insight_posts, insightOverview.insight_posts) }}。
+          </p>
+          <p class="mt-1 text-xs opacity-80">
+            失败 {{ insightOverview.failed_insight_posts || 0 }} 条，跳过 {{ insightOverview.skipped_insight_posts || 0 }} 条。
+            {{ insightLatestAnalyzedAt ? `最近统计完成于 ${formatDateTime(insightLatestAnalyzedAt)}` : '还没有统计完成时间。' }}
+          </p>
+        </div>
+
+        <div class="mt-6 grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+          <div class="rounded-lg bg-fuchsia-50 px-4 py-3">
+            <div class="text-xs text-gray-500">已提取</div>
+            <div class="mt-1 text-xl font-semibold text-fuchsia-700">{{ insightOverview.insight_posts || 0 }}</div>
+          </div>
+          <div class="rounded-lg bg-slate-50 px-4 py-3">
+            <div class="text-xs text-gray-500">待提取</div>
+            <div class="mt-1 text-xl font-semibold text-slate-700">{{ insightOverview.pending_insight_posts || 0 }}</div>
+          </div>
+          <div class="rounded-lg bg-indigo-50 px-4 py-3">
+            <div class="text-xs text-gray-500">OpenAI 统计</div>
+            <div class="mt-1 text-xl font-semibold text-indigo-700">{{ insightOverview.openai_insight_posts || 0 }}</div>
+          </div>
+          <div class="rounded-lg bg-amber-50 px-4 py-3">
+            <div class="text-xs text-gray-500">规则统计</div>
+            <div class="mt-1 text-xl font-semibold text-amber-700">{{ insightOverview.rule_insight_posts || 0 }}</div>
+          </div>
+          <div class="rounded-lg bg-emerald-50 px-4 py-3">
+            <div class="text-xs text-gray-500">有截止时间</div>
+            <div class="mt-1 text-xl font-semibold text-emerald-700">{{ insightOverview.posts_with_deadline || 0 }}</div>
+          </div>
+          <div class="rounded-lg bg-cyan-50 px-4 py-3">
+            <div class="text-xs text-gray-500">有附件岗位表</div>
+            <div class="mt-1 text-xl font-semibold text-cyan-700">{{ insightOverview.posts_with_attachment_job_table || 0 }}</div>
+          </div>
+        </div>
+
+        <div class="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div class="rounded-lg border border-gray-200 bg-white px-4 py-4">
+            <h3 class="text-sm font-semibold text-gray-700">截止状态分布</h3>
+            <div v-if="insightDeadlineStats.length" class="mt-4 space-y-3">
+              <div
+                v-for="item in insightDeadlineStats.slice(0, 4)"
+                :key="item.deadline_status"
+                class="rounded-lg bg-amber-50 px-3 py-3"
+              >
+                <div class="flex items-center justify-between gap-3 text-sm">
+                  <span class="font-medium text-gray-700">{{ item.deadline_status }}</span>
+                  <span class="font-semibold text-amber-700">{{ item.count }}</span>
+                </div>
+                <div class="mt-2 h-2 rounded-full bg-white/80">
+                  <div
+                    class="h-2 rounded-full bg-amber-500"
+                    :style="getDistributionBarStyle(item.count, insightDeadlineMaxCount)"
+                  />
+                </div>
+              </div>
+            </div>
+            <div v-else class="mt-4 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+              还没有截止状态数据。
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-gray-200 bg-white px-4 py-4">
+            <h3 class="text-sm font-semibold text-gray-700">学历下限分布</h3>
+            <div v-if="insightDegreeStats.length" class="mt-4 space-y-3">
+              <div
+                v-for="item in insightDegreeStats.slice(0, 5)"
+                :key="item.degree_floor"
+                class="rounded-lg bg-sky-50 px-3 py-3"
+              >
+                <div class="flex items-center justify-between gap-3 text-sm">
+                  <span class="font-medium text-gray-700">{{ item.degree_floor }}</span>
+                  <span class="font-semibold text-sky-700">{{ item.count }}</span>
+                </div>
+                <div class="mt-2 h-2 rounded-full bg-white/80">
+                  <div
+                    class="h-2 rounded-full bg-sky-500"
+                    :style="getDistributionBarStyle(item.count, insightDegreeMaxCount)"
+                  />
+                </div>
+              </div>
+            </div>
+            <div v-else class="mt-4 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+              还没有学历分布数据。
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-gray-200 bg-white px-4 py-4">
+            <h3 class="text-sm font-semibold text-gray-700">城市分布</h3>
+            <div v-if="insightCityStats.length" class="mt-4 space-y-3">
+              <div
+                v-for="item in insightCityStats.slice(0, 6)"
+                :key="item.city"
+                class="rounded-lg bg-emerald-50 px-3 py-3"
+              >
+                <div class="flex items-center justify-between gap-3 text-sm">
+                  <span class="font-medium text-gray-700">{{ item.city }}</span>
+                  <span class="font-semibold text-emerald-700">{{ item.count }}</span>
+                </div>
+                <div class="mt-2 h-2 rounded-full bg-white/80">
+                  <div
+                    class="h-2 rounded-full bg-emerald-500"
+                    :style="getDistributionBarStyle(item.count, insightCityMaxCount)"
+                  />
+                </div>
+              </div>
+            </div>
+            <div v-else class="mt-4 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+              还没有城市分布数据。
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="rounded-lg border border-gray-200 bg-white px-4 py-3">
+            <div class="text-xs text-gray-500">含笔试</div>
+            <div class="mt-1 text-lg font-semibold text-gray-900">{{ insightOverview.posts_with_written_exam || 0 }}</div>
+          </div>
+          <div class="rounded-lg border border-gray-200 bg-white px-4 py-3">
+            <div class="text-xs text-gray-500">含面试</div>
+            <div class="mt-1 text-lg font-semibold text-gray-900">{{ insightOverview.posts_with_interview || 0 }}</div>
+          </div>
+          <div class="rounded-lg border border-gray-200 bg-white px-4 py-3">
+            <div class="text-xs text-gray-500">统计失败</div>
+            <div class="mt-1 text-lg font-semibold text-red-600">{{ insightOverview.failed_insight_posts || 0 }}</div>
+          </div>
+          <div class="rounded-lg border border-gray-200 bg-white px-4 py-3">
+            <div class="text-xs text-gray-500">统计跳过</div>
+            <div class="mt-1 text-lg font-semibold text-gray-700">{{ insightOverview.skipped_insight_posts || 0 }}</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="bg-white rounded-lg shadow-sm p-6">
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="text-lg font-semibold text-sky-900">最近执行记录</h2>
             <p class="mt-1 text-sm text-gray-500">只保留最近几次，方便你看任务有没有真的跑起来。</p>
           </div>
           <button
-            @click="fetchTaskRuns"
+            @click="refreshTaskStatus"
             :disabled="loadingRuns"
             class="inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors duration-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {{ loadingRuns ? '刷新中...' : '刷新记录' }}
+            {{ loadingRuns ? '刷新中...' : '刷新状态' }}
           </button>
         </div>
 
@@ -618,17 +837,40 @@
                   <h3 class="text-base font-semibold text-sky-900">{{ getTaskTypeLabel(run.task_type) }}</h3>
                   <span
                     class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium"
-                    :class="getTaskStatusClass(run.status)"
+                    :class="getTaskStatusClass(run.status, run)"
                   >
-                    {{ getTaskStatusLabel(run.status) }}
+                    {{ getTaskStatusLabel(run.status, run) }}
                   </span>
                 </div>
                 <p class="mt-1 text-sm text-gray-600">{{ run.summary }}</p>
+                <div class="mt-2 space-y-2">
+                  <div class="flex items-center justify-between gap-3 text-xs text-gray-500">
+                    <span>{{ run.phase || getDefaultTaskPhase(run) }}</span>
+                    <span>{{ getTaskProgress(run) }}%</span>
+                  </div>
+                  <div class="h-2 rounded-full bg-gray-200">
+                    <div
+                      class="h-2 rounded-full transition-all duration-300"
+                      :class="isTaskPossiblyStuck(run) ? 'bg-red-400' : 'bg-sky-500'"
+                      :style="{ width: `${getTaskProgress(run)}%` }"
+                    />
+                  </div>
+                  <div v-if="isRunningStatus(run.status)" class="text-xs text-gray-500">
+                    已运行 {{ formatRunningElapsed(run) }}，最近心跳 {{ formatDateTime(getTaskHeartbeatAt(run)) || '--' }}
+                  </div>
+                </div>
               </div>
               <div class="flex items-center gap-3">
                 <div class="text-sm text-gray-500">
                   {{ formatDateTime(run.finished_at || run.started_at) }}
                 </div>
+                <button
+                  @click="retryTaskRun(run)"
+                  :disabled="retryingTaskId === run.id || !canRetryTask(run.task_type)"
+                  class="inline-flex items-center rounded-lg border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 transition-colors duration-200 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {{ retryingTaskId === run.id ? '重试中...' : '重试任务' }}
+                </button>
                 <button
                   @click="toggleTaskExpanded(run.id)"
                   class="inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors duration-200 hover:bg-gray-100"
@@ -639,7 +881,14 @@
             </div>
 
             <div v-if="isTaskExpanded(run.id)" class="mt-4 space-y-4">
-              <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 text-sm">
+              <div
+                v-if="isTaskPossiblyStuck(run)"
+                class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-800"
+              >
+                这个任务超过 10 分钟没有心跳，可能卡住了。可以先点上面的“刷新状态”，再按“重试任务”。
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-sm">
                 <div class="rounded-lg bg-white px-3 py-3">
                   <div class="text-gray-500">开始时间</div>
                   <div class="mt-1 font-semibold text-gray-900">{{ formatDateTime(run.started_at) || '--' }}</div>
@@ -651,6 +900,10 @@
                 <div class="rounded-lg bg-white px-3 py-3">
                   <div class="text-gray-500">耗时</div>
                   <div class="mt-1 font-semibold text-gray-900">{{ formatDuration(run) }}</div>
+                </div>
+                <div class="rounded-lg bg-white px-3 py-3">
+                  <div class="text-gray-500">最近心跳</div>
+                  <div class="mt-1 font-semibold text-gray-900">{{ formatDateTime(getTaskHeartbeatAt(run)) || '--' }}</div>
                 </div>
               </div>
 
@@ -703,16 +956,19 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { adminApi } from '../api/posts'
 
 const scrapeRunning = ref(false)
 const backfillRunning = ref(false)
+const duplicateBackfillRunning = ref(false)
 const analysisRunning = ref(false)
 const jobsRunning = ref(false)
 const loadingRuns = ref(false)
 const analysisLoading = ref(false)
+const insightLoading = ref(false)
 const jobsLoading = ref(false)
+const duplicateLoading = ref(false)
 const schedulerLoading = ref(false)
 const schedulerSaving = ref(false)
 const jobsSummaryUnavailable = ref(false)
@@ -744,6 +1000,7 @@ const analysisSummary = ref({
   event_type_distribution: [],
   latest_analyzed_at: ''
 })
+const insightSummary = ref(null)
 const jobSummary = ref({
   overview: {
     total_jobs: 0,
@@ -753,10 +1010,25 @@ const jobSummary = ref({
   },
   latest_extracted_at: ''
 })
+const duplicateSummary = ref({
+  overview: {
+    duplicate_groups: 0,
+    duplicate_posts: 0,
+    primary_posts: 0,
+    unchecked_posts: 0
+  },
+  reason_distribution: [],
+  latest_checked_at: '',
+  latest_groups: []
+})
 const feedback = ref({
   type: '',
   message: ''
 })
+const retryingTaskId = ref('')
+const taskPollingInFlight = ref(false)
+const taskPollingTimerId = ref(null)
+const nowTs = ref(Date.now())
 const sourceOptions = ref([
   { label: '江苏省人社厅（source_id=1）', value: 1, isActive: true }
 ])
@@ -778,6 +1050,9 @@ const backfillForm = ref({
   sourceId: '',
   limit: 100
 })
+const duplicateBackfillForm = ref({
+  limit: 200
+})
 const analysisForm = ref({
   sourceId: '',
   limit: 100,
@@ -789,6 +1064,41 @@ const jobsForm = ref({
   onlyPending: true,
   useAi: false
 })
+const EMPTY_INSIGHT_OVERVIEW = {
+  insight_posts: 0,
+  pending_insight_posts: 0,
+  openai_insight_posts: 0,
+  rule_insight_posts: 0,
+  failed_insight_posts: 0,
+  skipped_insight_posts: 0,
+  posts_with_deadline: 0,
+  posts_with_written_exam: 0,
+  posts_with_interview: 0,
+  posts_with_attachment_job_table: 0
+}
+const TASK_HEARTBEAT_STALE_MS = 10 * 60 * 1000
+const TASK_POLL_INTERVAL_MS = 15 * 1000
+const getMaxDistributionCount = (items = []) => {
+  const counts = items.map((item) => Number(item?.count || 0)).filter((count) => Number.isFinite(count) && count > 0)
+  return counts.length ? Math.max(...counts) : 0
+}
+const formatPercent = (part, total) => {
+  const numerator = Number(part || 0)
+  const denominator = Number(total || 0)
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+    return '0%'
+  }
+  return `${Math.round((numerator / denominator) * 100)}%`
+}
+const getDistributionBarStyle = (count, maxCount) => {
+  const normalizedCount = Number(count || 0)
+  const normalizedMax = Number(maxCount || 0)
+  if (!Number.isFinite(normalizedCount) || !Number.isFinite(normalizedMax) || normalizedCount <= 0 || normalizedMax <= 0) {
+    return { width: '0%' }
+  }
+  const width = Math.max(Math.round((normalizedCount / normalizedMax) * 100), 8)
+  return { width: `${Math.min(width, 100)}%` }
+}
 
 const feedbackClass = computed(() => {
   if (feedback.value.type === 'success') {
@@ -796,24 +1106,56 @@ const feedbackClass = computed(() => {
   }
   return 'border-red-200 bg-red-50 text-red-700'
 })
+const backendRunningTasks = computed(() => {
+  const combined = [
+    ...(Array.isArray(taskSummary.value?.running_tasks) ? taskSummary.value.running_tasks : []),
+    ...taskRuns.value.filter((run) => isRunningStatus(run?.status))
+  ]
+  const seen = new Set()
+
+  return combined.filter((run) => {
+    const taskType = run?.task_type || run?.taskType
+    if (!taskType) {
+      return false
+    }
+
+    const taskKey = run?.id || `${taskType}-${run?.started_at || run?.startedAt || ''}`
+    if (seen.has(taskKey)) {
+      return false
+    }
+
+    seen.add(taskKey)
+    return true
+  })
+})
+const isTaskTypeRunning = (...taskTypes) => {
+  return backendRunningTasks.value.some((run) => taskTypes.includes(run?.task_type || run?.taskType))
+}
+const scrapeBusy = computed(() => scrapeRunning.value || isTaskTypeRunning('manual_scrape', 'scheduled_scrape'))
+const backfillBusy = computed(() => backfillRunning.value || isTaskTypeRunning('attachment_backfill'))
+const duplicateBackfillBusy = computed(() => duplicateBackfillRunning.value || isTaskTypeRunning('duplicate_backfill'))
+const analysisBusy = computed(() => analysisRunning.value || isTaskTypeRunning('ai_analysis'))
+const jobsBusy = computed(() => jobsRunning.value || isTaskTypeRunning('job_extraction', 'ai_job_extraction'))
 const activeTaskHints = computed(() => {
   const hints = []
-  if (scrapeRunning.value) {
+  if (scrapeBusy.value) {
     hints.push('手动抓取最新数据')
   }
-  if (backfillRunning.value) {
+  if (backfillBusy.value) {
     hints.push('补处理历史附件')
   }
-  if (analysisRunning.value) {
+  if (analysisBusy.value) {
     hints.push('OpenAI 分析')
   }
-  if (jobsRunning.value) {
+  if (jobsBusy.value) {
     hints.push('岗位级抽取')
   }
-  const backendRunning = taskRuns.value.find((run) => isRunningStatus(run?.status))
-  if (backendRunning) {
-    hints.push(`后台执行：${getTaskTypeLabel(backendRunning.task_type)}`)
+  if (duplicateBackfillBusy.value) {
+    hints.push('历史去重补齐')
   }
+  backendRunningTasks.value.forEach((run) => {
+    hints.push(`后台执行：${getTaskTypeLabel(run.task_type || run.taskType)}`)
+  })
   return [...new Set(hints)]
 })
 const analysisOverview = computed(() => analysisSummary.value?.overview || {
@@ -836,6 +1178,14 @@ const analysisRuntime = computed(() => analysisSummary.value?.runtime || {
   base_url: ''
 })
 const analysisProviderStats = computed(() => analysisSummary.value?.provider_distribution || [])
+const insightOverview = computed(() => insightSummary.value?.overview || analysisSummary.value?.insight_overview || EMPTY_INSIGHT_OVERVIEW)
+const insightDegreeStats = computed(() => insightSummary.value?.degree_floor_distribution || analysisSummary.value?.degree_floor_distribution || [])
+const insightDeadlineStats = computed(() => insightSummary.value?.deadline_status_distribution || analysisSummary.value?.deadline_status_distribution || [])
+const insightCityStats = computed(() => insightSummary.value?.city_distribution || analysisSummary.value?.city_distribution || [])
+const insightLatestAnalyzedAt = computed(() => insightSummary.value?.latest_analyzed_at || analysisSummary.value?.latest_insight_at || '')
+const insightDegreeMaxCount = computed(() => getMaxDistributionCount(insightDegreeStats.value))
+const insightDeadlineMaxCount = computed(() => getMaxDistributionCount(insightDeadlineStats.value))
+const insightCityMaxCount = computed(() => getMaxDistributionCount(insightCityStats.value))
 const jobsOverview = computed(() => jobSummary.value?.overview || {
   total_jobs: 0,
   posts_with_jobs: 0,
@@ -885,7 +1235,12 @@ const healthStatusLevel = computed(() => {
     return 'warning'
   }
 
-  if (!openaiReady.value || Number(analysisOverview.value.openai_pending_posts || 0) > 0 || Number(jobsOverview.value.pending_posts || 0) > 0) {
+  if (
+    !openaiReady.value ||
+    Number(analysisOverview.value.openai_pending_posts || 0) > 0 ||
+    Number(insightOverview.value.pending_insight_posts || 0) > 0 ||
+    Number(jobsOverview.value.pending_posts || 0) > 0
+  ) {
     return 'attention'
   }
 
@@ -959,6 +1314,14 @@ const healthAlerts = computed(() => {
 
   if (Number(analysisOverview.value.openai_pending_posts || 0) > 0) {
     alerts.push(`还有 ${analysisOverview.value.openai_pending_posts} 条帖子待 OpenAI 分析。`)
+  }
+
+  if (Number(insightOverview.value.pending_insight_posts || 0) > 0) {
+    alerts.push(`还有 ${insightOverview.value.pending_insight_posts} 条帖子待统计字段提取。`)
+  }
+
+  if (Number(insightOverview.value.failed_insight_posts || 0) > 0) {
+    alerts.push(`统计字段提取失败 ${insightOverview.value.failed_insight_posts} 条，建议点开 AI 统计看板看看。`)
   }
 
   if (jobsSummaryUnavailable.value) {
@@ -1057,6 +1420,22 @@ const fetchAnalysisSummary = async () => {
   }
 }
 
+const fetchInsightSummary = async () => {
+  insightLoading.value = true
+  try {
+    const response = await adminApi.getInsightSummary()
+    insightSummary.value = response.data || insightSummary.value
+  } catch (error) {
+    if (error?.response?.status === 404 || error?.response?.status === 405) {
+      insightSummary.value = null
+    } else {
+      setFeedback('error', getErrorMessage(error, '加载 AI 统计看板失败'))
+    }
+  } finally {
+    insightLoading.value = false
+  }
+}
+
 const fetchJobSummary = async () => {
   jobsLoading.value = true
   jobsSummaryUnavailable.value = false
@@ -1074,6 +1453,18 @@ const fetchJobSummary = async () => {
   }
 }
 
+const fetchDuplicateSummary = async () => {
+  duplicateLoading.value = true
+  try {
+    const response = await adminApi.getDuplicateSummary()
+    duplicateSummary.value = response.data || duplicateSummary.value
+  } catch (error) {
+    setFeedback('error', getErrorMessage(error, '加载重复治理摘要失败'))
+  } finally {
+    duplicateLoading.value = false
+  }
+}
+
 const refreshOverview = async () => {
   overviewRefreshing.value = true
   try {
@@ -1082,11 +1473,127 @@ const refreshOverview = async () => {
       fetchTaskRuns(),
       fetchSchedulerConfig(),
       fetchAnalysisSummary(),
-      fetchJobSummary()
+      fetchInsightSummary(),
+      fetchJobSummary(),
+      fetchDuplicateSummary()
     ])
   } finally {
     overviewRefreshing.value = false
   }
+}
+
+const refreshAfterTask = async ({ includeAnalysis = false, includeInsight = false, includeJobs = false, includeDuplicate = false } = {}) => {
+  const tasks = [fetchTaskRuns(), fetchTaskSummary()]
+  if (includeAnalysis) {
+    tasks.push(fetchAnalysisSummary())
+  }
+  if (includeInsight) {
+    tasks.push(fetchInsightSummary())
+  }
+  if (includeJobs) {
+    tasks.push(fetchJobSummary())
+  }
+  if (includeDuplicate) {
+    tasks.push(fetchDuplicateSummary())
+  }
+  await Promise.all(tasks)
+}
+
+const refreshTaskStatus = async () => {
+  await Promise.all([fetchTaskRuns(), fetchTaskSummary()])
+}
+
+const canRetryTask = (taskType) => {
+  return ['manual_scrape', 'scheduled_scrape', 'attachment_backfill', 'duplicate_backfill', 'ai_analysis', 'job_extraction', 'ai_job_extraction'].includes(taskType)
+}
+
+const getRetryRefreshOptions = (taskType) => {
+  if (taskType === 'manual_scrape' || taskType === 'scheduled_scrape') {
+    return { includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true }
+  }
+  if (taskType === 'attachment_backfill') {
+    return { includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true }
+  }
+  if (taskType === 'ai_analysis') {
+    return { includeAnalysis: true, includeInsight: true }
+  }
+  if (taskType === 'duplicate_backfill') {
+    return { includeDuplicate: true }
+  }
+  if (taskType === 'job_extraction' || taskType === 'ai_job_extraction') {
+    return { includeJobs: true, includeDuplicate: true }
+  }
+  return {}
+}
+
+const retryTaskRun = async (run) => {
+  const taskType = run?.task_type
+  if (!canRetryTask(taskType)) {
+    setFeedback('error', '这个任务类型暂时不支持一键重试')
+    return
+  }
+
+  retryingTaskId.value = run?.id || ''
+  const params = run?.params || {}
+  const refreshOptions = getRetryRefreshOptions(taskType)
+
+  try {
+    let response = null
+
+    if (taskType === 'manual_scrape' || taskType === 'scheduled_scrape') {
+      const payload = {
+        source_id: Number(params.source_id ?? scrapeForm.value.sourceId ?? 1),
+        max_pages: Number(params.max_pages ?? scrapeForm.value.maxPages ?? 5)
+      }
+      response = await adminApi.runScrape(payload)
+    } else if (taskType === 'attachment_backfill') {
+      const payload = {
+        limit: Number(params.limit ?? backfillForm.value.limit ?? 100)
+      }
+      if (params.source_id !== undefined && params.source_id !== null && params.source_id !== '') {
+        payload.source_id = Number(params.source_id)
+      }
+      response = await adminApi.backfillAttachments(payload)
+    } else if (taskType === 'duplicate_backfill') {
+      response = await adminApi.backfillDuplicates({
+        limit: Number(params.limit ?? duplicateBackfillForm.value.limit ?? 200)
+      })
+    } else if (taskType === 'ai_analysis') {
+      const payload = {
+        limit: Number(params.limit ?? analysisForm.value.limit ?? 100),
+        only_unanalyzed: Boolean(params.only_unanalyzed ?? analysisForm.value.onlyUnanalyzed ?? true)
+      }
+      if (params.source_id !== undefined && params.source_id !== null && params.source_id !== '') {
+        payload.source_id = Number(params.source_id)
+      }
+      response = await adminApi.runAiAnalysis(payload)
+    } else if (taskType === 'job_extraction' || taskType === 'ai_job_extraction') {
+      const payload = {
+        limit: Number(params.limit ?? jobsForm.value.limit ?? 100),
+        only_unindexed: params.only_unindexed ?? true,
+        use_ai: Boolean(params.use_ai ?? false)
+      }
+      if (params.source_id !== undefined && params.source_id !== null && params.source_id !== '') {
+        payload.source_id = Number(params.source_id)
+      }
+      response = await adminApi.runJobExtraction(payload)
+    }
+
+    setFeedback('success', response?.data?.message || '重试任务已提交')
+    await refreshAfterTask(refreshOptions)
+  } catch (error) {
+    if (shouldRefreshAfterTaskError(error)) {
+      await refreshAfterTask(refreshOptions)
+    }
+    setFeedback('error', getErrorMessage(error, '重试任务失败'))
+  } finally {
+    retryingTaskId.value = ''
+  }
+}
+
+const shouldRefreshAfterTaskError = (error) => {
+  const status = error?.response?.status
+  return error?.code === 'ECONNABORTED' || status === 409
 }
 
 const saveSchedulerConfig = async () => {
@@ -1117,8 +1624,11 @@ const runScrapeTask = async () => {
       max_pages: scrapeForm.value.maxPages
     })
     setFeedback('success', response.data.message)
-    await Promise.all([fetchTaskRuns(), fetchTaskSummary()])
+    await refreshAfterTask({ includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true })
   } catch (error) {
+    if (shouldRefreshAfterTaskError(error)) {
+      await refreshAfterTask({ includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true })
+    }
     setFeedback('error', getErrorMessage(error, '手动抓取失败'))
   } finally {
     scrapeRunning.value = false
@@ -1137,8 +1647,11 @@ const runBackfillTask = async () => {
 
     const response = await adminApi.backfillAttachments(payload)
     setFeedback('success', response.data.message)
-    await Promise.all([fetchTaskRuns(), fetchTaskSummary()])
+    await refreshAfterTask({ includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true })
   } catch (error) {
+    if (shouldRefreshAfterTaskError(error)) {
+      await refreshAfterTask({ includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true })
+    }
     setFeedback('error', getErrorMessage(error, '历史附件补处理失败'))
   } finally {
     backfillRunning.value = false
@@ -1158,11 +1671,32 @@ const runAiAnalysisTask = async () => {
 
     const response = await adminApi.runAiAnalysis(payload)
     setFeedback('success', response.data.message)
-    await Promise.all([fetchTaskRuns(), fetchTaskSummary(), fetchAnalysisSummary()])
+    await refreshAfterTask({ includeAnalysis: true, includeInsight: true })
   } catch (error) {
+    if (shouldRefreshAfterTaskError(error)) {
+      await refreshAfterTask({ includeAnalysis: true, includeInsight: true })
+    }
     setFeedback('error', getErrorMessage(error, 'AI 分析失败'))
   } finally {
     analysisRunning.value = false
+  }
+}
+
+const runDuplicateBackfillTask = async () => {
+  duplicateBackfillRunning.value = true
+  try {
+    const response = await adminApi.backfillDuplicates({
+      limit: duplicateBackfillForm.value.limit
+    })
+    setFeedback('success', response.data.message)
+    await refreshAfterTask({ includeDuplicate: true })
+  } catch (error) {
+    if (shouldRefreshAfterTaskError(error)) {
+      await refreshAfterTask({ includeDuplicate: true })
+    }
+    setFeedback('error', getErrorMessage(error, '历史去重补齐失败'))
+  } finally {
+    duplicateBackfillRunning.value = false
   }
 }
 
@@ -1180,8 +1714,11 @@ const runJobExtractionTask = async () => {
 
     const response = await adminApi.runJobExtraction(payload)
     setFeedback('success', response.data.message || '岗位级抽取任务已启动')
-    await Promise.all([fetchTaskRuns(), fetchTaskSummary(), fetchJobSummary()])
+    await refreshAfterTask({ includeJobs: true, includeDuplicate: true })
   } catch (error) {
+    if (shouldRefreshAfterTaskError(error)) {
+      await refreshAfterTask({ includeJobs: true, includeDuplicate: true })
+    }
     if (error?.response?.status === 404 || error?.response?.status === 405) {
       setFeedback('error', '后端还没开放岗位级抽取接口，请先完成后端对接')
     } else {
@@ -1200,6 +1737,7 @@ const getTaskTypeLabel = (taskType) => {
   const labels = {
     manual_scrape: '手动抓取最新数据',
     attachment_backfill: '补处理历史附件',
+    duplicate_backfill: '历史去重补齐',
     scheduled_scrape: '定时抓取',
     ai_analysis: 'OpenAI 分析',
     job_extraction: '岗位级抽取',
@@ -1216,9 +1754,48 @@ const getAnalysisProviderLabel = (provider) => {
 }
 const isRunningStatus = (status) => ['queued', 'pending', 'running', 'processing'].includes(status)
 
-const getTaskStatusClass = (status) => {
+const parseTimeToMs = (value) => {
+  if (!value) return null
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) ? time : null
+}
+
+const getTaskHeartbeatAt = (run) => run?.heartbeat_at || run?.heartbeatAt || run?.started_at || run?.startedAt || ''
+
+const getTaskProgress = (run) => {
+  const rawValue = Number(run?.progress)
+  if (Number.isFinite(rawValue)) {
+    return Math.max(0, Math.min(Math.round(rawValue), 100))
+  }
+  if (run?.status === 'success') return 100
+  if (run?.status === 'failed') return 100
+  return 0
+}
+
+const getDefaultTaskPhase = (run) => {
+  if (run?.status === 'success') return '执行完成'
+  if (run?.status === 'failed') return '执行失败'
+  if (run?.status === 'queued' || run?.status === 'pending') return '排队等待执行'
+  if (isRunningStatus(run?.status)) return '正在执行'
+  return ''
+}
+
+const isTaskPossiblyStuck = (run) => {
+  if (!isRunningStatus(run?.status)) return false
+  const heartbeatMs = parseTimeToMs(getTaskHeartbeatAt(run))
+  if (heartbeatMs === null) return false
+  return nowTs.value - heartbeatMs >= TASK_HEARTBEAT_STALE_MS
+}
+
+const getTaskStatusClass = (status, run) => {
   if (status === 'success') {
     return 'bg-emerald-100 text-emerald-700'
+  }
+  if (isTaskPossiblyStuck(run)) {
+    return 'bg-red-100 text-red-700'
+  }
+  if (status === 'queued' || status === 'pending') {
+    return 'bg-slate-100 text-slate-700'
   }
   if (isRunningStatus(status)) {
     return 'bg-amber-100 text-amber-700'
@@ -1226,8 +1803,10 @@ const getTaskStatusClass = (status) => {
   return 'bg-red-100 text-red-700'
 }
 
-const getTaskStatusLabel = (status) => {
-  if (status === 'success') return '成功'
+const getTaskStatusLabel = (status, run) => {
+  if (status === 'success') return '完成'
+  if (isTaskPossiblyStuck(run)) return '可能卡住'
+  if (status === 'queued' || status === 'pending') return '排队中'
   if (isRunningStatus(status)) return '运行中'
   return '失败'
 }
@@ -1303,23 +1882,35 @@ const getTaskFailureReason = (run) => {
   return candidates.find((item) => item) || ''
 }
 
-const formatDuration = (run) => {
-  const durationMs = run?.duration_ms
-  let normalized = Number(durationMs)
-
-  if (!Number.isFinite(normalized) && run?.started_at && run?.finished_at) {
-    normalized = new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()
-  }
-
+const formatDurationMs = (durationMs) => {
+  const normalized = Number(durationMs)
   if (!Number.isFinite(normalized) || normalized < 0) return '--'
 
-  if (normalized < 1000) return `${normalized}ms`
+  if (normalized < 1000) return `${Math.round(normalized)}ms`
   const seconds = Math.floor(normalized / 1000)
   if (seconds < 60) return `${seconds}秒`
   const minutes = Math.floor(seconds / 60)
   const restSeconds = seconds % 60
   return `${minutes}分${restSeconds}秒`
 }
+
+const getTaskElapsedMs = (run) => {
+  const durationMs = Number(run?.duration_ms)
+  if (Number.isFinite(durationMs) && durationMs >= 0) {
+    return durationMs
+  }
+
+  const startedMs = parseTimeToMs(run?.started_at || run?.startedAt)
+  if (startedMs === null) return null
+
+  const finishedMs = parseTimeToMs(run?.finished_at || run?.finishedAt)
+  const endMs = finishedMs === null ? nowTs.value : finishedMs
+  const elapsedMs = endMs - startedMs
+  return elapsedMs >= 0 ? elapsedMs : null
+}
+
+const formatDuration = (run) => formatDurationMs(getTaskElapsedMs(run))
+const formatRunningElapsed = (run) => formatDurationMs(getTaskElapsedMs(run))
 
 const isTaskExpanded = (taskId) => expandedTaskIds.value.includes(taskId)
 
@@ -1377,7 +1968,7 @@ const getErrorMessage = (error, fallback) => {
     return '后端执行任务失败了，请稍后再试'
   }
   if (error?.code === 'ECONNABORTED') {
-    return '请求超时了，任务可能还在跑，请稍后刷新记录'
+    return '请求超时了，任务可能还在后台继续跑，我已经帮你刷新了任务记录'
   }
   if (error?.response?.data?.detail) {
     return error.response.data.detail
@@ -1386,7 +1977,27 @@ const getErrorMessage = (error, fallback) => {
 }
 
 onMounted(async () => {
+  taskPollingTimerId.value = window.setInterval(async () => {
+    nowTs.value = Date.now()
+    if (backendRunningTasks.value.length === 0 || taskPollingInFlight.value) {
+      return
+    }
+    taskPollingInFlight.value = true
+    try {
+      await refreshTaskStatus()
+    } finally {
+      taskPollingInFlight.value = false
+    }
+  }, TASK_POLL_INTERVAL_MS)
+
   await fetchSources()
   await refreshOverview()
+})
+
+onUnmounted(() => {
+  if (taskPollingTimerId.value) {
+    window.clearInterval(taskPollingTimerId.value)
+    taskPollingTimerId.value = null
+  }
 })
 </script>

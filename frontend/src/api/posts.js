@@ -1,6 +1,7 @@
 import axios from 'axios'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || ''
+const LONG_RUNNING_TIMEOUT = 10 * 60 * 1000
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -73,19 +74,31 @@ export const adminApi = {
   },
 
   runScrape(payload = {}) {
-    return api.post('/api/admin/run-scrape', payload)
+    return api.post('/api/admin/run-scrape', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   backfillAttachments(payload = {}) {
-    return api.post('/api/admin/backfill-attachments', payload)
+    return api.post('/api/admin/backfill-attachments', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   getAnalysisSummary() {
     return api.get('/api/admin/analysis-summary')
   },
 
+  getInsightSummary() {
+    return api.get('/api/admin/insight-summary')
+  },
+
+  getDuplicateSummary() {
+    return api.get('/api/admin/duplicate-summary')
+  },
+
+  backfillDuplicates(payload = {}) {
+    return api.post('/api/admin/backfill-duplicates', payload, { timeout: LONG_RUNNING_TIMEOUT })
+  },
+
   runAiAnalysis(payload = {}) {
-    return api.post('/api/admin/run-ai-analysis', payload)
+    return api.post('/api/admin/run-ai-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   getJobSummary(params = {}) {
@@ -98,9 +111,9 @@ export const adminApi = {
 
   runJobExtraction(payload = {}) {
     return requestWithFallback([
-      () => api.post('/api/admin/run-job-extraction', payload),
-      () => api.post('/api/admin/run-ai-job-extraction', payload),
-      () => api.post('/api/admin/run-job-analysis', payload)
+      () => api.post('/api/admin/run-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
+      () => api.post('/api/admin/run-ai-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
+      () => api.post('/api/admin/run-job-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
     ])
   }
 }

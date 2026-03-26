@@ -5,6 +5,7 @@ from loguru import logger
 from src.scrapers.jiangsu_hrss import JiangsuHRSSScraper
 from src.services.ai_analysis_service import ensure_rule_analysis
 from src.services.attachment_service import ensure_attachments_processed
+from src.services.duplicate_service import refresh_duplicate_posts
 from src.services.filter_service import is_counselor_position
 from src.services.post_job_service import sync_post_jobs
 from src.database.models import Attachment, Post, Source, PostField
@@ -395,6 +396,7 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
     # 保存到数据库
     new_count = 0
     updated_count = 0
+    touched_post_ids: set[int] = set()
     for result in results:
         try:
             with db.begin_nested():
@@ -459,8 +461,10 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
 
                     if did_update:
                         updated_count += 1
+                        touched_post_ids.add(existing_post.id)
                     else:
                         logger.debug(f"记录已存在且有内容，跳过: {result['title']}")
+                        touched_post_ids.add(existing_post.id)
                     continue
 
                 is_match, confidence = is_counselor_position(result["title"], result.get("content", ""))
@@ -505,6 +509,7 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
                 ).filter(Post.id == post.id).first()
                 await sync_post_jobs(db, post, use_ai=False)
                 ensure_rule_analysis(db, post)
+                touched_post_ids.add(post.id)
 
                 new_count += 1
 
@@ -520,6 +525,11 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
 
     # 提交事务
     try:
+        duplicate_result = refresh_duplicate_posts(db, list(touched_post_ids))
+        logger.info(
+            f"重复治理完成: scanned={duplicate_result['scanned']} "
+            f"groups={duplicate_result['groups']} duplicates={duplicate_result['duplicates']}"
+        )
         db.commit()
         logger.success(f"保存完成，新增 {new_count} 条记录，更新 {updated_count} 条记录")
     except Exception as e:

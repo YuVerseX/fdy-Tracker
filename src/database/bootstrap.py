@@ -24,6 +24,26 @@ def ensure_post_compat_columns() -> None:
         alter_statements.append(
             "ALTER TABLE posts ADD COLUMN has_counselor_job BOOLEAN DEFAULT 0"
         )
+    if "duplicate_status" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE posts ADD COLUMN duplicate_status VARCHAR(20) DEFAULT 'none'"
+        )
+    if "duplicate_group_key" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE posts ADD COLUMN duplicate_group_key VARCHAR(120)"
+        )
+    if "primary_post_id" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE posts ADD COLUMN primary_post_id INTEGER"
+        )
+    if "duplicate_reason" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE posts ADD COLUMN duplicate_reason VARCHAR(80)"
+        )
+    if "duplicate_checked_at" not in existing_columns:
+        alter_statements.append(
+            "ALTER TABLE posts ADD COLUMN duplicate_checked_at DATETIME"
+        )
 
     if not alter_statements:
         return
@@ -36,6 +56,9 @@ def ensure_post_compat_columns() -> None:
         ))
         connection.execute(text(
             "UPDATE posts SET has_counselor_job = COALESCE(has_counselor_job, 0)"
+        ))
+        connection.execute(text(
+            "UPDATE posts SET duplicate_status = COALESCE(duplicate_status, 'none')"
         ))
     logger.info("posts 表兼容字段已补齐")
 
@@ -134,12 +157,33 @@ def initialize_database() -> None:
     seed_scheduler_config()
     db = SessionLocal()
     try:
-        from src.services.ai_analysis_service import backfill_rule_analyses
+        from src.services.ai_analysis_service import backfill_rule_analyses, backfill_rule_insights
+        from src.services.duplicate_service import backfill_duplicate_posts
+        from src.services.post_job_service import backfill_post_counselor_flags
 
         result = backfill_rule_analyses(db)
         if result["created"] or result["refreshed"]:
             logger.info(
                 f"已补齐规则分析：新增 {result['created']} 条，刷新 {result['refreshed']} 条"
+            )
+
+        insight_result = backfill_rule_insights(db)
+        if insight_result["created"] or insight_result["refreshed"]:
+            logger.info(
+                f"已补齐规则统计洞察：新增 {insight_result['created']} 条，刷新 {insight_result['refreshed']} 条"
+            )
+
+        counselor_result = backfill_post_counselor_flags(db)
+        if counselor_result["updated"]:
+            logger.info(
+                f"已补齐历史辅导员口径：修正 {counselor_result['updated']} 条，扫描 {counselor_result['scanned']} 条"
+            )
+
+        duplicate_result = backfill_duplicate_posts(db)
+        if duplicate_result["groups"] or duplicate_result["duplicates"]:
+            logger.info(
+                f"已补齐历史重复治理：重复组 {duplicate_result['groups']} 个，"
+                f"折叠记录 {duplicate_result['duplicates']} 条"
             )
     finally:
         db.close()

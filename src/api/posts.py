@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
+from sqlalchemy import not_, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 from src.database.database import get_db
@@ -12,11 +12,15 @@ from src.database.models import Post, PostAnalysis, PostField, PostJob, Source
 from src.scrapers.jiangsu_hrss import normalize_content_text
 from src.services.attachment_service import get_attachment_status
 from src.services.ai_analysis_service import serialize_post_analysis
+from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
 from src.services.post_job_service import (
+    COUNSELOR_RELATED_SCOPES,
     build_job_snapshot,
     count_displayable_counselor_jobs,
     count_displayable_jobs,
     filter_displayable_jobs,
+    get_post_counselor_state,
+    is_counselor_related_post,
     serialize_post_job,
 )
 
@@ -289,6 +293,25 @@ def build_safe_job_filter_subquery(condition):
     )
 
 
+def build_counselor_related_condition():
+    """统一“所有辅导员相关”筛选口径"""
+    return or_(
+        Post.is_counselor == True,
+        Post.has_counselor_job == True,
+        Post.counselor_scope.in_(COUNSELOR_RELATED_SCOPES),
+    )
+
+
+def apply_primary_post_filter(query):
+    """默认过滤从记录，只保留主记录和未归组记录。"""
+    return query.filter(
+        or_(
+            Post.duplicate_status.is_(None),
+            Post.duplicate_status != DUPLICATE_STATUS_DUPLICATE,
+        )
+    )
+
+
 def apply_gender_filter(query, gender: str):
     """性别筛选：字段 + 岗位 + 显式不限上下文联合命中"""
     normalized = (gender or "").strip()
@@ -371,6 +394,65 @@ def apply_location_filter(query, location: str):
     return query.filter(or_(Post.id.in_(field_subquery), Post.id.in_(job_subquery)))
 
 
+def apply_post_filters(
+    query,
+    *,
+    is_counselor: Optional[bool] = None,
+    province: Optional[str] = None,
+    search: Optional[str] = None,
+    gender: Optional[str] = None,
+    education: Optional[str] = None,
+    location: Optional[str] = None,
+    event_type: Optional[str] = None,
+    has_content: Optional[bool] = None,
+    counselor_scope: Optional[str] = None,
+    has_counselor_job: Optional[bool] = None,
+):
+    """给列表和统计摘要复用同一套筛选逻辑"""
+    if is_counselor is not None:
+        counselor_related_condition = build_counselor_related_condition()
+        query = query.filter(counselor_related_condition if is_counselor else not_(counselor_related_condition))
+
+    if province:
+        query = query.join(Source).filter(Source.province == province)
+
+    if search:
+        keyword = search.strip()
+        if keyword:
+            query = query.filter(
+                or_(
+                    Post.title.like(f"%{keyword}%"),
+                    Post.content.like(f"%{keyword}%")
+                )
+            )
+
+    if has_content is not None:
+        if has_content:
+            query = query.filter(Post.content.isnot(None), Post.content != "")
+        else:
+            query = query.filter(Post.content.is_(None) | (Post.content == ""))
+
+    if counselor_scope:
+        query = query.filter(Post.counselor_scope == counselor_scope)
+
+    if has_counselor_job is not None:
+        query = query.filter(Post.has_counselor_job == has_counselor_job)
+
+    if gender:
+        query = apply_gender_filter(query, gender)
+
+    if education:
+        query = apply_education_filter(query, education)
+
+    if location:
+        query = apply_location_filter(query, location)
+
+    if event_type:
+        query = query.join(PostAnalysis).filter(PostAnalysis.event_type == event_type)
+
+    return query
+
+
 @router.get("/posts")
 async def get_posts(
     skip: int = Query(0, ge=0, description="跳过记录数"),
@@ -411,88 +493,73 @@ async def get_posts(
         selectinload(Post.analysis),
         selectinload(Post.jobs)
     )
+    query = apply_primary_post_filter(query)
 
-    # 过滤条件
-    if is_counselor is not None:
-        query = query.filter(Post.is_counselor == is_counselor)
-
-    if province:
-        query = query.join(Source).filter(Source.province == province)
-
-    if search:
-        keyword = search.strip()
-        if keyword:
-            query = query.filter(
-                or_(
-                    Post.title.like(f"%{keyword}%"),
-                    Post.content.like(f"%{keyword}%")
-                )
-            )
-
-    if has_content is not None:
-        if has_content:
-            query = query.filter(Post.content.isnot(None), Post.content != "")
-        else:
-            query = query.filter(Post.content.is_(None) | (Post.content == ""))
-
-    if counselor_scope:
-        query = query.filter(Post.counselor_scope == counselor_scope)
-
-    if has_counselor_job is not None:
-        query = query.filter(Post.has_counselor_job == has_counselor_job)
-
-    # 结构化字段 / 岗位联合筛选
-    if gender:
-        query = apply_gender_filter(query, gender)
-
-    if education:
-        query = apply_education_filter(query, education)
-
-    if location:
-        query = apply_location_filter(query, location)
-
-    if event_type:
-        query = query.join(PostAnalysis).filter(PostAnalysis.event_type == event_type)
+    query = apply_post_filters(
+        query,
+        is_counselor=is_counselor,
+        province=province,
+        search=search,
+        gender=gender,
+        education=education,
+        location=location,
+        event_type=event_type,
+        has_content=has_content,
+        counselor_scope=counselor_scope,
+        has_counselor_job=has_counselor_job,
+    )
 
     # 排序和分页
     query = query.order_by(Post.publish_date.desc())
     total = query.count()
     posts = query.offset(skip).limit(limit).all()
 
-    return {
+    payload = {
         "total": total,
         "skip": skip,
         "limit": limit,
-        "items": [
-            {
-                "id": post.id,
-                "title": post.title,
-                "publish_date": post.publish_date.isoformat() if post.publish_date else None,
-                "url": post.canonical_url,
-                "is_counselor": post.is_counselor,
-                "counselor_scope": post.counselor_scope or "none",
-                "has_counselor_job": bool(post.has_counselor_job),
-                "confidence_score": post.confidence_score,
-                "has_content": bool(post.content),
-                "jobs_count": count_displayable_jobs(post.jobs),
-                "counselor_jobs_count": count_displayable_counselor_jobs(post.jobs),
-                "job_snapshot": build_job_snapshot(post.jobs),
-                "source": {
-                    "name": post.source.name,
-                    "province": post.source.province
-                },
-                "analysis": serialize_post_analysis(post.analysis),
-                "fields": build_display_field_map(post)
-            }
-            for post in posts
-        ]
+        "items": []
     }
+
+    for post in posts:
+        counselor_state = get_post_counselor_state(post)
+        payload["items"].append({
+            "id": post.id,
+            "title": post.title,
+            "publish_date": post.publish_date.isoformat() if post.publish_date else None,
+            "url": post.canonical_url,
+            "is_counselor": counselor_state["is_counselor_related"],
+            "counselor_scope": counselor_state["counselor_scope"],
+            "has_counselor_job": counselor_state["has_counselor_job"],
+            "confidence_score": post.confidence_score,
+            "has_content": bool(post.content),
+            "jobs_count": count_displayable_jobs(post.jobs),
+            "counselor_jobs_count": counselor_state["counselor_jobs_count"],
+            "job_snapshot": build_job_snapshot(post.jobs),
+            "source": {
+                "name": post.source.name,
+                "province": post.source.province
+            },
+            "analysis": serialize_post_analysis(post.analysis),
+            "fields": build_display_field_map(post)
+        })
+
+    return payload
 
 
 @router.get("/posts/stats/summary")
 async def get_posts_summary(
     days: int = Query(7, ge=1, le=30, description="近多少天新增"),
     is_counselor: Optional[bool] = Query(None, description="是否只统计辅导员相关"),
+    province: Optional[str] = Query(None, description="省份"),
+    search: Optional[str] = Query(None, description="标题或正文搜索"),
+    gender: Optional[str] = Query(None, description="性别筛选"),
+    education: Optional[str] = Query(None, description="学历筛选"),
+    location: Optional[str] = Query(None, description="工作地点筛选"),
+    event_type: Optional[str] = Query(None, description="事件类型筛选"),
+    has_content: Optional[bool] = Query(None, description="是否有详细内容"),
+    counselor_scope: Optional[str] = Query(None, description="辅导员范围筛选"),
+    has_counselor_job: Optional[bool] = Query(None, description="是否含辅导员岗位"),
     db: Session = Depends(get_db)
 ):
     """前台统计摘要"""
@@ -501,20 +568,31 @@ async def get_posts_summary(
         selectinload(Post.analysis),
         selectinload(Post.jobs)
     )
-    if is_counselor is not None:
-        query = query.filter(Post.is_counselor == is_counselor)
+    query = apply_primary_post_filter(query)
 
-    posts = query.all()
+    posts = apply_post_filters(
+        query,
+        is_counselor=is_counselor,
+        province=province,
+        search=search,
+        gender=gender,
+        education=education,
+        location=location,
+        event_type=event_type,
+        has_content=has_content,
+        counselor_scope=counselor_scope,
+        has_counselor_job=has_counselor_job,
+    ).all()
     total_posts = len(posts)
-    counselor_posts = sum(1 for post in posts if post.is_counselor)
+    counselor_posts = sum(1 for post in posts if is_counselor_related_post(post))
     analyzed_posts = sum(
         1 for post in posts
         if post.analysis and post.analysis.analysis_status == "success"
     )
     attachment_posts = sum(1 for post in posts if post.attachments)
     posts_with_jobs = sum(1 for post in posts if count_displayable_jobs(post.jobs) > 0)
-    dedicated_counselor_posts = sum(1 for post in posts if (post.counselor_scope or "none") == "dedicated")
-    contains_counselor_posts = sum(1 for post in posts if (post.counselor_scope or "none") == "contains")
+    dedicated_counselor_posts = sum(1 for post in posts if get_post_counselor_state(post)["counselor_scope"] == "dedicated")
+    contains_counselor_posts = sum(1 for post in posts if get_post_counselor_state(post)["counselor_scope"] == "contains")
     total_jobs = sum(count_displayable_jobs(post.jobs) for post in posts)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
@@ -581,6 +659,19 @@ async def get_post_detail(
     if not post:
         raise HTTPException(status_code=404, detail="招聘信息不存在")
 
+    if post.duplicate_status == DUPLICATE_STATUS_DUPLICATE and post.primary_post_id:
+        primary_post = db.query(Post).options(
+            selectinload(Post.source),
+            selectinload(Post.fields),
+            selectinload(Post.attachments),
+            selectinload(Post.analysis),
+            selectinload(Post.jobs)
+        ).filter(Post.id == post.primary_post_id).first()
+        if primary_post:
+            post = primary_post
+
+    counselor_state = get_post_counselor_state(post)
+
     return {
         "id": post.id,
         "title": post.title,
@@ -588,12 +679,12 @@ async def get_post_detail(
         "publish_date": post.publish_date.isoformat() if post.publish_date else None,
         "canonical_url": post.canonical_url,
         "original_url": post.original_url,
-        "is_counselor": post.is_counselor,
-        "counselor_scope": post.counselor_scope or "none",
-        "has_counselor_job": bool(post.has_counselor_job),
+        "is_counselor": counselor_state["is_counselor_related"],
+        "counselor_scope": counselor_state["counselor_scope"],
+        "has_counselor_job": counselor_state["has_counselor_job"],
         "confidence_score": post.confidence_score,
         "jobs_count": count_displayable_jobs(post.jobs),
-        "counselor_jobs_count": count_displayable_counselor_jobs(post.jobs),
+        "counselor_jobs_count": counselor_state["counselor_jobs_count"],
         "job_snapshot": build_job_snapshot(post.jobs),
         "scraped_at": post.scraped_at.isoformat() if post.scraped_at else None,
         "source": {

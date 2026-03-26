@@ -1,4 +1,7 @@
 """定时任务"""
+import asyncio
+from contextlib import suppress
+
 from sqlalchemy import inspect
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -6,7 +9,12 @@ from loguru import logger
 from src.config import settings
 from src.database.database import SessionLocal, engine
 from src.database.models import SchedulerConfig, Source
-from src.services.admin_task_service import record_task_run, start_task_run
+from src.services.admin_task_service import (
+    TaskAlreadyRunningError,
+    record_task_run,
+    start_task_run,
+    update_task_run,
+)
 from src.services.scraper_service import scrape_and_save
 
 # 创建调度器
@@ -14,6 +22,48 @@ scheduler = AsyncIOScheduler()
 SCRAPE_JOB_ID = "scrape_job"
 DEFAULT_SOURCE_ID = 1
 DEFAULT_MAX_PAGES = 5
+SCRAPE_TASK_TYPES = ["manual_scrape", "scheduled_scrape", "duplicate_backfill"]
+
+
+async def _run_with_task_heartbeat(
+    *,
+    task_id: str,
+    phase: str,
+    progress: int,
+    awaitable,
+    heartbeat_interval_seconds: int = 20,
+):
+    """定时抓取长任务心跳刷新"""
+    stop_event = asyncio.Event()
+
+    async def _heartbeat_loop():
+        while True:
+            if stop_event.is_set():
+                break
+            update_task_run(
+                task_id=task_id,
+                status="running",
+                phase=phase,
+                progress=progress,
+            )
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=heartbeat_interval_seconds)
+            except asyncio.TimeoutError:
+                continue
+
+    update_task_run(
+        task_id=task_id,
+        status="running",
+        phase=phase,
+        progress=progress,
+    )
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+    try:
+        return await awaitable
+    finally:
+        stop_event.set()
+        with suppress(Exception):
+            await heartbeat_task
 
 
 def _build_default_scheduler_values() -> dict:
@@ -146,15 +196,34 @@ async def scheduled_scrape():
         if not is_scheduler_ready(db, config=config):
             return
 
-        running_task = start_task_run(
-            task_type="scheduled_scrape",
-            summary="定时抓取进行中",
-            params=params
+        try:
+            running_task = start_task_run(
+                task_type="scheduled_scrape",
+                summary="定时抓取进行中",
+                params=params,
+                conflict_task_types=SCRAPE_TASK_TYPES,
+            )
+        except TaskAlreadyRunningError as exc:
+            logger.info(
+                "已有抓取任务运行中，跳过本轮定时抓取: "
+                f"task_id={exc.running_task.get('id')} task_type={exc.running_task.get('task_type')}"
+            )
+            return
+        update_task_run(
+            task_id=running_task["id"],
+            status="running",
+            phase="定时抓取启动中",
+            progress=10,
         )
-        count = await scrape_and_save(
-            db,
-            source_id=config.default_source_id,
-            max_pages=config.default_max_pages
+        count = await _run_with_task_heartbeat(
+            task_id=running_task["id"],
+            phase="定时抓取执行中",
+            progress=60,
+            awaitable=scrape_and_save(
+                db,
+                source_id=config.default_source_id,
+                max_pages=config.default_max_pages
+            ),
         )
         if count > 0:
             logger.success(f"定时抓取完成，新增或更新 {count} 条记录")
@@ -162,6 +231,12 @@ async def scheduled_scrape():
         else:
             logger.info("定时抓取完成，没有新增数据")
             summary = "定时抓取完成，没有新增数据"
+        update_task_run(
+            task_id=running_task["id"],
+            status="running",
+            phase="定时抓取收尾中",
+            progress=90,
+        )
 
         record_task_run(
             task_type="scheduled_scrape",
@@ -173,7 +248,9 @@ async def scheduled_scrape():
             },
             params=params,
             task_id=running_task["id"],
-            started_at=running_task.get("started_at")
+            started_at=running_task.get("started_at"),
+            phase="定时抓取完成",
+            progress=100,
         )
     except Exception as e:
         logger.error(f"定时抓取失败: {e}")
@@ -188,7 +265,9 @@ async def scheduled_scrape():
                 },
                 params=params,
                 task_id=running_task["id"],
-                started_at=running_task.get("started_at")
+                started_at=running_task.get("started_at"),
+                phase="定时抓取失败",
+                progress=100,
             )
     finally:
         db.close()

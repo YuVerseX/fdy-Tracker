@@ -50,6 +50,11 @@ class Post(Base):
     publish_date = Column(DateTime, index=True, comment="发布日期")
     canonical_url = Column(String(1000), unique=True, nullable=False, comment="规范化URL")
     original_url = Column(String(1000), comment="原始URL")
+    duplicate_status = Column(String(20), default="none", nullable=False, index=True, comment="去重状态：none/primary/duplicate")
+    duplicate_group_key = Column(String(120), index=True, comment="重复组 key")
+    primary_post_id = Column(Integer, ForeignKey("posts.id"), comment="主记录 ID")
+    duplicate_reason = Column(String(80), index=True, comment="重复原因")
+    duplicate_checked_at = Column(DateTime, comment="最近一次去重检查时间")
 
     # 过滤相关
     is_counselor = Column(Boolean, default=False, index=True, comment="是否为辅导员岗位")
@@ -64,9 +69,11 @@ class Post(Base):
 
     # 关系
     source = relationship("Source", back_populates="posts")
+    primary_post = relationship("Post", remote_side=[id], backref="duplicate_posts", foreign_keys=[primary_post_id])
     fields = relationship("PostField", back_populates="post", cascade="all, delete-orphan")
     attachments = relationship("Attachment", back_populates="post", cascade="all, delete-orphan")
     analysis = relationship("PostAnalysis", back_populates="post", uselist=False, cascade="all, delete-orphan")
+    insight = relationship("PostInsight", back_populates="post", uselist=False, cascade="all, delete-orphan")
     jobs = relationship("PostJob", back_populates="post", cascade="all, delete-orphan")
 
 
@@ -151,3 +158,35 @@ class PostJob(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), comment="更新时间")
 
     post = relationship("Post", back_populates="jobs")
+
+
+class PostInsight(Base):
+    """帖子 AI 统计字段表"""
+    __tablename__ = "post_insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(Integer, ForeignKey("posts.id"), nullable=False, unique=True, comment="招聘信息ID")
+    insight_status = Column(String(50), default="pending", nullable=False, index=True, comment="统计抽取状态")
+    insight_provider = Column(String(50), comment="统计提供方")
+    model_name = Column(String(100), comment="统计模型")
+    prompt_version = Column(String(50), comment="提示词版本")
+    recruitment_count_total = Column(Integer, comment="总招聘人数")
+    counselor_recruitment_count = Column(Integer, comment="辅导员招聘人数")
+    degree_floor = Column(String(50), index=True, comment="学历下限")
+    city_list_json = Column(Text, comment="城市列表 JSON")
+    gender_restriction = Column(String(50), index=True, comment="性别限制")
+    political_status_required = Column(String(100), comment="政治面貌要求")
+    deadline_text = Column(String(255), comment="截止时间原文")
+    deadline_date = Column(String(20), index=True, comment="截止日期")
+    deadline_status = Column(String(50), index=True, comment="截止状态")
+    has_written_exam = Column(Boolean, comment="是否包含笔试")
+    has_interview = Column(Boolean, comment="是否包含面试")
+    has_attachment_job_table = Column(Boolean, comment="是否有附件岗位表")
+    evidence_summary = Column(Text, comment="统计依据摘要")
+    raw_result_json = Column(Text, comment="原始统计结果 JSON")
+    error_message = Column(Text, comment="统计失败原因")
+    analyzed_at = Column(DateTime, comment="统计完成时间")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="创建时间")
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), comment="更新时间")
+
+    post = relationship("Post", back_populates="insight")

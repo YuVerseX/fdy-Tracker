@@ -75,7 +75,7 @@
                 type="text"
                 placeholder="搜索招聘信息..."
                 class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-600 focus:border-transparent transition-all duration-200"
-                @input="handleSearch"
+                @input="handleSearchInput"
               />
             </div>
 
@@ -106,7 +106,7 @@
 
             <!-- Search Button -->
             <button
-              @click="fetchPosts"
+              @click="handleManualSearch"
               class="px-6 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 transition-colors duration-200 cursor-pointer"
             >
               搜索
@@ -154,7 +154,7 @@
                   v-model="filters.location"
                   type="text"
                   placeholder="输入城市或地区"
-                  @input="handleFilter"
+                  @input="handleLocationInput"
                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-600 focus:border-transparent"
                 />
               </div>
@@ -385,7 +385,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { postsApi, adminApi } from '../api/posts'
 
@@ -411,6 +411,12 @@ const scopeTotals = ref({
   contains: 0,
   all: 0
 })
+const FETCH_DEBOUNCE_MS = 400
+const FILTER_DEBOUNCE_FIELDS = new Set(['search', 'location'])
+let fetchDebounceTimer = null
+let statsDebounceTimer = null
+let postsRequestSeq = 0
+let statsRequestSeq = 0
 const statsSummary = ref({
   overview: {
     total_posts: 0,
@@ -512,52 +518,124 @@ const buildPostParams = ({ scope = filters.value.counselorScope, skip = 0, limit
   return params
 }
 
+const triggerFetch = ({ debounce = false } = {}) => {
+  if (fetchDebounceTimer) {
+    clearTimeout(fetchDebounceTimer)
+    fetchDebounceTimer = null
+  }
+
+  if (!debounce) {
+    fetchPosts()
+    return
+  }
+
+  fetchDebounceTimer = setTimeout(() => {
+    fetchDebounceTimer = null
+    fetchPosts()
+  }, FETCH_DEBOUNCE_MS)
+}
+
+const triggerStatsFetch = ({ debounce = false } = {}) => {
+  if (statsDebounceTimer) {
+    clearTimeout(statsDebounceTimer)
+    statsDebounceTimer = null
+  }
+
+  if (!debounce) {
+    fetchStatsSummary()
+    return
+  }
+
+  statsDebounceTimer = setTimeout(() => {
+    statsDebounceTimer = null
+    fetchStatsSummary()
+  }, FETCH_DEBOUNCE_MS)
+}
+
 const fetchPosts = async () => {
+  const requestId = ++postsRequestSeq
   loading.value = true
   error.value = null
 
   try {
-    const [response, anyResponse, dedicatedResponse, containsResponse, allResponse] = await Promise.all([
-      postsApi.getPosts(
-        buildPostParams({
-          scope: filters.value.counselorScope,
-          skip: (currentPage.value - 1) * pageSize,
-          limit: pageSize
-        })
-      ),
-      postsApi.getPosts(buildPostParams({ scope: 'any', limit: 1 })),
-      postsApi.getPosts(buildPostParams({ scope: 'dedicated', limit: 1 })),
-      postsApi.getPosts(buildPostParams({ scope: 'contains', limit: 1 })),
-      postsApi.getPosts(buildPostParams({ scope: 'all', limit: 1 }))
-    ])
+    const response = await postsApi.getPosts(
+      buildPostParams({
+        scope: filters.value.counselorScope,
+        skip: (currentPage.value - 1) * pageSize,
+        limit: pageSize
+      })
+    )
+
+    if (requestId !== postsRequestSeq) return
 
     posts.value = response.data.items || []
 
     const total = response.data.total ?? 0
     totalMatchedPosts.value = total
     totalPages.value = Math.max(1, Math.ceil(total / pageSize))
-    scopeTotals.value = {
-      any: anyResponse.data.total ?? 0,
-      dedicated: dedicatedResponse.data.total ?? 0,
-      contains: containsResponse.data.total ?? 0,
-      all: allResponse.data.total ?? 0
+
+    const scopeKeys = ['any', 'dedicated', 'contains', 'all']
+    const totalResponses = await Promise.allSettled(
+      scopeKeys.map((scope) => postsApi.getPosts(buildPostParams({ scope, limit: 1 })))
+    )
+
+    if (requestId !== postsRequestSeq) return
+
+    const nextScopeTotals = { ...scopeTotals.value }
+    let totalErrors = 0
+
+    totalResponses.forEach((result, index) => {
+      const scope = scopeKeys[index]
+      if (result.status === 'fulfilled') {
+        nextScopeTotals[scope] = result.value?.data?.total ?? 0
+      } else {
+        totalErrors += 1
+      }
+    })
+
+    scopeTotals.value = nextScopeTotals
+
+    if (totalErrors > 0) {
+      console.warn(`部分 totals 获取失败：${totalErrors}/${scopeKeys.length}`)
     }
   } catch (err) {
+    if (requestId !== postsRequestSeq) return
     error.value = getErrorMessage(err, '获取招聘信息失败')
     console.error('Error fetching posts:', err)
   } finally {
-    loading.value = false
+    if (requestId === postsRequestSeq) {
+      loading.value = false
+    }
   }
 }
 
 const handleSearch = () => {
   currentPage.value = 1
-  fetchPosts()
+  triggerFetch({ debounce: true })
+  triggerStatsFetch({ debounce: true })
 }
 
-const handleFilter = () => {
+const handleSearchInput = () => {
+  handleSearch()
+}
+
+const handleLocationInput = () => {
   currentPage.value = 1
-  fetchPosts()
+  triggerFetch({ debounce: true })
+  triggerStatsFetch({ debounce: true })
+}
+
+const handleFilter = (changedField = '') => {
+  currentPage.value = 1
+  const shouldDebounce = FILTER_DEBOUNCE_FIELDS.has(changedField)
+  triggerFetch({ debounce: shouldDebounce })
+  triggerStatsFetch({ debounce: shouldDebounce })
+}
+
+const handleManualSearch = () => {
+  currentPage.value = 1
+  triggerFetch({ debounce: false })
+  triggerStatsFetch({ debounce: false })
 }
 
 const clearFilters = () => {
@@ -612,11 +690,24 @@ const fetchLatestSuccessTask = async () => {
   freshnessLoading.value = false
 }
 
+const buildStatsParams = () => {
+  const params = { days: 7 }
+  applySharedFilters(params)
+  applyCounselorScopeFilter(params, filters.value.counselorScope)
+  delete params.event_type
+  delete params.skip
+  delete params.limit
+  return params
+}
+
 const fetchStatsSummary = async () => {
+  const requestId = ++statsRequestSeq
   try {
-    const response = await postsApi.getStatsSummary({ days: 7 })
+    const response = await postsApi.getStatsSummary(buildStatsParams())
+    if (requestId !== statsRequestSeq) return
     statsSummary.value = response.data || statsSummary.value
   } catch (err) {
+    if (requestId !== statsRequestSeq) return
     console.warn('获取统计摘要失败:', err)
   }
 }
@@ -666,7 +757,7 @@ const normalizeCounselorScope = (scope, isCounselor) => {
   if (normalizedScope && normalizedScope !== 'none') {
     return normalizedScope
   }
-  return isCounselor ? 'dedicated' : ''
+  return isCounselor ? 'related' : ''
 }
 
 const getCounselorScope = (post) => {
@@ -849,6 +940,17 @@ onMounted(() => {
   fetchPosts()
   fetchLatestSuccessTask()
   fetchStatsSummary()
+})
+
+onBeforeUnmount(() => {
+  if (fetchDebounceTimer) {
+    clearTimeout(fetchDebounceTimer)
+    fetchDebounceTimer = null
+  }
+  if (statsDebounceTimer) {
+    clearTimeout(statsDebounceTimer)
+    statsDebounceTimer = null
+  }
 })
 </script>
 

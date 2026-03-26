@@ -12,6 +12,7 @@ from src.services.attachment_service import (
     get_attachment_storage_path,
     parse_attachment_file,
     read_attachment_jobs,
+    resolve_attachment_file_type,
     write_attachment_parse_result,
 )
 
@@ -75,6 +76,16 @@ class AttachmentServiceTestCase(unittest.TestCase):
 
         self.assertEqual(payload["jobs"][0]["job_name"], "专职辅导员")
         self.assertEqual(payload["jobs"][0]["education_requirement"], "硕士")
+
+    def test_build_attachment_parse_payload_should_fallback_from_xls_to_xlsx_reader(self):
+        file_path = self.temp_path / "jobs.xls"
+        build_excel_file(file_path)
+
+        payload = build_attachment_parse_payload(str(file_path), "xls")
+
+        self.assertEqual(payload["file_type"], "xlsx")
+        self.assertEqual(payload["jobs"][0]["job_name"], "专职辅导员")
+        self.assertEqual(payload["jobs"][0]["location"], "南京")
 
     def test_parse_attachment_file_should_extract_target_fields_from_pdf(self):
         file_path = self.temp_path / "jobs.pdf"
@@ -167,6 +178,25 @@ class AttachmentServiceTestCase(unittest.TestCase):
 
         self.assertEqual(jobs[0]["job_name"], "专职辅导员")
 
+    def test_read_attachment_jobs_should_reparse_when_sidecar_file_type_conflicts(self):
+        file_path = self.temp_path / "jobs.xlsx"
+        build_excel_file(file_path)
+        write_attachment_parse_result(
+            file_path,
+            {
+                "filename": "jobs.xlsx",
+                "file_type": "xls",
+                "parser": "table",
+                "text_length": 0,
+                "fields": [],
+                "jobs": []
+            }
+        )
+
+        jobs = read_attachment_jobs(file_path, "xls")
+
+        self.assertEqual(jobs[0]["job_name"], "专职辅导员")
+
     def test_get_attachment_status_should_mark_pdf_as_waiting_parse(self):
         file_path = self.temp_path / "jobs.pdf"
         file_path.write_bytes(b"%PDF-1.4 fake")
@@ -209,6 +239,64 @@ class AttachmentServiceTestCase(unittest.TestCase):
         self.assertEqual(status["parse_status"], "待解析")
         self.assertEqual(status["parsed_fields_count"], 1)
 
+    def test_get_attachment_status_should_mark_conflicting_sidecar_file_type_as_waiting_parse(self):
+        file_path = self.temp_path / "jobs.xlsx"
+        build_excel_file(file_path)
+        write_attachment_parse_result(
+            file_path,
+            {
+                "filename": "jobs.xlsx",
+                "file_type": "xls",
+                "parser": "table",
+                "text_length": 0,
+                "fields": [
+                    {"field_name": "学历要求", "field_value": "硕士"}
+                ],
+                "jobs": []
+            }
+        )
+
+        attachment = SimpleNamespace(
+            file_type="xls",
+            is_downloaded=True,
+            local_path=str(file_path)
+        )
+
+        status = get_attachment_status(attachment)
+
+        self.assertEqual(status["parse_status"], "待解析")
+        self.assertEqual(status["parsed_fields_count"], 1)
+
+    def test_get_attachment_status_should_keep_parsed_when_content_and_sidecar_are_consistent(self):
+        file_path = self.temp_path / "jobs.xls"
+        build_excel_file(file_path)
+        write_attachment_parse_result(
+            file_path,
+            {
+                "filename": "jobs.xls",
+                "file_type": "xlsx",
+                "parser": "table",
+                "text_length": 0,
+                "fields": [
+                    {"field_name": "学历要求", "field_value": "硕士"}
+                ],
+                "jobs": [
+                    {"job_name": "专职辅导员"}
+                ]
+            }
+        )
+
+        attachment = SimpleNamespace(
+            file_type="xls",
+            is_downloaded=True,
+            local_path=str(file_path)
+        )
+
+        status = get_attachment_status(attachment)
+
+        self.assertEqual(status["parse_status"], "已解析")
+        self.assertEqual(status["parsed_fields_count"], 1)
+
     def test_get_attachment_storage_path_should_prefer_filename_suffix(self):
         with patch(
             "src.services.attachment_service.settings",
@@ -221,6 +309,38 @@ class AttachmentServiceTestCase(unittest.TestCase):
             )
 
         self.assertEqual(path.suffix, ".xlsx")
+
+    def test_resolve_attachment_file_type_should_prefer_local_suffix_when_parseable(self):
+        file_path = self.temp_path / "jobs.xlsx"
+        build_excel_file(file_path)
+
+        resolved_type = resolve_attachment_file_type(file_path, "xls")
+
+        self.assertEqual(resolved_type, "xlsx")
+
+    def test_resolve_attachment_file_type_should_prefer_content_for_mislabeled_excel(self):
+        file_path = self.temp_path / "jobs.xls"
+        build_excel_file(file_path)
+
+        resolved_type = resolve_attachment_file_type(file_path, "xls")
+
+        self.assertEqual(resolved_type, "xlsx")
+
+    def test_resolve_attachment_file_type_should_not_treat_doc_ole_file_as_excel(self):
+        file_path = self.temp_path / "template.doc"
+        file_path.write_bytes(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1fake-doc-content")
+
+        resolved_type = resolve_attachment_file_type(file_path, "xls")
+
+        self.assertEqual(resolved_type, "doc")
+
+    def test_resolve_attachment_file_type_should_allow_jsp_attachment_to_correct_to_xlsx(self):
+        file_path = self.temp_path / "download.jsp"
+        build_excel_file(file_path)
+
+        resolved_type = resolve_attachment_file_type(file_path, "xls")
+
+        self.assertEqual(resolved_type, "xlsx")
 
 
 if __name__ == "__main__":

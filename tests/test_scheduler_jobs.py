@@ -1,8 +1,9 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.scheduler import jobs as scheduler_jobs
+from src.services.admin_task_service import TaskAlreadyRunningError
 
 
 class SchedulerJobsTestCase(unittest.TestCase):
@@ -68,6 +69,39 @@ class SchedulerJobsTestCase(unittest.TestCase):
         db.commit.assert_called_once()
         db.refresh.assert_called_once_with(config)
         mocked_sync_scheduler_job.assert_called_once_with(config)
+
+
+class SchedulerJobsAsyncTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_scheduled_scrape_should_skip_when_scrape_task_is_already_running(self):
+        db = MagicMock()
+        config = SimpleNamespace(
+            enabled=True,
+            default_source_id=1,
+            default_max_pages=3,
+        )
+
+        with patch("src.scheduler.jobs.SessionLocal", return_value=db), patch(
+            "src.scheduler.jobs.load_scheduler_config",
+            return_value=config,
+        ), patch(
+            "src.scheduler.jobs.is_scheduler_ready",
+            return_value=True,
+        ), patch(
+            "src.scheduler.jobs.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="scheduled_scrape",
+                running_task={
+                    "id": "running-1",
+                    "task_type": "manual_scrape",
+                    "status": "running",
+                },
+                conflict_task_types=["manual_scrape", "scheduled_scrape"],
+            ),
+        ), patch("src.scheduler.jobs.scrape_and_save", new_callable=AsyncMock) as mocked_scrape:
+            await scheduler_jobs.scheduled_scrape()
+
+        mocked_scrape.assert_not_called()
+        db.close.assert_called_once()
 
 
 if __name__ == "__main__":

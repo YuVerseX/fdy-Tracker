@@ -14,7 +14,7 @@
 
 - 多数据源能力还没落地
 - 结果公示类帖子的岗位口径还在持续收口
-- 没有登录鉴权、CI、监控，部署链路还缺 HTTPS 和长期运行验证
+- 没有登录鉴权、监控，部署链路还缺 HTTPS 和长期运行验证
 
 ## 当前能力
 
@@ -75,7 +75,19 @@ npm run dev
 
 ## 常用命令
 
-### 后端回归
+### 后端核心回归（开发/提 PR）
+
+```bash
+python -m unittest -v tests.test_api tests.test_admin_api tests.test_admin_task_service tests.test_scraper_service tests.test_attachment_service tests.test_duplicate_service tests.test_post_job_service tests.test_scheduler_jobs tests.test_parser tests.test_filter_service
+```
+
+### AI 专项回归（改 AI 逻辑时）
+
+```bash
+python -m unittest -v tests.test_ai_analysis_service tests.test_ai_insight_service
+```
+
+### 后端完整回归（发版/部署前）
 
 ```bash
 python -m unittest discover -s tests -v
@@ -144,7 +156,10 @@ fdy-Tracker/
 - `README.md`：项目总入口，以当前实现为准
 - `STATUS.md`：当前状态、风险和下一步
 - `CONTRIBUTING.md`：本地开发和提交流程
+- `SECURITY.md`：安全问题上报和密钥管理基线
 - `docs/README.md`：文档导航
+- `docs/release-checklist.md`：发布前检查清单
+- `docs/test-strategy.md`：测试分层和执行口径
 - `docs/deploy-vps-docker.md`：单机 VPS Docker 部署说明
 - `docs/deploy-1panel-ghcr.md`：1Panel / GHCR 镜像部署说明
 - `docs/archive/`：历史规划和历史整理记录
@@ -168,4 +183,5 @@ fdy-Tracker/
 
 - 协议：`MIT`
 - 欢迎提 Issue / PR，提交流程见 `CONTRIBUTING.md`
+- 已补基础 CI（后端测试 + 前端构建），PR 默认走自动检查
 - `data/`、`logs/`、构建产物、运行日志、临时文件默认不进仓库

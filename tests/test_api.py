@@ -123,7 +123,24 @@ class PostsApiTestCase(unittest.TestCase):
                 counselor_scope="none",
                 has_counselor_job=False,
             )
-            db.add_all([first_post, second_post, third_post, fourth_post, fifth_post])
+            duplicate_post = Post(
+                id=99,
+                source_id=source.id,
+                title="南京大学专职辅导员招聘公告（重复）",
+                content="南京大学现招聘专职辅导员，工作地点：南京市",
+                publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/99",
+                original_url="https://example.com/posts/99",
+                is_counselor=True,
+                confidence_score=0.9,
+                counselor_scope="dedicated",
+                has_counselor_job=True,
+                duplicate_status="duplicate",
+                duplicate_group_key="duplicate:1:1",
+                primary_post_id=1,
+                duplicate_reason="source_date_title",
+            )
+            db.add_all([first_post, second_post, third_post, fourth_post, fifth_post, duplicate_post])
             db.flush()
 
             db.add_all([
@@ -426,6 +443,22 @@ class PostsApiTestCase(unittest.TestCase):
         self.assertEqual(payload["jobs_count"], 1)
         self.assertEqual(payload["job_items"][0]["job_name"], "专职辅导员")
 
+    def test_get_posts_should_hide_duplicate_records_by_default(self):
+        response = self.client.get("/api/posts")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        ids = {item["id"] for item in payload["items"]}
+        self.assertNotIn(99, ids)
+
+    def test_get_post_detail_should_resolve_duplicate_record_to_primary(self):
+        response = self.client.get("/api/posts/99")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["id"], 1)
+        self.assertEqual(payload["canonical_url"], "https://example.com/posts/1")
+
     def test_get_post_detail_returns_attachments(self):
         response = self.client.get("/api/posts/1")
 
@@ -599,6 +632,48 @@ class PostsApiTestCase(unittest.TestCase):
         self.assertEqual(payload["days"], 7)
         self.assertEqual(payload["new_in_days"], 0)
         self.assertAlmostEqual(payload["attachment_ratio"], 0.2)
+
+    def test_get_posts_summary_should_support_same_filters_as_list(self):
+        response = self.client.get(
+            "/api/posts/stats/summary",
+            params={"is_counselor": "true", "search": "南京大学"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["overview"]["total_posts"], 1)
+        self.assertEqual(payload["overview"]["counselor_posts"], 1)
+        distribution = {
+            item["event_type"]: item["count"]
+            for item in payload["event_type_distribution"]
+        }
+        self.assertEqual(distribution["招聘公告"], 1)
+
+    def test_get_posts_and_summary_should_stay_consistent_under_combined_filters(self):
+        params = {
+            "event_type": "招聘公告",
+            "counselor_scope": "dedicated",
+            "has_counselor_job": "true",
+        }
+
+        list_response = self.client.get("/api/posts", params=params)
+        summary_response = self.client.get("/api/posts/stats/summary", params=params)
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(summary_response.status_code, 200)
+
+        list_payload = list_response.json()
+        summary_payload = summary_response.json()
+
+        self.assertEqual(list_payload["total"], 1)
+        self.assertEqual(list_payload["items"][0]["id"], 1)
+        self.assertEqual(summary_payload["overview"]["total_posts"], 1)
+        self.assertEqual(summary_payload["overview"]["counselor_posts"], 1)
+        distribution = {
+            item["event_type"]: item["count"]
+            for item in summary_payload["event_type_distribution"]
+        }
+        self.assertEqual(distribution["招聘公告"], 1)
 
 
 if __name__ == "__main__":

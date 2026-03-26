@@ -155,6 +155,22 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_post_jobs[0].job_name, "专职辅导员")
         self.assertEqual(saved_posts[0].counselor_scope, "dedicated")
 
+    async def test_scrape_and_save_should_mark_duplicate_posts_after_save(self):
+        with patch("src.services.scraper_service.create_scraper", return_value=FakeScraper()), patch(
+            "src.services.attachment_service.get_attachment_storage_path",
+            side_effect=self.build_attachment_storage_path
+        ), patch(
+            "src.services.scraper_service.refresh_duplicate_posts",
+            return_value={"scanned": 2, "groups": 1, "duplicates": 1},
+        ) as mocked_refresh:
+            saved = await scrape_and_save(self.db, source_id=1, max_pages=3)
+
+        self.assertGreaterEqual(saved, 1)
+        mocked_refresh.assert_called_once()
+        called_post_ids = mocked_refresh.call_args.args[1]
+        self.assertIsInstance(called_post_ids, list)
+        self.assertGreaterEqual(len(called_post_ids), 1)
+
     async def test_scrape_and_save_should_sync_attachments_for_existing_post(self):
         existing_post = Post(
             source_id=1,

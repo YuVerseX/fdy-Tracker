@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from unittest.mock import MagicMock
 from datetime import datetime, timezone
 
@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api import admin as admin_api
+from src.services.admin_task_service import TaskAlreadyRunningError
 
 
 class AdminApiTestCase(unittest.TestCase):
@@ -201,8 +202,20 @@ class AdminApiTestCase(unittest.TestCase):
                     "openai_analyzed_posts": 0,
                     "openai_pending_posts": 10
                 },
+                "insight_overview": {
+                    "insight_posts": 5,
+                    "pending_insight_posts": 5,
+                    "openai_insight_posts": 0,
+                    "rule_insight_posts": 5,
+                    "posts_with_deadline": 3,
+                    "posts_with_written_exam": 2,
+                    "posts_with_interview": 1,
+                    "posts_with_attachment_job_table": 4,
+                },
                 "event_type_distribution": [{"event_type": "招聘公告", "count": 4}],
-                "provider_distribution": [{"analysis_provider": "rule", "count": 6}]
+                "provider_distribution": [{"analysis_provider": "rule", "count": 6}],
+                "degree_floor_distribution": [{"degree_floor": "硕士", "count": 3}],
+                "deadline_status_distribution": [{"deadline_status": "报名中", "count": 3}]
             }
         ):
             response = self.client.get("/api/admin/analysis-summary")
@@ -210,8 +223,40 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["overview"]["analyzed_posts"], 6)
+        self.assertEqual(payload["insight_overview"]["insight_posts"], 5)
         self.assertFalse(payload["runtime"]["openai_ready"])
         self.assertEqual(payload["event_type_distribution"][0]["event_type"], "招聘公告")
+        self.assertEqual(payload["degree_floor_distribution"][0]["degree_floor"], "硕士")
+
+    def test_get_admin_insight_summary_should_return_overview(self):
+        with patch(
+            "src.api.admin.get_insight_summary",
+            return_value={
+                "overview": {
+                    "insight_posts": 4,
+                    "pending_insight_posts": 5,
+                    "openai_insight_posts": 2,
+                    "rule_insight_posts": 2,
+                    "failed_insight_posts": 1,
+                    "skipped_insight_posts": 0,
+                    "posts_with_deadline": 3,
+                    "posts_with_written_exam": 2,
+                    "posts_with_interview": 1,
+                    "posts_with_attachment_job_table": 2,
+                },
+                "degree_floor_distribution": [{"degree_floor": "硕士", "count": 2}],
+                "deadline_status_distribution": [{"deadline_status": "报名中", "count": 3}],
+                "city_distribution": [{"city": "南京", "count": 2}],
+                "latest_analyzed_at": "2026-03-24T10:00:00+00:00",
+            }
+        ):
+            response = self.client.get("/api/admin/insight-summary")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["overview"]["insight_posts"], 4)
+        self.assertEqual(payload["degree_floor_distribution"][0]["degree_floor"], "硕士")
+        self.assertEqual(payload["deadline_status_distribution"][0]["deadline_status"], "报名中")
 
     def test_get_admin_job_summary_should_return_overview(self):
         latest_query = MagicMock()
@@ -240,73 +285,131 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["overview"]["total_jobs"], 8)
         self.assertEqual(payload["overview"]["pending_posts"], 1)
 
+    def test_get_admin_duplicate_summary_should_return_overview(self):
+        with patch(
+            "src.api.admin.get_duplicate_summary",
+            return_value={
+                "overview": {
+                    "duplicate_groups": 2,
+                    "duplicate_posts": 3,
+                    "primary_posts": 10,
+                    "unchecked_posts": 1,
+                },
+                "reason_distribution": [{"duplicate_reason": "source_date_title", "count": 2}],
+                "latest_checked_at": "2026-03-26T12:00:00+00:00",
+                "latest_groups": [],
+            }
+        ):
+            response = self.client.get("/api/admin/duplicate-summary")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["overview"]["duplicate_groups"], 2)
+        self.assertEqual(payload["reason_distribution"][0]["duplicate_reason"], "source_date_title")
+
+    def test_backfill_duplicates_task_should_return_task_run(self):
+        with patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-dup-1", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
+        ), patch(
+            "src.api.admin._run_duplicate_backfill_in_background",
+            new=AsyncMock()
+        ) as mocked_background:
+            response = self.client.post("/api/admin/backfill-duplicates", json={"limit": 200})
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertIn("已提交", payload["message"])
+        mocked_background.assert_called_once()
+
+    def test_backfill_duplicates_task_should_return_409_when_scrape_is_already_running(self):
+        running_task = {
+            "id": "running-scrape-1",
+            "task_type": "manual_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00"
+        }
+        with patch(
+            "src.api.admin.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="duplicate_backfill",
+                running_task=running_task,
+                conflict_task_types=["manual_scrape", "scheduled_scrape", "duplicate_backfill"],
+            )
+        ):
+            response = self.client.post("/api/admin/backfill-duplicates", json={"limit": 200})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("手动抓取", response.json()["detail"])
+
     def test_run_scrape_task_should_return_task_run(self):
         with patch(
             "src.api.admin.start_task_run",
             return_value={"id": "running-1", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
-        ), patch("src.api.admin.scrape_and_save", return_value=3), patch(
-            "src.api.admin.record_task_run",
-            return_value={
-                "id": "1",
-                "summary": "手动抓取完成，新增或更新 3 条记录",
-                "status": "success",
-                "duration_ms": 1200
-            }
+        ), patch(
+            "src.api.admin._run_scrape_task_in_background",
+            new=AsyncMock()
+        ) as mocked_background:
+            response = self.client.post("/api/admin/run-scrape", json={"source_id": 1, "max_pages": 3})
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertIn("已提交", payload["message"])
+        mocked_background.assert_called_once()
+
+    def test_run_scrape_task_should_return_409_when_scrape_is_already_running(self):
+        running_task = {
+            "id": "running-scheduled-1",
+            "task_type": "scheduled_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00"
+        }
+        with patch(
+            "src.api.admin.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="manual_scrape",
+                running_task=running_task,
+                conflict_task_types=["manual_scrape", "scheduled_scrape"],
+            )
         ):
             response = self.client.post("/api/admin/run-scrape", json={"source_id": 1, "max_pages": 3})
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["task_run"]["status"], "success")
-        self.assertEqual(payload["task_run"]["duration_ms"], 1200)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("定时抓取", response.json()["detail"])
 
     def test_backfill_attachments_task_should_return_task_run(self):
         with patch(
             "src.api.admin.start_task_run",
             return_value={"id": "running-2", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
         ), patch(
-            "src.api.admin.backfill_existing_attachments",
-            return_value={
-                "posts_scanned": 10,
-                "posts_updated": 4,
-                "attachments_discovered": 2,
-                "attachments_downloaded": 2,
-                "attachments_parsed": 2,
-                "fields_added": 6,
-                "failures": 0
-            }
-        ), patch(
-            "src.api.admin.record_task_run",
-            return_value={"id": "2", "summary": "历史附件补处理完成，更新 4 条帖子，新增解析 2 个附件", "status": "success"}
-        ):
+            "src.api.admin._run_attachment_backfill_in_background",
+            new=AsyncMock()
+        ) as mocked_background:
             response = self.client.post("/api/admin/backfill-attachments", json={"limit": 50})
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         payload = response.json()
-        self.assertEqual(payload["task_run"]["status"], "success")
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertIn("已提交", payload["message"])
+        mocked_background.assert_called_once()
 
     def test_run_ai_analysis_task_should_return_task_run(self):
         with patch("src.api.admin.is_openai_ready", return_value=True), patch(
             "src.api.admin.start_task_run",
             return_value={"id": "running-3", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
         ), patch(
-            "src.api.admin.run_ai_analysis",
-            return_value={
-                "posts_scanned": 5,
-                "posts_analyzed": 5,
-                "success_count": 3,
-                "fallback_count": 2,
-                "failure_count": 0
-            }
-        ), patch(
-            "src.api.admin.record_task_run",
-            return_value={"id": "3", "summary": "AI 分析完成，处理 5 条，OpenAI 成功 3 条，规则回退 2 条", "status": "success"}
-        ):
+            "src.api.admin._run_ai_analysis_in_background",
+            new=AsyncMock()
+        ) as mocked_background:
             response = self.client.post("/api/admin/run-ai-analysis", json={"limit": 5, "only_unanalyzed": True})
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         payload = response.json()
-        self.assertEqual(payload["task_run"]["status"], "success")
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertIn("已提交", payload["message"])
+        mocked_background.assert_called_once()
 
     def test_run_ai_analysis_task_should_return_409_when_openai_not_ready(self):
         with patch("src.api.admin.is_openai_ready", return_value=False):
@@ -315,34 +418,43 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("OpenAI", response.json()["detail"])
 
+    def test_run_ai_analysis_task_should_return_409_when_same_task_is_already_running(self):
+        running_task = {
+            "id": "running-ai-1",
+            "task_type": "ai_analysis",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00"
+        }
+        with patch("src.api.admin.is_openai_ready", return_value=True), patch(
+            "src.api.admin.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="ai_analysis",
+                running_task=running_task,
+            )
+        ):
+            response = self.client.post("/api/admin/run-ai-analysis", json={"limit": 5, "only_unanalyzed": True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("OpenAI 分析", response.json()["detail"])
+
     def test_run_job_extraction_task_should_return_task_run(self):
         with patch("src.api.admin.is_openai_ready", return_value=True), patch(
             "src.api.admin.start_task_run",
             return_value={"id": "running-4", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
         ), patch(
-            "src.api.admin.backfill_post_jobs",
-            return_value={
-                "posts_scanned": 5,
-                "posts_updated": 4,
-                "jobs_saved": 6,
-                "ai_posts": 2,
-                "attachment_posts": 3,
-                "dedicated_posts": 2,
-                "contains_posts": 2,
-                "failures": 0,
-            }
-        ), patch(
-            "src.api.admin.record_task_run",
-            return_value={"id": "4", "summary": "岗位级抽取完成，更新 4 条帖子，写入 6 条岗位，AI 参与 2 条", "status": "success"}
-        ):
+            "src.api.admin._run_job_extraction_in_background",
+            new=AsyncMock()
+        ) as mocked_background:
             response = self.client.post(
                 "/api/admin/run-job-extraction",
                 json={"limit": 5, "only_unindexed": True, "use_ai": True}
             )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         payload = response.json()
-        self.assertEqual(payload["task_run"]["status"], "success")
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertIn("已提交", payload["message"])
+        mocked_background.assert_called_once()
 
     def test_run_job_extraction_task_should_return_409_when_ai_requested_but_not_ready(self):
         with patch("src.api.admin.is_openai_ready", return_value=False):
@@ -359,34 +471,20 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin.start_task_run",
             return_value={"id": "running-5", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
         ), patch(
-            "src.api.admin.backfill_post_jobs",
-            return_value={
-                "posts_scanned": 3,
-                "posts_updated": 2,
-                "jobs_saved": 2,
-                "ai_posts": 0,
-                "attachment_posts": 1,
-                "dedicated_posts": 2,
-                "contains_posts": 0,
-                "failures": 0,
-            }
-        ) as mocked_backfill, patch(
-            "src.api.admin.record_task_run",
-            return_value={"id": "5", "summary": "岗位级抽取完成，更新 2 条帖子，写入 2 条岗位，AI 参与 0 条", "status": "success"}
-        ):
+            "src.api.admin._run_job_extraction_in_background",
+            new=AsyncMock()
+        ) as mocked_background:
             response = self.client.post(
                 "/api/admin/run-job-extraction",
                 json={"limit": 3, "only_pending": False}
             )
 
-        self.assertEqual(response.status_code, 200)
-        mocked_backfill.assert_called_once_with(
-            self.db,
-            source_id=None,
-            limit=3,
-            only_unindexed=False,
-            use_ai=False,
-        )
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["task_run"]["status"], "running")
+        mocked_background.assert_called_once()
+        args, _kwargs = mocked_background.call_args
+        self.assertFalse(args[2]["only_unindexed"])
 
 
 if __name__ == "__main__":
