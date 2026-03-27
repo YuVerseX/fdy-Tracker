@@ -55,7 +55,11 @@ IMAGE_TAG=latest
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
 AI_ANALYSIS_MODEL=gpt-5.4
+ADMIN_USERNAME=
+ADMIN_PASSWORD=
 ```
+
+`ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 需要你自己显式填写。留空时，管理接口会返回 `503`，管理页不能登录。
 
 如果你后面想固定到某个版本，也可以把：
 

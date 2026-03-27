@@ -20,11 +20,63 @@
         {{ feedback.message }}
       </div>
       <div
-        v-if="activeTaskHints.length > 0"
+        v-if="adminAuthorized && activeTaskHints.length > 0"
         class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
       >
         当前有任务运行中：{{ activeTaskHints.join('、') }}。可以先继续浏览，稍后点“刷新记录”看结果。
       </div>
+
+      <section
+        v-if="!adminAuthorized"
+        class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
+      >
+        <div class="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+          <div class="max-w-xl">
+            <h2 class="text-lg font-semibold text-sky-900">后台登录</h2>
+            <p class="mt-2 text-sm text-gray-600">
+              管理台现在单独受保护。这里的操作会直接触发抓取、分析、岗位重建和调度配置更新，不再对所有访问者开放。
+            </p>
+            <p class="mt-2 text-xs text-gray-500">
+              如果页面提示“后台鉴权还没配置”，先在后端环境变量里补 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，再重启服务。
+            </p>
+          </div>
+
+          <form class="w-full max-w-md space-y-4" @submit.prevent="submitAdminLogin">
+            <div v-if="adminAuthError" class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              {{ adminAuthError }}
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-700">账号</label>
+              <input
+                v-model.trim="adminAuthForm.username"
+                type="text"
+                autocomplete="username"
+                class="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-sky-600"
+                placeholder="输入后台账号"
+              />
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-700">密码</label>
+              <input
+                v-model="adminAuthForm.password"
+                type="password"
+                autocomplete="current-password"
+                class="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-sky-600"
+                placeholder="输入后台密码"
+              />
+            </div>
+            <button
+              type="submit"
+              :disabled="adminAuthChecking"
+              class="inline-flex items-center justify-center rounded-lg bg-sky-700 px-4 py-2.5 text-sm font-medium text-white transition-colors duration-200 hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {{ adminAuthChecking ? '登录验证中...' : '进入管理台' }}
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <template v-else>
 
       <section class="rounded-lg border p-6" :class="healthPanelClass">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -111,7 +163,36 @@
         </div>
       </section>
 
-      <section class="bg-white rounded-lg shadow-sm p-6">
+      <section class="rounded-lg border border-slate-200 bg-white px-4 py-4 shadow-sm">
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="item in adminSectionOptions"
+              :key="item.value"
+              type="button"
+              @click="activeAdminSection = item.value"
+              class="inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition-colors duration-200"
+              :class="activeAdminSection === item.value
+                ? 'bg-sky-700 text-white'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'"
+            >
+              {{ item.label }}
+            </button>
+          </div>
+          <div class="flex flex-wrap items-center gap-3 text-sm text-gray-500">
+            <span v-if="adminSavedUsername">当前账号：{{ adminSavedUsername }}</span>
+            <button
+              type="button"
+              class="inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors duration-200 hover:bg-gray-50"
+              @click="logoutAdmin"
+            >
+              退出登录
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="activeAdminSection === 'governance'" class="bg-white rounded-lg shadow-sm p-6">
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="text-lg font-semibold text-sky-900">重复治理</h2>
@@ -173,7 +254,7 @@
         </div>
       </section>
 
-      <section class="bg-white rounded-lg shadow-sm p-6">
+      <section v-if="activeAdminSection === 'system'" class="bg-white rounded-lg shadow-sm p-6">
         <div class="flex items-start justify-between gap-4">
           <div>
             <h2 class="text-lg font-semibold text-sky-900">定时抓取配置</h2>
@@ -270,7 +351,7 @@
         </p>
       </section>
 
-      <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+      <div v-if="activeAdminSection === 'governance'" class="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <section class="bg-white rounded-lg shadow-sm p-6">
           <div class="flex items-start justify-between gap-4">
             <div>
@@ -371,7 +452,7 @@
         </section>
       </div>
 
-      <section class="bg-white rounded-lg shadow-sm p-6">
+      <section v-if="activeAdminSection === 'governance'" class="bg-white rounded-lg shadow-sm p-6">
         <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-6">
           <div>
             <div class="flex items-start justify-between gap-4">
@@ -648,7 +729,7 @@
         </div>
       </section>
 
-      <section class="bg-white rounded-lg shadow-sm p-6">
+      <section v-if="activeAdminSection === 'overview'" class="bg-white rounded-lg shadow-sm p-6">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <div class="flex items-center gap-3">
@@ -804,7 +885,7 @@
         </div>
       </section>
 
-      <section class="bg-white rounded-lg shadow-sm p-6">
+      <section v-if="activeAdminSection === 'tasks'" class="bg-white rounded-lg shadow-sm p-6">
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="text-lg font-semibold text-sky-900">最近执行记录</h2>
@@ -846,14 +927,17 @@
                 <div class="mt-2 space-y-2">
                   <div class="flex items-center justify-between gap-3 text-xs text-gray-500">
                     <span>{{ run.phase || getDefaultTaskPhase(run) }}</span>
-                    <span>{{ getTaskProgress(run) }}%</span>
+                    <span>{{ getTaskProgressLabel(run) }}</span>
                   </div>
                   <div class="h-2 rounded-full bg-gray-200">
                     <div
                       class="h-2 rounded-full transition-all duration-300"
-                      :class="isTaskPossiblyStuck(run) ? 'bg-red-400' : 'bg-sky-500'"
-                      :style="{ width: `${getTaskProgress(run)}%` }"
+                      :class="getTaskProgressBarClass(run)"
+                      :style="getTaskProgressBarStyle(run)"
                     />
+                  </div>
+                  <div v-if="getTaskMetricsSummary(run)" class="text-xs text-gray-500">
+                    {{ getTaskMetricsSummary(run) }}
                   </div>
                   <div v-if="isRunningStatus(run.status)" class="text-xs text-gray-500">
                     已运行 {{ formatRunningElapsed(run) }}，最近心跳 {{ formatDateTime(getTaskHeartbeatAt(run)) || '--' }}
@@ -951,6 +1035,7 @@
           </article>
         </div>
       </section>
+      </template>
     </main>
   </div>
 </template>
@@ -959,6 +1044,21 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { adminApi } from '../api/posts'
 
+const adminSectionOptions = [
+  { value: 'overview', label: '总览' },
+  { value: 'governance', label: '数据治理' },
+  { value: 'system', label: '系统配置' },
+  { value: 'tasks', label: '任务记录' }
+]
+
+const adminAuthorized = ref(false)
+const adminAuthChecking = ref(false)
+const adminAuthError = ref('')
+const adminAuthForm = ref({
+  username: adminApi.getSavedUsername(),
+  password: ''
+})
+const activeAdminSection = ref('overview')
 const scrapeRunning = ref(false)
 const backfillRunning = ref(false)
 const duplicateBackfillRunning = ref(false)
@@ -1106,7 +1206,12 @@ const feedbackClass = computed(() => {
   }
   return 'border-red-200 bg-red-50 text-red-700'
 })
+const adminSavedUsername = computed(() => adminApi.getSavedUsername() || adminAuthForm.value.username || '')
 const backendRunningTasks = computed(() => {
+  if (!adminAuthorized.value) {
+    return []
+  }
+
   const combined = [
     ...(Array.isArray(taskSummary.value?.running_tasks) ? taskSummary.value.running_tasks : []),
     ...taskRuns.value.filter((run) => isRunningStatus(run?.status))
@@ -1333,6 +1438,79 @@ const healthAlerts = computed(() => {
   return alerts
 })
 
+const isAdminAuthStatus = (status) => status === 401 || status === 403 || status === 503
+
+const clearAdminRuntimeState = () => {
+  taskRuns.value = []
+  taskSummary.value = null
+}
+
+const handleAdminAccessError = (error) => {
+  const status = error?.response?.status
+  if (!isAdminAuthStatus(status)) {
+    return false
+  }
+
+  adminAuthorized.value = false
+  adminAuthForm.value.password = ''
+  clearAdminRuntimeState()
+
+  if (status === 401 || status === 403) {
+    adminApi.clearCredentials()
+  }
+
+  adminAuthError.value = error?.response?.data?.detail || '后台登录状态已失效，请重新登录。'
+  return true
+}
+
+const verifyAdminAccess = async () => {
+  if (!adminApi.hasCredentials()) {
+    adminAuthorized.value = false
+    clearAdminRuntimeState()
+    return false
+  }
+
+  adminAuthChecking.value = true
+  adminAuthError.value = ''
+  try {
+    await adminApi.getTaskSummary()
+    adminAuthorized.value = true
+    adminAuthForm.value.username = adminApi.getSavedUsername()
+    return true
+  } catch (error) {
+    if (!handleAdminAccessError(error)) {
+      setFeedback('error', getErrorMessage(error, '后台登录验证失败'))
+    }
+    return false
+  } finally {
+    adminAuthChecking.value = false
+  }
+}
+
+const submitAdminLogin = async () => {
+  if (!adminApi.setCredentials(adminAuthForm.value.username, adminAuthForm.value.password)) {
+    adminAuthError.value = '请输入后台账号和密码。'
+    return
+  }
+
+  const verified = await verifyAdminAccess()
+  if (!verified) {
+    return
+  }
+
+  adminAuthForm.value.password = ''
+  await fetchSources()
+  await refreshOverview()
+}
+
+const logoutAdmin = () => {
+  adminApi.clearCredentials()
+  adminAuthorized.value = false
+  adminAuthForm.value.password = ''
+  clearAdminRuntimeState()
+  setFeedback('success', '已退出后台登录')
+}
+
 const applySchedulerConfig = (payload = {}) => {
   schedulerForm.value = {
     enabled: payload.enabled ?? true,
@@ -1353,6 +1531,7 @@ const fetchTaskRuns = async () => {
     const response = await adminApi.getTaskRuns({ limit: 10 })
     taskRuns.value = response.data.items || []
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '加载任务记录失败'))
   } finally {
     loadingRuns.value = false
@@ -1364,6 +1543,10 @@ const fetchTaskSummary = async () => {
     const response = await adminApi.getTaskSummary()
     taskSummary.value = response.data || null
   } catch (error) {
+    if (handleAdminAccessError(error)) {
+      taskSummary.value = null
+      return
+    }
     console.warn('获取任务摘要失败，继续回退到任务记录:', error)
   }
 }
@@ -1392,6 +1575,7 @@ const fetchSources = async () => {
       }
     }
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     console.warn('获取数据源列表失败，继续使用前端默认选项:', error)
   }
 }
@@ -1402,6 +1586,7 @@ const fetchSchedulerConfig = async () => {
     const response = await adminApi.getSchedulerConfig()
     applySchedulerConfig(response.data || {})
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '加载定时抓取配置失败'))
   } finally {
     schedulerLoading.value = false
@@ -1414,6 +1599,7 @@ const fetchAnalysisSummary = async () => {
     const response = await adminApi.getAnalysisSummary()
     analysisSummary.value = response.data || analysisSummary.value
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '加载 AI 摘要失败'))
   } finally {
     analysisLoading.value = false
@@ -1426,6 +1612,7 @@ const fetchInsightSummary = async () => {
     const response = await adminApi.getInsightSummary()
     insightSummary.value = response.data || insightSummary.value
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     if (error?.response?.status === 404 || error?.response?.status === 405) {
       insightSummary.value = null
     } else {
@@ -1443,6 +1630,7 @@ const fetchJobSummary = async () => {
     const response = await adminApi.getJobSummary()
     jobSummary.value = response.data || jobSummary.value
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     if (error?.response?.status === 404 || error?.response?.status === 405) {
       jobsSummaryUnavailable.value = true
     } else {
@@ -1459,6 +1647,7 @@ const fetchDuplicateSummary = async () => {
     const response = await adminApi.getDuplicateSummary()
     duplicateSummary.value = response.data || duplicateSummary.value
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '加载重复治理摘要失败'))
   } finally {
     duplicateLoading.value = false
@@ -1466,6 +1655,9 @@ const fetchDuplicateSummary = async () => {
 }
 
 const refreshOverview = async () => {
+  if (!adminAuthorized.value) {
+    return
+  }
   overviewRefreshing.value = true
   try {
     await Promise.all([
@@ -1483,6 +1675,9 @@ const refreshOverview = async () => {
 }
 
 const refreshAfterTask = async ({ includeAnalysis = false, includeInsight = false, includeJobs = false, includeDuplicate = false } = {}) => {
+  if (!adminAuthorized.value) {
+    return
+  }
   const tasks = [fetchTaskRuns(), fetchTaskSummary()]
   if (includeAnalysis) {
     tasks.push(fetchAnalysisSummary())
@@ -1500,6 +1695,9 @@ const refreshAfterTask = async ({ includeAnalysis = false, includeInsight = fals
 }
 
 const refreshTaskStatus = async () => {
+  if (!adminAuthorized.value) {
+    return
+  }
   await Promise.all([fetchTaskRuns(), fetchTaskSummary()])
 }
 
@@ -1582,6 +1780,7 @@ const retryTaskRun = async (run) => {
     setFeedback('success', response?.data?.message || '重试任务已提交')
     await refreshAfterTask(refreshOptions)
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     if (shouldRefreshAfterTaskError(error)) {
       await refreshAfterTask(refreshOptions)
     }
@@ -1610,6 +1809,7 @@ const saveSchedulerConfig = async () => {
     applySchedulerConfig(configPayload)
     setFeedback('success', response.data?.message || '定时抓取配置已更新')
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '保存定时抓取配置失败'))
   } finally {
     schedulerSaving.value = false
@@ -1626,6 +1826,7 @@ const runScrapeTask = async () => {
     setFeedback('success', response.data.message)
     await refreshAfterTask({ includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true })
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     if (shouldRefreshAfterTaskError(error)) {
       await refreshAfterTask({ includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true })
     }
@@ -1649,6 +1850,7 @@ const runBackfillTask = async () => {
     setFeedback('success', response.data.message)
     await refreshAfterTask({ includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true })
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     if (shouldRefreshAfterTaskError(error)) {
       await refreshAfterTask({ includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true })
     }
@@ -1673,6 +1875,7 @@ const runAiAnalysisTask = async () => {
     setFeedback('success', response.data.message)
     await refreshAfterTask({ includeAnalysis: true, includeInsight: true })
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     if (shouldRefreshAfterTaskError(error)) {
       await refreshAfterTask({ includeAnalysis: true, includeInsight: true })
     }
@@ -1691,6 +1894,7 @@ const runDuplicateBackfillTask = async () => {
     setFeedback('success', response.data.message)
     await refreshAfterTask({ includeDuplicate: true })
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     if (shouldRefreshAfterTaskError(error)) {
       await refreshAfterTask({ includeDuplicate: true })
     }
@@ -1716,6 +1920,7 @@ const runJobExtractionTask = async () => {
     setFeedback('success', response.data.message || '岗位级抽取任务已启动')
     await refreshAfterTask({ includeJobs: true, includeDuplicate: true })
   } catch (error) {
+    if (handleAdminAccessError(error)) return
     if (shouldRefreshAfterTaskError(error)) {
       await refreshAfterTask({ includeJobs: true, includeDuplicate: true })
     }
@@ -1761,6 +1966,13 @@ const parseTimeToMs = (value) => {
 }
 
 const getTaskHeartbeatAt = (run) => run?.heartbeat_at || run?.heartbeatAt || run?.started_at || run?.startedAt || ''
+const getTaskProgressMode = (run) => {
+  if (run?.status === 'success' || run?.status === 'failed') {
+    return 'determinate'
+  }
+  const mode = run?.details?.progress_mode || run?.progress_mode
+  return mode === 'determinate' ? 'determinate' : 'indeterminate'
+}
 
 const getTaskProgress = (run) => {
   const rawValue = Number(run?.progress)
@@ -1770,6 +1982,55 @@ const getTaskProgress = (run) => {
   if (run?.status === 'success') return 100
   if (run?.status === 'failed') return 100
   return 0
+}
+const getTaskProgressLabel = (run) => {
+  if (getTaskProgressMode(run) === 'determinate') {
+    return `${getTaskProgress(run)}%`
+  }
+  const stageProgress = getTaskProgress(run)
+  if (isTaskPossiblyStuck(run)) {
+    return '可能卡住'
+  }
+  if (isRunningStatus(run?.status) && stageProgress > 0) {
+    return `阶段 ${stageProgress}%`
+  }
+  return isRunningStatus(run?.status) ? '运行中' : '--'
+}
+
+const getTaskProgressBarClass = (run) => {
+  if (isTaskPossiblyStuck(run)) {
+    return 'bg-red-400'
+  }
+  if (getTaskProgressMode(run) === 'determinate') {
+    return 'bg-sky-500'
+  }
+  return 'animate-pulse bg-sky-400'
+}
+
+const getTaskProgressBarStyle = (run) => {
+  if (getTaskProgressMode(run) === 'determinate') {
+    return { width: `${getTaskProgress(run)}%` }
+  }
+  return { width: `${Math.max(getTaskProgress(run), 12)}%` }
+}
+
+const getTaskMetricsSummary = (run) => {
+  const metrics = run?.details?.metrics
+  if (!metrics) {
+    if (getTaskProgressMode(run) === 'indeterminate' && isRunningStatus(run?.status) && getTaskProgress(run) > 0) {
+      return `当前阶段已推进到约 ${getTaskProgress(run)}%`
+    }
+    return ''
+  }
+  const completed = Number(metrics.completed)
+  const total = Number(metrics.total)
+  if (Number.isFinite(completed) && Number.isFinite(total) && total > 0 && metrics.unit !== 'percent') {
+    return `已处理 ${completed} / ${total}${metrics.unit ? ` ${metrics.unit}` : ''}`
+  }
+  if (Number.isFinite(completed) && Number.isFinite(total) && total > 0 && metrics.unit === 'percent') {
+    return `阶段进度 ${completed}%`
+  }
+  return ''
 }
 
 const getDefaultTaskPhase = (run) => {
@@ -1939,7 +2200,9 @@ const formatDateTime = (value) => {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Shanghai'
   })
 }
 
@@ -1979,7 +2242,7 @@ const getErrorMessage = (error, fallback) => {
 onMounted(async () => {
   taskPollingTimerId.value = window.setInterval(async () => {
     nowTs.value = Date.now()
-    if (backendRunningTasks.value.length === 0 || taskPollingInFlight.value) {
+    if (!adminAuthorized.value || backendRunningTasks.value.length === 0 || taskPollingInFlight.value) {
       return
     }
     taskPollingInFlight.value = true
@@ -1989,6 +2252,11 @@ onMounted(async () => {
       taskPollingInFlight.value = false
     }
   }, TASK_POLL_INTERVAL_MS)
+
+  const authorized = await verifyAdminAccess()
+  if (!authorized) {
+    return
+  }
 
   await fetchSources()
   await refreshOverview()

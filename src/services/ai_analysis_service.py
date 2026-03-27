@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 from src.config import settings
 from src.database.models import Attachment, Post, PostAnalysis, PostField, PostInsight, PostJob
 from src.services.attachment_service import read_attachment_parse_result
+from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
 
 try:
     from openai import OpenAI
@@ -133,6 +134,14 @@ def safe_json_loads(value: str | None) -> list[str]:
         return parsed if isinstance(parsed, list) else []
     except Exception:
         return []
+
+
+def build_primary_post_filter():
+    """统一过滤重复从记录，只保留主记录和未归组记录。"""
+    return or_(
+        Post.duplicate_status.is_(None),
+        Post.duplicate_status != DUPLICATE_STATUS_DUPLICATE,
+    )
 
 
 def get_analysis_system_prompt() -> str:
@@ -1295,8 +1304,8 @@ def call_openai_insight(post: Post) -> InsightOutcome:
     if client is None:
         return InsightOutcome(
             status="skipped",
-            provider="rule",
-            model_name="rule-based",
+            provider="openai",
+            model_name=settings.AI_ANALYSIS_MODEL,
             error_message="openai_unavailable",
             raw_result={"reason": "openai_unavailable"},
         )
@@ -1433,6 +1442,29 @@ def has_successful_openai_analysis(post: Post) -> bool:
     if analysis is None:
         return False
     return analysis.analysis_status == "success" and analysis.analysis_provider == "openai"
+
+
+def should_use_openai_insight(post: Post, analysis_outcome: AnalysisOutcome | None = None) -> bool:
+    """判断这条帖子是否应该走 OpenAI insight 链路"""
+    if has_successful_openai_analysis(post):
+        return True
+
+    if analysis_outcome is None:
+        return False
+
+    outcome_result = getattr(analysis_outcome, "result", None)
+    outcome_status = getattr(
+        analysis_outcome,
+        "status",
+        "success" if outcome_result is not None else "failed",
+    )
+    outcome_provider = getattr(analysis_outcome, "provider", "")
+
+    return (
+        outcome_status == "success"
+        and outcome_provider == "openai"
+        and outcome_result is not None
+    )
 
 
 def build_skipped_insight_outcome(reason: str, provider: str = "rule") -> InsightOutcome:
@@ -1611,6 +1643,8 @@ async def run_ai_analysis(
         selectinload(Post.jobs),
         selectinload(Post.analysis),
         selectinload(Post.insight),
+    ).filter(
+        build_primary_post_filter()
     ).order_by(Post.publish_date.desc())
 
     if source_id is not None:
@@ -1666,7 +1700,8 @@ async def run_ai_analysis(
     for post in posts:
         try:
             analysis_outcome: AnalysisOutcome | None = None
-            if has_successful_openai_analysis(post):
+            use_openai_insight = only_unanalyzed and has_successful_openai_analysis(post)
+            if use_openai_insight:
                 result["analysis_reused_count"] += 1
             else:
                 analysis_outcome = await analyze_post(post)
@@ -1677,9 +1712,10 @@ async def run_ai_analysis(
                     result["fallback_count"] += 1
                 else:
                     result["failure_count"] += 1
+                use_openai_insight = should_use_openai_insight(post, analysis_outcome)
 
             insight_outcome: InsightOutcome
-            if has_successful_openai_analysis(post):
+            if use_openai_insight:
                 insight_outcome = await analyze_post_insight(post)
             else:
                 insight_outcome = build_rule_insight_outcome(post, reason="analysis_not_openai")
@@ -1709,18 +1745,36 @@ def get_analysis_summary(db: Session) -> dict[str, Any]:
     """汇总 AI 分析情况"""
     from src.services.post_job_service import get_job_index_summary
 
-    total_posts = db.query(func.count(Post.id)).scalar() or 0
-    counselor_posts = db.query(func.count(Post.id)).filter(Post.is_counselor == True).scalar() or 0
-    analyzed_posts = db.query(func.count(PostAnalysis.id)).filter(PostAnalysis.analysis_status == "success").scalar() or 0
+    primary_post_filter = build_primary_post_filter()
+
+    total_posts = db.query(func.count(Post.id)).filter(primary_post_filter).scalar() or 0
+    counselor_posts = db.query(func.count(Post.id)).filter(primary_post_filter, Post.is_counselor == True).scalar() or 0
+    analyzed_posts = db.query(func.count(PostAnalysis.id)).join(
+        Post,
+        Post.id == PostAnalysis.post_id,
+    ).filter(
+        primary_post_filter,
+        PostAnalysis.analysis_status == "success",
+    ).scalar() or 0
     pending_posts = max(total_posts - analyzed_posts, 0)
-    attachment_posts = db.query(func.count(func.distinct(Attachment.post_id))).scalar() or 0
-    latest_analyzed_at = db.query(func.max(PostAnalysis.analyzed_at)).scalar()
+    attachment_posts = db.query(func.count(func.distinct(Attachment.post_id))).join(
+        Post,
+        Post.id == Attachment.post_id,
+    ).filter(primary_post_filter).scalar() or 0
+    latest_analyzed_at = db.query(func.max(PostAnalysis.analyzed_at)).join(
+        Post,
+        Post.id == PostAnalysis.post_id,
+    ).filter(primary_post_filter).scalar()
     runtime = get_analysis_runtime_status()
 
     event_type_distribution = db.query(
         PostAnalysis.event_type,
         func.count(PostAnalysis.id)
+    ).join(
+        Post,
+        Post.id == PostAnalysis.post_id,
     ).filter(
+        primary_post_filter,
         PostAnalysis.analysis_status == "success",
         PostAnalysis.event_type.isnot(None),
         PostAnalysis.event_type != ""
@@ -1729,7 +1783,11 @@ def get_analysis_summary(db: Session) -> dict[str, Any]:
     priority_distribution = db.query(
         PostAnalysis.tracking_priority,
         func.count(PostAnalysis.id)
+    ).join(
+        Post,
+        Post.id == PostAnalysis.post_id,
     ).filter(
+        primary_post_filter,
         PostAnalysis.analysis_status == "success",
         PostAnalysis.tracking_priority.isnot(None),
         PostAnalysis.tracking_priority != ""
@@ -1737,7 +1795,11 @@ def get_analysis_summary(db: Session) -> dict[str, Any]:
     provider_distribution = db.query(
         PostAnalysis.analysis_provider,
         func.count(PostAnalysis.id)
+    ).join(
+        Post,
+        Post.id == PostAnalysis.post_id,
     ).filter(
+        primary_post_filter,
         PostAnalysis.analysis_status == "success",
         PostAnalysis.analysis_provider.isnot(None),
         PostAnalysis.analysis_provider != ""
@@ -1787,19 +1849,51 @@ def get_analysis_summary(db: Session) -> dict[str, Any]:
 
 def get_insight_summary(db: Session) -> dict[str, Any]:
     """汇总 AI 统计字段情况"""
-    total_posts = db.query(func.count(Post.id)).scalar() or 0
-    insight_posts = db.query(func.count(PostInsight.id)).filter(PostInsight.insight_status == "success").scalar() or 0
-    failed_posts = db.query(func.count(PostInsight.id)).filter(PostInsight.insight_status == "failed").scalar() or 0
-    skipped_posts = db.query(func.count(PostInsight.id)).filter(PostInsight.insight_status == "skipped").scalar() or 0
-    openai_insight_posts = db.query(func.count(PostInsight.id)).filter(
+    primary_post_filter = build_primary_post_filter()
+
+    total_posts = db.query(func.count(Post.id)).filter(primary_post_filter).scalar() or 0
+    insight_posts = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
+        PostInsight.insight_status == "success",
+    ).scalar() or 0
+    failed_posts = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
+        PostInsight.insight_status == "failed",
+    ).scalar() or 0
+    skipped_posts = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
+        PostInsight.insight_status == "skipped",
+    ).scalar() or 0
+    openai_insight_posts = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
         PostInsight.insight_status == "success",
         PostInsight.insight_provider == "openai",
     ).scalar() or 0
-    rule_insight_posts = db.query(func.count(PostInsight.id)).filter(
+    rule_insight_posts = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
         PostInsight.insight_status == "success",
         PostInsight.insight_provider == "rule",
     ).scalar() or 0
-    posts_with_deadline = db.query(func.count(PostInsight.id)).filter(
+    posts_with_deadline = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
         PostInsight.insight_status == "success",
         or_(
             PostInsight.deadline_date.isnot(None),
@@ -1810,24 +1904,43 @@ def get_insight_summary(db: Session) -> dict[str, Any]:
             PostInsight.deadline_text != "",
         ),
     ).scalar() or 0
-    posts_with_written_exam = db.query(func.count(PostInsight.id)).filter(
+    posts_with_written_exam = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
         PostInsight.insight_status == "success",
         PostInsight.has_written_exam == True,
     ).scalar() or 0
-    posts_with_interview = db.query(func.count(PostInsight.id)).filter(
+    posts_with_interview = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
         PostInsight.insight_status == "success",
         PostInsight.has_interview == True,
     ).scalar() or 0
-    posts_with_attachment_job_table = db.query(func.count(PostInsight.id)).filter(
+    posts_with_attachment_job_table = db.query(func.count(PostInsight.id)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
         PostInsight.insight_status == "success",
         PostInsight.has_attachment_job_table == True,
     ).scalar() or 0
-    latest_analyzed_at = db.query(func.max(PostInsight.analyzed_at)).scalar()
+    latest_analyzed_at = db.query(func.max(PostInsight.analyzed_at)).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(primary_post_filter).scalar()
 
     degree_floor_distribution = db.query(
         PostInsight.degree_floor,
         func.count(PostInsight.id),
+    ).join(
+        Post,
+        Post.id == PostInsight.post_id,
     ).filter(
+        primary_post_filter,
         PostInsight.insight_status == "success",
         PostInsight.degree_floor.isnot(None),
         PostInsight.degree_floor != "",
@@ -1837,7 +1950,11 @@ def get_insight_summary(db: Session) -> dict[str, Any]:
     deadline_status_distribution = db.query(
         PostInsight.deadline_status,
         func.count(PostInsight.id),
+    ).join(
+        Post,
+        Post.id == PostInsight.post_id,
     ).filter(
+        primary_post_filter,
         PostInsight.insight_status == "success",
         PostInsight.deadline_status.isnot(None),
         PostInsight.deadline_status != "",
@@ -1845,7 +1962,13 @@ def get_insight_summary(db: Session) -> dict[str, Any]:
     ).group_by(PostInsight.deadline_status).order_by(func.count(PostInsight.id).desc()).all()
 
     city_distribution_map: dict[str, int] = {}
-    success_insights = db.query(PostInsight).filter(PostInsight.insight_status == "success").all()
+    success_insights = db.query(PostInsight).join(
+        Post,
+        Post.id == PostInsight.post_id,
+    ).filter(
+        primary_post_filter,
+        PostInsight.insight_status == "success",
+    ).all()
     for insight in success_insights:
         for city in safe_json_loads(insight.city_list_json):
             normalized_city = (city or "").strip()

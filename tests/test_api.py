@@ -429,6 +429,90 @@ class PostsApiTestCase(unittest.TestCase):
         self.assertEqual(payload["items"][0]["id"], 3)
         self.assertEqual(payload["items"][0]["counselor_scope"], "contains")
 
+    def test_get_posts_should_include_title_derived_counselor_post_in_counselor_filter(self):
+        db = self.SessionLocal()
+        try:
+            db.add(Post(
+                id=777,
+                source_id=1,
+                title="东南大学2026年公开招聘专职辅导员公告",
+                content="这是一个历史兼容脏数据样例。",
+                publish_date=datetime(2026, 3, 6, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/777",
+                original_url="https://example.com/posts/777",
+                is_counselor=False,
+                counselor_scope="",
+                has_counselor_job=False,
+                confidence_score=None,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        params = {"is_counselor": "true"}
+        list_response = self.client.get("/api/posts", params=params)
+        summary_response = self.client.get("/api/posts/stats/summary", params=params)
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(summary_response.status_code, 200)
+
+        list_payload = list_response.json()
+        summary_payload = summary_response.json()
+        returned_ids = {item["id"] for item in list_payload["items"]}
+        derived_item = next(item for item in list_payload["items"] if item["id"] == 777)
+
+        self.assertIn(777, returned_ids)
+        self.assertEqual(list_payload["total"], 4)
+        self.assertTrue(derived_item["is_counselor"])
+        self.assertEqual(derived_item["counselor_scope"], "dedicated")
+        self.assertTrue(derived_item["has_counselor_job"])
+        self.assertEqual(summary_payload["overview"]["total_posts"], 4)
+        self.assertEqual(summary_payload["overview"]["counselor_posts"], 4)
+
+    def test_get_posts_should_include_null_flag_post_in_negative_counselor_filters(self):
+        db = self.SessionLocal()
+        try:
+            db.add(Post(
+                id=778,
+                source_id=1,
+                title="苏州高校后勤岗位招聘公告",
+                content="这是一个非辅导员历史空值样例。",
+                publish_date=datetime(2026, 3, 6, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/778",
+                original_url="https://example.com/posts/778",
+                is_counselor=None,
+                counselor_scope=None,
+                has_counselor_job=None,
+                confidence_score=None,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        params = {
+            "is_counselor": "false",
+            "counselor_scope": "none",
+            "has_counselor_job": "false",
+        }
+        list_response = self.client.get("/api/posts", params=params)
+        summary_response = self.client.get("/api/posts/stats/summary", params=params)
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(summary_response.status_code, 200)
+
+        list_payload = list_response.json()
+        summary_payload = summary_response.json()
+        returned_ids = {item["id"] for item in list_payload["items"]}
+        null_flag_item = next(item for item in list_payload["items"] if item["id"] == 778)
+
+        self.assertIn(778, returned_ids)
+        self.assertEqual(list_payload["total"], 3)
+        self.assertFalse(null_flag_item["is_counselor"])
+        self.assertEqual(null_flag_item["counselor_scope"], "none")
+        self.assertFalse(null_flag_item["has_counselor_job"])
+        self.assertEqual(summary_payload["overview"]["total_posts"], 3)
+        self.assertEqual(summary_payload["overview"]["counselor_posts"], 0)
+
     def test_get_post_detail_returns_nested_source(self):
         response = self.client.get("/api/posts/1")
 

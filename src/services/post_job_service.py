@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
 from src.config import settings
@@ -33,6 +33,7 @@ from src.services.attachment_service import (
     resolve_attachment_file_type,
     should_refresh_attachment_parse_result,
 )
+from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
 from src.services.filter_service import ROLE_EXCLUDE_PATTERNS, _matches_any_pattern
 
 try:
@@ -55,6 +56,14 @@ COUNSELOR_RELATED_SCOPES = (
 )
 JOB_SOURCE_TYPES = ("attachment", "attachment_pdf", "field", "ai", "hybrid")
 AGGREGATE_VALUE_SEPARATORS = ("；", ";", "\n", "|")
+
+
+def build_primary_post_filter():
+    """统一过滤重复从记录，只保留主记录和未归组记录。"""
+    return or_(
+        Post.duplicate_status.is_(None),
+        Post.duplicate_status != DUPLICATE_STATUS_DUPLICATE,
+    )
 
 
 class JobExtractionItem(BaseModel):
@@ -235,20 +244,36 @@ def count_displayable_counselor_jobs(job_list: list[PostJob] | list[dict[str, An
     return sum(1 for job in filter_displayable_jobs(job_list) if bool(get_job_value(job, "is_counselor")))
 
 
+def get_post_job_index_state(post: Post) -> dict[str, Any]:
+    """统一帖子岗位索引状态：是否有可展示岗位、是否仍待抽取"""
+    displayable_jobs = filter_displayable_jobs(getattr(post, "jobs", []) or [])
+    has_displayable_jobs = bool(displayable_jobs)
+    counselor_state = get_post_counselor_state(post)
+
+    return {
+        "is_counselor_related": bool(counselor_state["is_counselor_related"]),
+        "has_displayable_jobs": has_displayable_jobs,
+        "pending_extraction": bool(counselor_state["is_counselor_related"]) and not has_displayable_jobs,
+        "has_attachment_jobs": any(get_job_source_type(job) in {"attachment", "attachment_pdf", "hybrid"} for job in displayable_jobs),
+        "has_ai_jobs": any(get_job_source_type(job) in {"ai", "hybrid"} for job in displayable_jobs),
+    }
+
+
 def get_post_counselor_state(post: Post) -> dict[str, Any]:
     """兼容历史数据，统一读取帖子辅导员相关状态"""
     normalized_scope = normalize_counselor_scope_value(getattr(post, "counselor_scope", None))
     counselor_job_count = count_displayable_counselor_jobs(getattr(post, "jobs", []) or [])
     has_counselor_job = bool(getattr(post, "has_counselor_job", False)) or counselor_job_count > 0
+    has_dedicated_title = is_dedicated_counselor_title(getattr(post, "title", ""))
     is_related = bool(getattr(post, "is_counselor", False)) or has_counselor_job or normalized_scope in COUNSELOR_RELATED_SCOPES
 
     if normalized_scope == COUNSELOR_SCOPE_NONE:
-        if is_dedicated_counselor_title(getattr(post, "title", "")) and is_related:
+        if has_dedicated_title:
             normalized_scope = COUNSELOR_SCOPE_DEDICATED
         elif has_counselor_job:
             normalized_scope = COUNSELOR_SCOPE_CONTAINS
 
-    if normalized_scope in COUNSELOR_RELATED_SCOPES:
+    if normalized_scope in COUNSELOR_RELATED_SCOPES or has_dedicated_title:
         has_counselor_job = True
         is_related = True
 
@@ -667,13 +692,13 @@ def reconcile_post_counselor_flags(post: Post) -> bool:
     state = get_post_counselor_state(post)
     changed = False
 
-    if normalize_counselor_scope_value(getattr(post, "counselor_scope", None)) != state["counselor_scope"]:
+    if getattr(post, "counselor_scope", None) != state["counselor_scope"]:
         post.counselor_scope = state["counselor_scope"]
         changed = True
-    if bool(getattr(post, "has_counselor_job", False)) != state["has_counselor_job"]:
+    if getattr(post, "has_counselor_job", None) is None or bool(getattr(post, "has_counselor_job", False)) != state["has_counselor_job"]:
         post.has_counselor_job = state["has_counselor_job"]
         changed = True
-    if bool(getattr(post, "is_counselor", False)) != state["is_counselor_related"]:
+    if getattr(post, "is_counselor", None) is None or bool(getattr(post, "is_counselor", False)) != state["is_counselor_related"]:
         post.is_counselor = state["is_counselor_related"]
         changed = True
 
@@ -703,11 +728,11 @@ def should_refresh_job_index(post: Post, use_ai: bool, only_unindexed: bool) -> 
     if not only_unindexed:
         return True
 
-    if not (post.jobs or []):
+    index_state = get_post_job_index_state(post)
+    if index_state["pending_extraction"]:
         return True
-    if not (post.counselor_scope or "").strip():
-        return True
-    has_attachment_jobs = any(job.source_type in {"attachment", "attachment_pdf", "hybrid"} for job in (post.jobs or []))
+
+    has_attachment_jobs = bool(index_state["has_attachment_jobs"])
     for attachment in post.attachments or []:
         local_path = getattr(attachment, "local_path", None)
         if not local_path:
@@ -728,7 +753,7 @@ def should_refresh_job_index(post: Post, use_ai: bool, only_unindexed: bool) -> 
         if attachment_jobs and not has_attachment_jobs:
             return True
 
-    if use_ai and not any(job.source_type in {"ai", "hybrid"} for job in (post.jobs or [])):
+    if use_ai and index_state["is_counselor_related"] and not index_state["has_ai_jobs"]:
         return True
     return False
 
@@ -746,6 +771,8 @@ async def backfill_post_jobs(
         selectinload(Post.fields),
         selectinload(Post.attachments),
         selectinload(Post.jobs),
+    ).filter(
+        build_primary_post_filter()
     ).order_by(Post.publish_date.desc(), Post.id.desc())
 
     if source_id is not None:
@@ -819,13 +846,26 @@ def backfill_post_counselor_flags(db: Session, limit: int | None = None) -> dict
 
 def get_job_index_summary(db: Session) -> dict[str, int]:
     """岗位级索引摘要"""
-    all_jobs = db.query(PostJob).all()
+    primary_post_filter = build_primary_post_filter()
+    all_jobs = db.query(PostJob).join(
+        Post,
+        Post.id == PostJob.post_id,
+    ).filter(primary_post_filter).all()
     displayable_jobs = filter_displayable_jobs(all_jobs)
     total_jobs = len(displayable_jobs)
     counselor_jobs = sum(1 for job in displayable_jobs if bool(job.is_counselor))
-    posts_with_jobs = len({job.post_id for job in displayable_jobs})
-    dedicated_posts = db.query(func.count(Post.id)).filter(Post.counselor_scope == COUNSELOR_SCOPE_DEDICATED).scalar() or 0
-    contains_posts = db.query(func.count(Post.id)).filter(Post.counselor_scope == COUNSELOR_SCOPE_CONTAINS).scalar() or 0
+    posts = db.query(Post).options(selectinload(Post.jobs)).filter(primary_post_filter).all()
+    post_states = [get_post_job_index_state(post) for post in posts]
+    posts_with_jobs = sum(1 for state in post_states if state["has_displayable_jobs"])
+    pending_posts = sum(1 for state in post_states if state["pending_extraction"])
+    dedicated_posts = sum(
+        1 for post in posts
+        if get_post_counselor_state(post)["counselor_scope"] == COUNSELOR_SCOPE_DEDICATED
+    )
+    contains_posts = sum(
+        1 for post in posts
+        if get_post_counselor_state(post)["counselor_scope"] == COUNSELOR_SCOPE_CONTAINS
+    )
     ai_job_posts = len({
         job.post_id for job in displayable_jobs
         if job.source_type in {"ai", "hybrid"}
@@ -834,19 +874,11 @@ def get_job_index_summary(db: Session) -> dict[str, int]:
         job.post_id for job in displayable_jobs
         if job.source_type in {"attachment", "attachment_pdf", "hybrid"}
     })
-    counselor_related_posts = db.query(func.count(Post.id)).filter(
-        or_(
-            Post.is_counselor == True,
-            Post.has_counselor_job == True,
-            Post.counselor_scope.in_((COUNSELOR_SCOPE_DEDICATED, COUNSELOR_SCOPE_CONTAINS))
-        )
-    ).scalar() or 0
-
     return {
         "total_jobs": total_jobs,
         "counselor_jobs": counselor_jobs,
         "posts_with_jobs": posts_with_jobs,
-        "pending_posts": max(counselor_related_posts - posts_with_jobs, 0),
+        "pending_posts": pending_posts,
         "dedicated_counselor_posts": dedicated_posts,
         "contains_counselor_posts": contains_posts,
         "ai_job_posts": ai_job_posts,

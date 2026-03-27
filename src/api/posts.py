@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import not_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 from src.database.database import get_db
@@ -14,7 +14,6 @@ from src.services.attachment_service import get_attachment_status
 from src.services.ai_analysis_service import serialize_post_analysis
 from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
 from src.services.post_job_service import (
-    COUNSELOR_RELATED_SCOPES,
     build_job_snapshot,
     count_displayable_counselor_jobs,
     count_displayable_jobs,
@@ -293,15 +292,6 @@ def build_safe_job_filter_subquery(condition):
     )
 
 
-def build_counselor_related_condition():
-    """统一“所有辅导员相关”筛选口径"""
-    return or_(
-        Post.is_counselor == True,
-        Post.has_counselor_job == True,
-        Post.counselor_scope.in_(COUNSELOR_RELATED_SCOPES),
-    )
-
-
 def apply_primary_post_filter(query):
     """默认过滤从记录，只保留主记录和未归组记录。"""
     return query.filter(
@@ -409,10 +399,6 @@ def apply_post_filters(
     has_counselor_job: Optional[bool] = None,
 ):
     """给列表和统计摘要复用同一套筛选逻辑"""
-    if is_counselor is not None:
-        counselor_related_condition = build_counselor_related_condition()
-        query = query.filter(counselor_related_condition if is_counselor else not_(counselor_related_condition))
-
     if province:
         query = query.join(Source).filter(Source.province == province)
 
@@ -432,12 +418,6 @@ def apply_post_filters(
         else:
             query = query.filter(Post.content.is_(None) | (Post.content == ""))
 
-    if counselor_scope:
-        query = query.filter(Post.counselor_scope == counselor_scope)
-
-    if has_counselor_job is not None:
-        query = query.filter(Post.has_counselor_job == has_counselor_job)
-
     if gender:
         query = apply_gender_filter(query, gender)
 
@@ -451,6 +431,64 @@ def apply_post_filters(
         query = query.join(PostAnalysis).filter(PostAnalysis.event_type == event_type)
 
     return query
+
+
+def should_filter_by_counselor_state(
+    *,
+    is_counselor: Optional[bool] = None,
+    counselor_scope: Optional[str] = None,
+    has_counselor_job: Optional[bool] = None,
+) -> bool:
+    """是否需要在 Python 层按统一辅导员状态二次过滤。"""
+    return is_counselor is not None or counselor_scope is not None or has_counselor_job is not None
+
+
+def match_post_counselor_filters(
+    post: Post,
+    *,
+    is_counselor: Optional[bool] = None,
+    counselor_scope: Optional[str] = None,
+    has_counselor_job: Optional[bool] = None,
+) -> bool:
+    """让筛选条件和返回展示都复用同一套辅导员状态归一化。"""
+    counselor_state = get_post_counselor_state(post)
+
+    if is_counselor is not None and counselor_state["is_counselor_related"] != is_counselor:
+        return False
+
+    if counselor_scope is not None and counselor_state["counselor_scope"] != counselor_scope:
+        return False
+
+    if has_counselor_job is not None and counselor_state["has_counselor_job"] != has_counselor_job:
+        return False
+
+    return True
+
+
+def filter_posts_by_counselor_state(
+    posts: list[Post],
+    *,
+    is_counselor: Optional[bool] = None,
+    counselor_scope: Optional[str] = None,
+    has_counselor_job: Optional[bool] = None,
+) -> list[Post]:
+    """对已加载的帖子按统一辅导员状态做二次过滤。"""
+    if not should_filter_by_counselor_state(
+        is_counselor=is_counselor,
+        counselor_scope=counselor_scope,
+        has_counselor_job=has_counselor_job,
+    ):
+        return posts
+
+    return [
+        post for post in posts
+        if match_post_counselor_filters(
+            post,
+            is_counselor=is_counselor,
+            counselor_scope=counselor_scope,
+            has_counselor_job=has_counselor_job,
+        )
+    ]
 
 
 @router.get("/posts")
@@ -511,8 +549,23 @@ async def get_posts(
 
     # 排序和分页
     query = query.order_by(Post.publish_date.desc())
-    total = query.count()
-    posts = query.offset(skip).limit(limit).all()
+    if should_filter_by_counselor_state(
+        is_counselor=is_counselor,
+        counselor_scope=counselor_scope,
+        has_counselor_job=has_counselor_job,
+    ):
+        ordered_posts = query.all()
+        filtered_posts = filter_posts_by_counselor_state(
+            ordered_posts,
+            is_counselor=is_counselor,
+            counselor_scope=counselor_scope,
+            has_counselor_job=has_counselor_job,
+        )
+        total = len(filtered_posts)
+        posts = filtered_posts[skip:skip + limit]
+    else:
+        total = query.count()
+        posts = query.offset(skip).limit(limit).all()
 
     payload = {
         "total": total,
@@ -583,6 +636,12 @@ async def get_posts_summary(
         counselor_scope=counselor_scope,
         has_counselor_job=has_counselor_job,
     ).all()
+    posts = filter_posts_by_counselor_state(
+        posts,
+        is_counselor=is_counselor,
+        counselor_scope=counselor_scope,
+        has_counselor_job=has_counselor_job,
+    )
     total_posts = len(posts)
     counselor_posts = sum(1 for post in posts if is_counselor_related_post(post))
     analyzed_posts = sum(

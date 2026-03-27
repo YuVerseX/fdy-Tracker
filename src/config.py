@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     AI_ANALYSIS_MODEL: str = "gpt-5-mini"
     AI_PROMPT_VERSION: str = "v1"
 
+    # 管理台鉴权
+    ADMIN_USERNAME: str = ""
+    ADMIN_PASSWORD: str = ""
+
     # 路径配置
     @property
     def BASE_DIR(self) -> Path:

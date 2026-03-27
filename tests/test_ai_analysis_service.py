@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -22,6 +22,7 @@ from src.services.ai_analysis_service import (
     call_openai_insight,
     coerce_ai_analysis_payload,
     extract_json_object,
+    get_analysis_summary,
     get_analysis_runtime_status,
     get_insight_summary,
     infer_event_type,
@@ -533,6 +534,85 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["deadline_status_distribution"][0]["deadline_status"], "报名中")
         self.assertEqual(summary["city_distribution"][0]["city"], "南京")
 
+    def test_get_analysis_summary_should_exclude_duplicate_posts(self):
+        from src.database.models import PostInsight
+
+        duplicate_post = self.db.query(Post).filter(Post.id == 2).first()
+        duplicate_post.duplicate_status = "duplicate"
+        duplicate_post.primary_post_id = 1
+        self.db.add(PostAnalysis(
+            post_id=2,
+            analysis_status="success",
+            analysis_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            event_type="招聘公告",
+            recruitment_stage="招聘启动",
+            tracking_priority="high",
+            school_name="苏州高校",
+            city="苏州",
+            should_track=True,
+            summary="重复记录分析",
+            tags_json="[]",
+            entities_json="[]",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 11, tzinfo=timezone.utc),
+        ))
+        self.db.add_all([
+            PostInsight(
+                post_id=1,
+                insight_status="success",
+                insight_provider="openai",
+                model_name="gpt-5.4",
+                prompt_version="v1",
+                recruitment_count_total=3,
+                counselor_recruitment_count=3,
+                degree_floor="硕士",
+                city_list_json=json.dumps(["南京"], ensure_ascii=False),
+                gender_restriction="不限",
+                political_status_required="中共党员",
+                deadline_text="2026年4月1日",
+                deadline_date=datetime(2026, 4, 1, tzinfo=timezone.utc),
+                deadline_status="报名中",
+                has_written_exam=True,
+                has_interview=True,
+                has_attachment_job_table=True,
+                evidence_summary="主记录统计",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 10, tzinfo=timezone.utc),
+            ),
+            PostInsight(
+                post_id=2,
+                insight_status="success",
+                insight_provider="openai",
+                model_name="gpt-5.4",
+                prompt_version="v1",
+                recruitment_count_total=1,
+                counselor_recruitment_count=1,
+                degree_floor="本科",
+                city_list_json=json.dumps(["苏州"], ensure_ascii=False),
+                gender_restriction="未说明",
+                political_status_required="",
+                deadline_text="",
+                deadline_status="未说明",
+                has_written_exam=None,
+                has_interview=None,
+                has_attachment_job_table=False,
+                evidence_summary="重复记录统计",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 11, tzinfo=timezone.utc),
+            ),
+        ])
+        self.db.commit()
+
+        summary = get_analysis_summary(self.db)
+
+        self.assertEqual(summary["overview"]["total_posts"], 1)
+        self.assertEqual(summary["overview"]["analyzed_posts"], 1)
+        self.assertEqual(summary["overview"]["openai_analyzed_posts"], 1)
+        self.assertEqual(summary["overview"]["pending_posts"], 0)
+        self.assertEqual(summary["insight_overview"]["insight_posts"], 1)
+
     async def test_run_ai_analysis_should_backfill_missing_insight_for_existing_openai_analysis(self):
         from src.database.models import PostInsight
 
@@ -593,6 +673,366 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["insight_success_count"], 1)
         self.assertIsNotNone(saved_insight)
         self.assertEqual(saved_insight.deadline_status, "报名中")
+
+    async def test_run_ai_analysis_should_upgrade_rule_insight_when_openai_analysis_success(self):
+        from src.database.models import PostInsight
+
+        self.db.add(Source(
+            id=2,
+            name="南京市人社局",
+            province="江苏",
+            source_type="government_website",
+            base_url="https://example.com/source-2",
+            scraper_class="NanjingHRSSScraper",
+            is_active=True,
+        ))
+        self.db.add(Post(
+            id=3,
+            source_id=2,
+            title="南京某高校辅导员招聘公告",
+            content="报名截止时间为2026年4月2日。",
+            publish_date=datetime(2026, 3, 12, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/3",
+            original_url="https://example.com/posts/3",
+            is_counselor=True,
+            counselor_scope="contains",
+            has_counselor_job=True,
+        ))
+        self.db.add(PostAnalysis(
+            post_id=3,
+            analysis_status="success",
+            analysis_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            event_type="招聘公告",
+            recruitment_stage="招聘启动",
+            tracking_priority="high",
+            school_name="南京某高校",
+            city="南京",
+            should_track=True,
+            summary="已有 OpenAI 分析",
+            tags_json="[]",
+            entities_json="[]",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 12, tzinfo=timezone.utc),
+        ))
+        self.db.add(PostInsight(
+            post_id=3,
+            insight_status="success",
+            insight_provider="rule",
+            model_name="rule-based",
+            prompt_version="v1",
+            recruitment_count_total=1,
+            counselor_recruitment_count=1,
+            degree_floor="本科",
+            city_list_json=json.dumps(["南京"], ensure_ascii=False),
+            gender_restriction="未说明",
+            political_status_required="",
+            deadline_text="",
+            deadline_status="未说明",
+            has_written_exam=None,
+            has_interview=None,
+            has_attachment_job_table=False,
+            evidence_summary="",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 12, tzinfo=timezone.utc),
+        ))
+        self.db.commit()
+
+        with patch(
+            "src.services.ai_analysis_service.analyze_post",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("已有成功 OpenAI analysis，不应重复跑 analysis"),
+        ), patch(
+            "src.services.ai_analysis_service.analyze_post_insight",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIInsightResult(
+                    recruitment_count_total=3,
+                    counselor_recruitment_count=3,
+                    degree_floor="硕士",
+                    city_list=["南京"],
+                    gender_restriction="不限",
+                    political_status_required="中共党员",
+                    deadline_text="2026年4月2日",
+                    deadline_date="2026-04-02",
+                    deadline_status="报名中",
+                    has_written_exam=True,
+                    has_interview=True,
+                    has_attachment_job_table=True,
+                    evidence_summary="OpenAI insight 回填。",
+                ),
+                error_message="",
+                raw_result={"source": "openai-insight"},
+            ),
+        ) as mocked_insight:
+            result = await run_ai_analysis(self.db, source_id=2, limit=10, only_unanalyzed=True)
+
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 3).first()
+        self.assertEqual(result["posts_scanned"], 1)
+        self.assertEqual(result["analysis_reused_count"], 1)
+        self.assertEqual(result["insight_success_count"], 1)
+        self.assertEqual(mocked_insight.await_count, 1)
+        self.assertIsNotNone(saved_insight)
+        self.assertEqual(saved_insight.insight_provider, "openai")
+
+    async def test_run_ai_analysis_should_keep_openai_provider_when_openai_insight_unavailable(self):
+        from src.database.models import PostInsight
+
+        self.db.add(Source(
+            id=4,
+            name="无锡市人社局",
+            province="江苏",
+            source_type="government_website",
+            base_url="https://example.com/source-4",
+            scraper_class="WuxiHRSSScraper",
+            is_active=True,
+        ))
+        self.db.add(Post(
+            id=4,
+            source_id=4,
+            title="无锡某高校专职辅导员招聘公告",
+            content="报名截止时间为2026年4月5日。",
+            publish_date=datetime(2026, 3, 13, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/4",
+            original_url="https://example.com/posts/4",
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+        ))
+        self.db.add(PostAnalysis(
+            post_id=4,
+            analysis_status="success",
+            analysis_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            event_type="招聘公告",
+            recruitment_stage="招聘启动",
+            tracking_priority="high",
+            school_name="无锡某高校",
+            city="无锡",
+            should_track=True,
+            summary="已有 OpenAI 分析",
+            tags_json="[]",
+            entities_json="[]",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 13, tzinfo=timezone.utc),
+        ))
+        self.db.commit()
+
+        with patch(
+            "src.services.ai_analysis_service.get_openai_client",
+            return_value=None,
+        ), patch(
+            "src.services.ai_analysis_service.settings.AI_ANALYSIS_ENABLED",
+            True,
+        ), patch(
+            "src.services.ai_analysis_service.settings.OPENAI_BASE_URL",
+            "",
+        ):
+            result = await run_ai_analysis(self.db, source_id=4, limit=10, only_unanalyzed=True)
+
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 4).first()
+        self.assertEqual(result["analysis_reused_count"], 1)
+        self.assertEqual(result["insight_skipped_count"], 1)
+        self.assertIsNotNone(saved_insight)
+        self.assertEqual(saved_insight.insight_status, "skipped")
+        self.assertEqual(saved_insight.insight_provider, "openai")
+
+    async def test_run_ai_analysis_should_rerun_existing_openai_analysis_when_only_unanalyzed_false(self):
+        from src.database.models import PostInsight
+
+        self.db.add(Source(
+            id=5,
+            name="苏州市人社局",
+            province="江苏",
+            source_type="government_website",
+            base_url="https://example.com/source-5",
+            scraper_class="SuzhouHRSSScraper",
+            is_active=True,
+        ))
+        self.db.add(Post(
+            id=5,
+            source_id=5,
+            title="苏州某高校专职辅导员招聘公告",
+            content="报名截止时间为2026年4月6日。",
+            publish_date=datetime(2026, 3, 14, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/5",
+            original_url="https://example.com/posts/5",
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+        ))
+        self.db.add(PostAnalysis(
+            post_id=5,
+            analysis_status="success",
+            analysis_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            event_type="招聘公告",
+            recruitment_stage="招聘启动",
+            tracking_priority="high",
+            school_name="苏州某高校",
+            city="苏州",
+            should_track=True,
+            summary="旧版 OpenAI 分析",
+            tags_json="[]",
+            entities_json="[]",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 14, tzinfo=timezone.utc),
+        ))
+        self.db.add(PostInsight(
+            post_id=5,
+            insight_status="success",
+            insight_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            recruitment_count_total=1,
+            counselor_recruitment_count=1,
+            degree_floor="硕士",
+            city_list_json=json.dumps(["苏州"], ensure_ascii=False),
+            gender_restriction="不限",
+            political_status_required="中共党员",
+            deadline_text="2026年4月6日",
+            deadline_status="报名中",
+            has_written_exam=True,
+            has_interview=True,
+            has_attachment_job_table=False,
+            evidence_summary="旧版统计结果",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 14, tzinfo=timezone.utc),
+        ))
+        self.db.commit()
+
+        with patch(
+            "src.services.ai_analysis_service.analyze_post",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIAnalysisResult(
+                    event_type="招聘公告",
+                    recruitment_stage="招聘启动",
+                    school_name="苏州某高校",
+                    city="苏州",
+                    should_track=True,
+                    tracking_priority="high",
+                    summary="新版 OpenAI 分析",
+                    tags=["辅导员招聘"],
+                    entities=["苏州某高校"],
+                ),
+                error_message="",
+                raw_result={"version": "rerun"},
+            ),
+        ) as mocked_analysis, patch(
+            "src.services.ai_analysis_service.analyze_post_insight",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIInsightResult(
+                    recruitment_count_total=2,
+                    counselor_recruitment_count=2,
+                    degree_floor="硕士",
+                    city_list=["苏州"],
+                    gender_restriction="不限",
+                    political_status_required="中共党员",
+                    deadline_text="2026年4月6日",
+                    deadline_date="2026-04-06",
+                    deadline_status="报名中",
+                    has_written_exam=True,
+                    has_interview=True,
+                    has_attachment_job_table=False,
+                    evidence_summary="新版统计结果",
+                ),
+                error_message="",
+                raw_result={"version": "rerun-insight"},
+            ),
+        ) as mocked_insight:
+            result = await run_ai_analysis(self.db, source_id=5, limit=10, only_unanalyzed=False)
+
+        saved_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 5).first()
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 5).first()
+        self.assertEqual(result["posts_scanned"], 1)
+        self.assertEqual(result["analysis_reused_count"], 0)
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(mocked_analysis.await_count, 1)
+        self.assertEqual(mocked_insight.await_count, 1)
+        self.assertEqual(saved_analysis.summary, "新版 OpenAI 分析")
+        self.assertEqual(saved_insight.recruitment_count_total, 2)
+
+    async def test_run_ai_analysis_should_skip_duplicate_posts(self):
+        self.db.add(Source(
+            id=6,
+            name="常州市人社局",
+            province="江苏",
+            source_type="government_website",
+            base_url="https://example.com/source-6",
+            scraper_class="ChangzhouHRSSScraper",
+            is_active=True,
+        ))
+        self.db.add_all([
+            Post(
+                id=6,
+                source_id=6,
+                title="常州某高校专职辅导员招聘公告",
+                content="报名截止时间为2026年4月8日。",
+                publish_date=datetime(2026, 3, 15, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/6",
+                original_url="https://example.com/posts/6",
+                is_counselor=True,
+                counselor_scope="dedicated",
+                has_counselor_job=True,
+            ),
+            Post(
+                id=7,
+                source_id=6,
+                title="常州某高校专职辅导员招聘公告（重复）",
+                content="报名截止时间为2026年4月8日。",
+                publish_date=datetime(2026, 3, 15, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/7",
+                original_url="https://example.com/posts/7",
+                is_counselor=True,
+                counselor_scope="dedicated",
+                has_counselor_job=True,
+                duplicate_status="duplicate",
+                primary_post_id=6,
+            ),
+        ])
+        self.db.commit()
+
+        with patch(
+            "src.services.ai_analysis_service.analyze_post",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="rule",
+                model_name="rule-based",
+                result=AIAnalysisResult(
+                    event_type="招聘公告",
+                    recruitment_stage="招聘启动",
+                    school_name="常州某高校",
+                    city="常州",
+                    should_track=True,
+                    tracking_priority="high",
+                    summary="规则分析",
+                    tags=["辅导员招聘"],
+                    entities=["常州某高校"],
+                ),
+                error_message="",
+                raw_result={"source": "rule"},
+            ),
+        ) as mocked_analysis:
+            result = await run_ai_analysis(self.db, source_id=6, limit=10, only_unanalyzed=True)
+
+        self.assertEqual(result["posts_scanned"], 1)
+        self.assertEqual(result["posts_analyzed"], 1)
+        self.assertEqual(mocked_analysis.await_count, 1)
 
 
 if __name__ == "__main__":

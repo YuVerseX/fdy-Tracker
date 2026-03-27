@@ -257,6 +257,64 @@ class AIInsightServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(saved_insight)
         self.assertEqual(saved_insight.insight_provider, "openai")
 
+    async def test_run_ai_analysis_should_not_reuse_failed_openai_analysis_for_insight(self):
+        post = Post(
+            source_id=1,
+            title="苏州大学2026年公开招聘辅导员公告",
+            content="报名截止到2026年4月15日。",
+            publish_date=datetime(2026, 3, 2, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/insight-failed-openai",
+            original_url="https://example.com/posts/insight-failed-openai",
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+        )
+        self.db.add(post)
+        self.db.flush()
+        self.db.add(PostAnalysis(
+            post_id=post.id,
+            analysis_status="failed",
+            analysis_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            error_message="解析失败",
+        ))
+        self.db.commit()
+
+        with patch(
+            "src.services.ai_analysis_service.analyze_post",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                provider="rule",
+                result=AIAnalysisResult(
+                    event_type="招聘公告",
+                    recruitment_stage="招聘启动",
+                    school_name="苏州大学",
+                    city="苏州",
+                    should_track=True,
+                    tracking_priority="medium",
+                    summary="回退规则分析",
+                    tags=["辅导员相关"],
+                    entities=["苏州大学"],
+                ),
+                error_message="",
+                raw_result={"source": "rule"},
+                model_name="rule-based",
+            ),
+        ) as mocked_analysis, patch(
+            "src.services.ai_analysis_service.analyze_post_insight",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("失败 OpenAI analysis 不应直接复用 OpenAI insight"),
+        ):
+            result = await run_ai_analysis(self.db, limit=10, only_unanalyzed=True)
+
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == post.id).first()
+        self.assertEqual(result["analysis_reused_count"], 0)
+        self.assertEqual(result["insight_fallback_count"], 1)
+        self.assertEqual(mocked_analysis.await_count, 1)
+        self.assertIsNotNone(saved_insight)
+        self.assertEqual(saved_insight.insight_provider, "rule")
+
     def test_get_insight_summary_should_include_insight_overview(self):
         post = Post(
             source_id=1,

@@ -359,11 +359,17 @@ const fetchLatestSuccessTask = async () => {
   freshnessLoading.value = true
   freshnessUnavailable.value = false
   latestSuccessTask.value = null
+  const isRestricted = (error) => [401, 403, 503].includes(error?.response?.status)
 
   try {
     const summaryResponse = await adminApi.getTaskSummary()
     latestSuccessTask.value = normalizeSummaryResponse(summaryResponse.data)
   } catch (err) {
+    if (isRestricted(err)) {
+      freshnessUnavailable.value = true
+      freshnessLoading.value = false
+      return
+    }
     if (err?.response?.status && err.response.status !== 404) {
       console.warn('任务摘要接口异常，准备回退到 task-runs:', err)
     }
@@ -374,6 +380,11 @@ const fetchLatestSuccessTask = async () => {
       const runsResponse = await adminApi.getTaskRuns({ limit: 20 })
       latestSuccessTask.value = normalizeRunsResponse(runsResponse.data?.items || [])
     } catch (err) {
+      if (isRestricted(err)) {
+        freshnessUnavailable.value = true
+        freshnessLoading.value = false
+        return
+      }
       freshnessUnavailable.value = true
       console.warn('获取后台任务记录失败:', err)
     }
@@ -383,7 +394,10 @@ const fetchLatestSuccessTask = async () => {
 }
 
 const goBack = () => {
-  router.push({ name: 'PostList' })
+  router.replace({
+    name: 'PostList',
+    query: { ...route.query }
+  })
 }
 
 const formatDate = (dateString) => {
@@ -492,7 +506,7 @@ const normalizeCounselorScope = (scope, isCounselor) => {
   if (normalizedScope && normalizedScope !== 'none') {
     return normalizedScope
   }
-  return isCounselor ? 'dedicated' : ''
+  return isCounselor ? 'related' : ''
 }
 
 const getCounselorScope = (postData) => {
@@ -734,7 +748,9 @@ const formatDateTime = (value) => {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Shanghai'
   })
 }
 

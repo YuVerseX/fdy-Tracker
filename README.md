@@ -14,7 +14,7 @@
 
 - 多数据源能力还没落地
 - 结果公示类帖子的岗位口径还在持续收口
-- 没有登录鉴权、监控，部署链路还缺 HTTPS 和长期运行验证
+- 监控、HTTPS 和长期运行验证还没补齐
 
 ## 当前能力
 
@@ -72,6 +72,10 @@ npm run dev
 
 - 地址：`/admin`
 - 作用：看任务状态、触发抓取、附件补处理、AI 分析、岗位重建、查看统计摘要
+- 现在默认要求后台账号密码
+  - 环境变量：`ADMIN_USERNAME` / `ADMIN_PASSWORD`
+  - 不配置时管理接口会返回 `503`
+  - 前端会话内登录，不做长期记住
 
 ## 常用命令
 
@@ -172,6 +176,8 @@ fdy-Tracker/
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
 - `AI_ANALYSIS_MODEL`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
 - `WEB_PORT`
 - `GHCR_NAMESPACE`
 - `IMAGE_TAG`

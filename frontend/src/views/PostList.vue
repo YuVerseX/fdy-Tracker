@@ -386,10 +386,16 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { postsApi, adminApi } from '../api/posts'
+import {
+  DEFAULT_COUNSELOR_SCOPE,
+  buildPostParams as buildPostRequestParams,
+  buildStatsParams as buildStatsRequestParams
+} from '../utils/postFilters'
 
 const router = useRouter()
+const route = useRoute()
 
 // State
 const posts = ref([])
@@ -403,7 +409,6 @@ const showAdvancedFilters = ref(false)
 const freshnessLoading = ref(false)
 const freshnessUnavailable = ref(false)
 const latestSuccessTask = ref(null)
-const DEFAULT_COUNSELOR_SCOPE = 'any'
 const totalMatchedPosts = ref(0)
 const scopeTotals = ref({
   any: 0,
@@ -429,6 +434,7 @@ const statsSummary = ref({
   new_in_days: 0,
   days: 7
 })
+const LIST_SCOPE_OPTIONS = ['any', 'dedicated', 'contains', 'all']
 
 // Advanced Filters
 const filters = ref({
@@ -458,64 +464,90 @@ const latestSuccessText = computed(() => {
 const eventTypeOptions = computed(() => statsSummary.value?.event_type_distribution || [])
 
 // Methods
-const applySharedFilters = (params) => {
-  const normalizedSearch = searchQuery.value.trim()
-
-  if (normalizedSearch) {
-    params.search = normalizedSearch
+const getSingleQueryValue = (value) => {
+  if (Array.isArray(value)) {
+    return value[0] ?? ''
   }
-
-  if (filters.value.gender) {
-    params.gender = filters.value.gender
-  }
-
-  if (filters.value.education) {
-    params.education = filters.value.education
-  }
-
-  if (filters.value.location) {
-    params.location = filters.value.location
-  }
-
-  if (filters.value.eventType) {
-    params.event_type = filters.value.eventType
-  }
-
-  if (filters.value.hasContent) {
-    params.has_content = true
-  }
-
-  return params
+  return value ?? ''
 }
 
-const applyCounselorScopeFilter = (params, scope) => {
-  if (scope === 'any') {
-    params.is_counselor = true
+const parseQueryText = (value) => String(getSingleQueryValue(value) || '').trim()
+
+const parseQueryBoolean = (value, fallback = false) => {
+  const normalized = parseQueryText(value).toLowerCase()
+  if (['1', 'true', 'yes'].includes(normalized)) return true
+  if (['0', 'false', 'no'].includes(normalized)) return false
+  return fallback
+}
+
+const parseQueryPage = (value) => {
+  const parsed = Number.parseInt(parseQueryText(value), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1
+}
+
+const parseRouteScope = (value) => {
+  const normalized = parseQueryText(value)
+  return LIST_SCOPE_OPTIONS.includes(normalized) ? normalized : DEFAULT_COUNSELOR_SCOPE
+}
+
+const hasAdvancedFilterSelection = (nextFilters) => {
+  return Boolean(
+    nextFilters.gender ||
+    nextFilters.education ||
+    nextFilters.location ||
+    nextFilters.eventType ||
+    nextFilters.hasContent
+  )
+}
+
+const buildListRouteQuery = () => {
+  const query = {}
+  const normalizedSearch = searchQuery.value.trim()
+
+  if (normalizedSearch) query.search = normalizedSearch
+  if (filters.value.gender) query.gender = filters.value.gender
+  if (filters.value.education) query.education = filters.value.education
+  if (filters.value.location) query.location = filters.value.location
+  if (filters.value.eventType) query.event_type = filters.value.eventType
+  if (filters.value.counselorScope !== DEFAULT_COUNSELOR_SCOPE) query.scope = filters.value.counselorScope
+  if (filters.value.hasContent) query.has_content = 'true'
+  if (currentPage.value > 1) query.page = String(currentPage.value)
+
+  return query
+}
+
+const syncListRouteQuery = () => {
+  void router.replace({
+    name: 'PostList',
+    query: buildListRouteQuery()
+  })
+}
+
+const hydrateStateFromRoute = () => {
+  const nextFilters = {
+    gender: parseQueryText(route.query.gender),
+    education: parseQueryText(route.query.education),
+    location: parseQueryText(route.query.location),
+    eventType: parseQueryText(route.query.event_type),
+    counselorScope: parseRouteScope(route.query.scope),
+    hasContent: parseQueryBoolean(route.query.has_content, false)
   }
 
-  if (scope === 'dedicated') {
-    params.counselor_scope = 'dedicated'
-    params.is_counselor = true
-  }
-
-  if (scope === 'contains') {
-    params.counselor_scope = 'contains'
-    params.has_counselor_job = true
-  }
-
-  return params
+  searchQuery.value = parseQueryText(route.query.search)
+  currentPage.value = parseQueryPage(route.query.page)
+  filters.value = nextFilters
+  showAdvancedFilters.value = hasAdvancedFilterSelection(nextFilters)
 }
 
 const buildPostParams = ({ scope = filters.value.counselorScope, skip = 0, limit = pageSize } = {}) => {
-  const params = {
+  return buildPostRequestParams({
+    searchQuery: searchQuery.value,
+    filters: filters.value,
+    scope,
     skip,
-    limit
-  }
-
-  applySharedFilters(params)
-  applyCounselorScopeFilter(params, scope)
-
-  return params
+    limit,
+    defaultCounselorScope: DEFAULT_COUNSELOR_SCOPE
+  })
 }
 
 const triggerFetch = ({ debounce = false } = {}) => {
@@ -611,6 +643,7 @@ const fetchPosts = async () => {
 
 const handleSearch = () => {
   currentPage.value = 1
+  syncListRouteQuery()
   triggerFetch({ debounce: true })
   triggerStatsFetch({ debounce: true })
 }
@@ -621,12 +654,14 @@ const handleSearchInput = () => {
 
 const handleLocationInput = () => {
   currentPage.value = 1
+  syncListRouteQuery()
   triggerFetch({ debounce: true })
   triggerStatsFetch({ debounce: true })
 }
 
 const handleFilter = (changedField = '') => {
   currentPage.value = 1
+  syncListRouteQuery()
   const shouldDebounce = FILTER_DEBOUNCE_FIELDS.has(changedField)
   triggerFetch({ debounce: shouldDebounce })
   triggerStatsFetch({ debounce: shouldDebounce })
@@ -634,6 +669,7 @@ const handleFilter = (changedField = '') => {
 
 const handleManualSearch = () => {
   currentPage.value = 1
+  syncListRouteQuery()
   triggerFetch({ debounce: false })
   triggerStatsFetch({ debounce: false })
 }
@@ -654,24 +690,35 @@ const clearFilters = () => {
 const goToPage = (page) => {
   if (page >= 1 && page <= totalPages.value) {
     currentPage.value = page
+    syncListRouteQuery()
     fetchPosts()
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 }
 
 const goToDetail = (id) => {
-  router.push({ name: 'PostDetail', params: { id } })
+  router.push({
+    name: 'PostDetail',
+    params: { id },
+    query: { ...route.query }
+  })
 }
 
 const fetchLatestSuccessTask = async () => {
   freshnessLoading.value = true
   freshnessUnavailable.value = false
   latestSuccessTask.value = null
+  const isRestricted = (error) => [401, 403, 503].includes(error?.response?.status)
 
   try {
     const summaryResponse = await adminApi.getTaskSummary()
     latestSuccessTask.value = normalizeSummaryResponse(summaryResponse.data)
   } catch (err) {
+    if (isRestricted(err)) {
+      freshnessUnavailable.value = true
+      freshnessLoading.value = false
+      return
+    }
     if (err?.response?.status && err.response.status !== 404) {
       console.warn('任务摘要接口异常，准备回退到 task-runs:', err)
     }
@@ -682,6 +729,11 @@ const fetchLatestSuccessTask = async () => {
       const runsResponse = await adminApi.getTaskRuns({ limit: 20 })
       latestSuccessTask.value = normalizeRunsResponse(runsResponse.data?.items || [])
     } catch (err) {
+      if (isRestricted(err)) {
+        freshnessUnavailable.value = true
+        freshnessLoading.value = false
+        return
+      }
       freshnessUnavailable.value = true
       console.warn('获取后台任务记录失败:', err)
     }
@@ -691,13 +743,12 @@ const fetchLatestSuccessTask = async () => {
 }
 
 const buildStatsParams = () => {
-  const params = { days: 7 }
-  applySharedFilters(params)
-  applyCounselorScopeFilter(params, filters.value.counselorScope)
-  delete params.event_type
-  delete params.skip
-  delete params.limit
-  return params
+  return buildStatsRequestParams({
+    days: 7,
+    searchQuery: searchQuery.value,
+    filters: filters.value,
+    defaultCounselorScope: DEFAULT_COUNSELOR_SCOPE
+  })
 }
 
 const fetchStatsSummary = async () => {
@@ -884,7 +935,9 @@ const formatDateTime = (value) => {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Shanghai'
   })
 }
 
@@ -937,6 +990,7 @@ const getErrorMessage = (err, fallback) => {
 
 // Lifecycle
 onMounted(() => {
+  hydrateStateFromRoute()
   fetchPosts()
   fetchLatestSuccessTask()
   fetchStatsSummary()

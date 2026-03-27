@@ -1,12 +1,15 @@
 """后台管理接口"""
 import asyncio
 from contextlib import suppress
+import secrets
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from src.config import settings
 from src.database.database import SessionLocal, get_db
 from src.database.models import Post, PostJob, Source
 from src.services.ai_analysis_service import (
@@ -35,7 +38,49 @@ from src.services.duplicate_service import (
 from src.services.post_job_service import backfill_post_jobs, get_job_index_summary
 from src.services.scraper_service import backfill_existing_attachments, scrape_and_save
 
-router = APIRouter()
+admin_security = HTTPBasic(auto_error=False)
+
+
+def _secure_compare_text(left: str, right: str) -> bool:
+    """支持 Unicode 的常量时间文本比较。"""
+    return secrets.compare_digest(
+        (left or "").encode("utf-8"),
+        (right or "").encode("utf-8"),
+    )
+
+
+def require_admin_access(credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> str:
+    """统一校验后台访问凭证。"""
+    expected_username = (settings.ADMIN_USERNAME or "").strip()
+    expected_password = (settings.ADMIN_PASSWORD or "").strip()
+
+    if not expected_username or not expected_password:
+        raise HTTPException(
+            status_code=503,
+            detail="后台鉴权还没配置，请先设置 ADMIN_USERNAME 和 ADMIN_PASSWORD。",
+        )
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="后台登录已开启，请先登录后再访问。",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    if not _secure_compare_text(credentials.username or "", expected_username) or not _secure_compare_text(
+        credentials.password or "",
+        expected_password,
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="后台登录失败，请检查账号或密码。",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    return credentials.username
+
+
+router = APIRouter(dependencies=[Depends(require_admin_access)])
 SCRAPE_TASK_TYPES = ["manual_scrape", "scheduled_scrape", "duplicate_backfill"]
 TASK_TYPE_LABELS = {
     "manual_scrape": "手动抓取最新数据",
@@ -87,6 +132,26 @@ class UpdateSchedulerConfigRequest(BaseModel):
     interval_seconds: int = Field(default=7200, ge=60, le=86400)
     default_source_id: int = Field(default=1, ge=1)
     default_max_pages: int = Field(default=5, ge=1, le=50)
+
+
+def build_progress_details(
+    progress_mode: str,
+    *,
+    completed: int | None = None,
+    total: int | None = None,
+    unit: str | None = None,
+) -> dict:
+    """统一生成任务进度元数据。"""
+    details = {
+        "progress_mode": progress_mode,
+    }
+    if completed is not None or total is not None or unit:
+        details["metrics"] = {
+            "completed": completed,
+            "total": total,
+            "unit": unit or "items",
+        }
+    return details
 
 
 def _get_task_type_label(task_type: str) -> str:
@@ -175,6 +240,12 @@ async def _run_duplicate_backfill_in_background(
                 status="running",
                 phase=phase,
                 progress=progress,
+                details=build_progress_details(
+                    "determinate",
+                    completed=progress,
+                    total=100,
+                    unit="percent",
+                ),
             )
 
         update_task_run(
@@ -182,6 +253,7 @@ async def _run_duplicate_backfill_in_background(
             status="running",
             phase="正在准备历史去重补齐",
             progress=10,
+            details=build_progress_details("determinate", completed=10, total=100, unit="percent"),
         )
         result = backfill_unchecked_duplicate_posts(
             db,
@@ -193,6 +265,7 @@ async def _run_duplicate_backfill_in_background(
             status="running",
             phase="正在整理去重结果",
             progress=97,
+            details=build_progress_details("determinate", completed=97, total=100, unit="percent"),
         )
         record_task_run(
             task_type="duplicate_backfill",
@@ -204,7 +277,8 @@ async def _run_duplicate_backfill_in_background(
             ),
             details={
                 **params,
-                **result
+                **result,
+                **build_progress_details("determinate", completed=100, total=100, unit="percent"),
             },
             params=params,
             task_id=task_id,
@@ -219,7 +293,8 @@ async def _run_duplicate_backfill_in_background(
             summary="历史去重补齐失败",
             details={
                 **params,
-                "error": str(exc)
+                "error": str(exc),
+                **build_progress_details("determinate", completed=100, total=100, unit="percent"),
             },
             params=params,
             task_id=task_id,
@@ -244,6 +319,7 @@ async def _run_scrape_task_in_background(
             status="running",
             phase="正在准备抓取任务",
             progress=10,
+            details=build_progress_details("indeterminate"),
         )
         processed_records = await _run_with_heartbeat(
             task_id=task_id,
@@ -264,12 +340,16 @@ async def _run_scrape_task_in_background(
             status="running",
             phase="正在整理抓取结果",
             progress=90,
+            details=build_progress_details("indeterminate"),
         )
         record_task_run(
             task_type="manual_scrape",
             status="success",
             summary=f"手动抓取完成，新增或更新 {processed_records} 条记录",
-            details=details,
+            details={
+                **details,
+                **build_progress_details("indeterminate"),
+            },
             params=params,
             task_id=task_id,
             started_at=started_at,
@@ -283,7 +363,8 @@ async def _run_scrape_task_in_background(
             summary="手动抓取失败",
             details={
                 **params,
-                "error": str(exc)
+                "error": str(exc),
+                **build_progress_details("indeterminate"),
             },
             params=params,
             task_id=task_id,
@@ -308,6 +389,7 @@ async def _run_attachment_backfill_in_background(
             status="running",
             phase="正在准备历史附件补处理",
             progress=10,
+            details=build_progress_details("indeterminate"),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
@@ -324,6 +406,7 @@ async def _run_attachment_backfill_in_background(
             status="running",
             phase="正在整理附件补处理结果",
             progress=90,
+            details=build_progress_details("indeterminate"),
         )
         record_task_run(
             task_type="attachment_backfill",
@@ -334,7 +417,8 @@ async def _run_attachment_backfill_in_background(
             ),
             details={
                 **params,
-                **result
+                **result,
+                **build_progress_details("indeterminate"),
             },
             params=params,
             task_id=task_id,
@@ -349,7 +433,8 @@ async def _run_attachment_backfill_in_background(
             summary="历史附件补处理失败",
             details={
                 **params,
-                "error": str(exc)
+                "error": str(exc),
+                **build_progress_details("indeterminate"),
             },
             params=params,
             task_id=task_id,
@@ -374,6 +459,7 @@ async def _run_ai_analysis_in_background(
             status="running",
             phase="正在准备 AI 分析任务",
             progress=10,
+            details=build_progress_details("indeterminate"),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
@@ -392,6 +478,7 @@ async def _run_ai_analysis_in_background(
             status="running",
             phase="正在整理 AI 分析结果",
             progress=90,
+            details=build_progress_details("indeterminate"),
         )
         record_task_run(
             task_type="ai_analysis",
@@ -402,7 +489,8 @@ async def _run_ai_analysis_in_background(
             ),
             details={
                 **params,
-                **result
+                **result,
+                **build_progress_details("indeterminate"),
             },
             params=params,
             task_id=task_id,
@@ -417,7 +505,8 @@ async def _run_ai_analysis_in_background(
             summary="AI 分析失败",
             details={
                 **params,
-                "error": str(exc)
+                "error": str(exc),
+                **build_progress_details("indeterminate"),
             },
             params=params,
             task_id=task_id,
@@ -442,6 +531,7 @@ async def _run_job_extraction_in_background(
             status="running",
             phase="正在准备岗位级抽取任务",
             progress=10,
+            details=build_progress_details("indeterminate"),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
@@ -460,6 +550,7 @@ async def _run_job_extraction_in_background(
             status="running",
             phase="正在整理岗位抽取结果",
             progress=90,
+            details=build_progress_details("indeterminate"),
         )
         record_task_run(
             task_type="job_extraction",
@@ -471,6 +562,7 @@ async def _run_job_extraction_in_background(
             details={
                 **params,
                 **result,
+                **build_progress_details("indeterminate"),
             },
             params=params,
             task_id=task_id,
@@ -485,7 +577,8 @@ async def _run_job_extraction_in_background(
             summary="岗位级抽取失败",
             details={
                 **params,
-                "error": str(exc)
+                "error": str(exc),
+                **build_progress_details("indeterminate"),
             },
             params=params,
             task_id=task_id,

@@ -86,6 +86,31 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertTrue(updated.get("heartbeat_at"))
         self.assertGreaterEqual(updated.get("heartbeat_at"), original_heartbeat)
 
+    def test_update_task_run_should_preserve_progress_mode_and_metrics(self):
+        created = admin_task_service.start_task_run(
+            task_type="duplicate_backfill",
+            summary="历史去重补齐进行中",
+            params={"limit": 200},
+        )
+
+        updated = admin_task_service.update_task_run(
+            task_id=created["id"],
+            phase="正在识别重复分组",
+            progress=46,
+            details={
+                "progress_mode": "determinate",
+                "metrics": {
+                    "completed": 46,
+                    "total": 100,
+                    "unit": "percent",
+                },
+            },
+        )
+
+        self.assertEqual(updated["details"]["progress_mode"], "determinate")
+        self.assertEqual(updated["details"]["metrics"]["completed"], 46)
+        self.assertEqual(updated["details"]["metrics"]["total"], 100)
+
     def test_load_task_runs_should_mark_stale_running_task_as_failed(self):
         self.write_task_runs([
             {

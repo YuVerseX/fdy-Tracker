@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -13,11 +13,14 @@ from src.services.attachment_service import write_attachment_parse_result
 from src.services.post_job_service import (
     COUNSELOR_SCOPE_CONTAINS,
     COUNSELOR_SCOPE_DEDICATED,
+    COUNSELOR_SCOPE_NONE,
+    backfill_post_jobs,
     backfill_post_counselor_flags,
     build_job_snapshot,
     build_post_job_payload,
     count_displayable_jobs,
     filter_displayable_jobs,
+    get_job_index_summary,
     get_post_counselor_state,
     is_dedicated_counselor_title,
     should_refresh_job_index,
@@ -376,6 +379,260 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(should_refresh_job_index(post, use_ai=False, only_unindexed=True))
 
+    def test_should_refresh_job_index_should_treat_noisy_only_jobs_as_pending(self):
+        post = Post(
+            source_id=1,
+            title="某高校2026年公开招聘工作人员公告",
+            content="详见岗位信息。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/noisy-only",
+            original_url="https://example.com/posts/noisy-only",
+            counselor_scope=COUNSELOR_SCOPE_CONTAINS,
+            has_counselor_job=True,
+            is_counselor=True,
+            confidence_score=0.7,
+        )
+        self.db.add(post)
+        self.db.flush()
+        self.db.add(PostJob(
+            post_id=post.id,
+            job_name="专职辅导员；专职辅导员（男）；专职辅导员（女）",
+            recruitment_count="8人；4人；3人",
+            education_requirement="硕士",
+            source_type="field",
+            is_counselor=True,
+            confidence_score=0.6,
+            raw_payload_json=json.dumps(
+                {"岗位名称": "专职辅导员；专职辅导员（男）；专职辅导员（女）", "招聘人数": "8人；4人；3人"},
+                ensure_ascii=False,
+            ),
+            sort_order=0,
+        ))
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+        summary = get_job_index_summary(self.db)
+
+        self.assertEqual(summary["posts_with_jobs"], 0)
+        self.assertEqual(summary["pending_posts"], 1)
+        self.assertTrue(should_refresh_job_index(post, use_ai=False, only_unindexed=True))
+
+    def test_should_refresh_job_index_should_not_refresh_when_displayable_jobs_exist_even_if_scope_empty(self):
+        post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/scope-empty-with-jobs",
+            original_url="https://example.com/posts/scope-empty-with-jobs",
+            counselor_scope="",
+            has_counselor_job=True,
+            is_counselor=True,
+            confidence_score=0.9,
+        )
+        self.db.add(post)
+        self.db.flush()
+        self.db.add(PostJob(
+            post_id=post.id,
+            job_name="专职辅导员",
+            recruitment_count="2人",
+            education_requirement="硕士",
+            source_type="attachment",
+            is_counselor=True,
+            confidence_score=0.9,
+            raw_payload_json=json.dumps({"岗位名称": "专职辅导员"}, ensure_ascii=False),
+            sort_order=0,
+        ))
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+        summary = get_job_index_summary(self.db)
+
+        self.assertEqual(summary["posts_with_jobs"], 1)
+        self.assertEqual(summary["pending_posts"], 0)
+        self.assertFalse(should_refresh_job_index(post, use_ai=False, only_unindexed=True))
+
+    def test_should_refresh_job_index_should_treat_dedicated_title_without_flags_as_pending(self):
+        post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/dedicated-title-without-flags",
+            original_url="https://example.com/posts/dedicated-title-without-flags",
+            counselor_scope="",
+            has_counselor_job=False,
+            is_counselor=False,
+            confidence_score=None,
+        )
+        self.db.add(post)
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+        summary = get_job_index_summary(self.db)
+
+        self.assertEqual(summary["posts_with_jobs"], 0)
+        self.assertEqual(summary["pending_posts"], 1)
+        self.assertTrue(should_refresh_job_index(post, use_ai=False, only_unindexed=True))
+
+    def test_get_job_index_summary_should_use_normalized_scope_counts(self):
+        dedicated_post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/summary-dedicated",
+            original_url="https://example.com/posts/summary-dedicated",
+            counselor_scope="",
+            has_counselor_job=False,
+            is_counselor=False,
+            confidence_score=None,
+        )
+        contains_post = Post(
+            source_id=1,
+            title="某高校2026年公开招聘工作人员公告",
+            content="详见岗位信息。",
+            publish_date=datetime(2026, 3, 2, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/summary-contains",
+            original_url="https://example.com/posts/summary-contains",
+            counselor_scope="",
+            has_counselor_job=True,
+            is_counselor=True,
+            confidence_score=0.8,
+        )
+        self.db.add_all([dedicated_post, contains_post])
+        self.db.flush()
+        self.db.add(PostJob(
+            post_id=contains_post.id,
+            job_name="专职辅导员",
+            recruitment_count="2人",
+            education_requirement="硕士",
+            source_type="attachment",
+            is_counselor=True,
+            confidence_score=0.9,
+            raw_payload_json=json.dumps({"岗位名称": "专职辅导员"}, ensure_ascii=False),
+            sort_order=0,
+        ))
+        self.db.commit()
+
+        summary = get_job_index_summary(self.db)
+
+        self.assertEqual(summary["dedicated_counselor_posts"], 1)
+        self.assertEqual(summary["contains_counselor_posts"], 1)
+        self.assertEqual(summary["posts_with_jobs"], 1)
+        self.assertEqual(summary["pending_posts"], 1)
+
+    async def test_backfill_post_jobs_should_skip_duplicate_posts(self):
+        primary_post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/jobs-primary",
+            original_url="https://example.com/posts/jobs-primary",
+            counselor_scope=COUNSELOR_SCOPE_DEDICATED,
+            has_counselor_job=True,
+            is_counselor=True,
+        )
+        duplicate_post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告（重复）",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/jobs-duplicate",
+            original_url="https://example.com/posts/jobs-duplicate",
+            counselor_scope=COUNSELOR_SCOPE_DEDICATED,
+            has_counselor_job=True,
+            is_counselor=True,
+            duplicate_status="duplicate",
+            primary_post_id=1,
+        )
+        self.db.add(primary_post)
+        self.db.flush()
+        duplicate_post.primary_post_id = primary_post.id
+        self.db.add(duplicate_post)
+        self.db.commit()
+
+        with patch(
+            "src.services.post_job_service.sync_post_jobs",
+            new_callable=AsyncMock,
+            return_value={
+                "jobs_saved": 1,
+                "has_counselor_job": True,
+                "ai_job_count": 0,
+                "has_attachment_jobs": False,
+                "counselor_scope": COUNSELOR_SCOPE_DEDICATED,
+            },
+        ) as mocked_sync:
+            result = await backfill_post_jobs(self.db, limit=10, only_unindexed=True, use_ai=False)
+
+        self.assertEqual(result["posts_scanned"], 1)
+        self.assertEqual(result["posts_updated"], 1)
+        self.assertEqual(mocked_sync.await_count, 1)
+
+    def test_get_job_index_summary_should_exclude_duplicate_posts_and_jobs(self):
+        primary_post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/job-summary-primary",
+            original_url="https://example.com/posts/job-summary-primary",
+            counselor_scope=COUNSELOR_SCOPE_DEDICATED,
+            has_counselor_job=True,
+            is_counselor=True,
+        )
+        duplicate_post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告（重复）",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/job-summary-duplicate",
+            original_url="https://example.com/posts/job-summary-duplicate",
+            counselor_scope=COUNSELOR_SCOPE_DEDICATED,
+            has_counselor_job=True,
+            is_counselor=True,
+            duplicate_status="duplicate",
+        )
+        self.db.add(primary_post)
+        self.db.flush()
+        duplicate_post.primary_post_id = primary_post.id
+        self.db.add(duplicate_post)
+        self.db.flush()
+        self.db.add_all([
+            PostJob(
+                post_id=primary_post.id,
+                job_name="专职辅导员",
+                recruitment_count="2人",
+                education_requirement="硕士",
+                source_type="attachment",
+                is_counselor=True,
+                confidence_score=0.9,
+                raw_payload_json=json.dumps({"岗位名称": "专职辅导员"}, ensure_ascii=False),
+                sort_order=0,
+            ),
+            PostJob(
+                post_id=duplicate_post.id,
+                job_name="专职辅导员",
+                recruitment_count="2人",
+                education_requirement="硕士",
+                source_type="attachment",
+                is_counselor=True,
+                confidence_score=0.9,
+                raw_payload_json=json.dumps({"岗位名称": "专职辅导员"}, ensure_ascii=False),
+                sort_order=0,
+            ),
+        ])
+        self.db.commit()
+
+        summary = get_job_index_summary(self.db)
+
+        self.assertEqual(summary["total_jobs"], 1)
+        self.assertEqual(summary["counselor_jobs"], 1)
+        self.assertEqual(summary["posts_with_jobs"], 1)
+        self.assertEqual(summary["pending_posts"], 0)
+        self.assertEqual(summary["dedicated_counselor_posts"], 1)
+
     def test_get_post_counselor_state_should_keep_legacy_related_post_as_generic_related(self):
         post = Post(
             source_id=1,
@@ -445,6 +702,39 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed_contains.counselor_scope, COUNSELOR_SCOPE_CONTAINS)
         self.assertTrue(refreshed_contains.is_counselor)
         self.assertTrue(refreshed_contains.has_counselor_job)
+
+    def test_backfill_post_counselor_flags_should_normalize_null_values_for_non_counselor_post(self):
+        post = Post(
+            source_id=1,
+            title="苏州高校后勤岗位招聘公告",
+            content="这是一个非辅导员历史空值样例。",
+            publish_date=datetime(2026, 3, 2, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/backfill-null-non-counselor",
+            original_url="https://example.com/posts/backfill-null-non-counselor",
+            is_counselor=False,
+            counselor_scope=COUNSELOR_SCOPE_NONE,
+            has_counselor_job=False,
+            confidence_score=None,
+        )
+        self.db.add(post)
+        self.db.commit()
+        self.db.query(Post).filter(Post.id == post.id).update(
+            {
+                "is_counselor": None,
+                "counselor_scope": None,
+                "has_counselor_job": None,
+            },
+            synchronize_session=False,
+        )
+        self.db.commit()
+
+        result = backfill_post_counselor_flags(self.db)
+        refreshed_post = self.db.query(Post).filter(Post.id == post.id).first()
+
+        self.assertEqual(result["updated"], 1)
+        self.assertFalse(refreshed_post.is_counselor)
+        self.assertEqual(refreshed_post.counselor_scope, COUNSELOR_SCOPE_NONE)
+        self.assertFalse(refreshed_post.has_counselor_job)
 
     def test_build_post_job_payload_should_include_attachment_parse_summary(self):
         attachment_path = Path(self.temp_dir.name) / "ai_jobs.xlsx"

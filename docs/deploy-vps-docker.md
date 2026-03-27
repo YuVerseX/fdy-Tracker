@@ -44,7 +44,11 @@ cp .env.example .env
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
 - `AI_ANALYSIS_MODEL`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
 - `WEB_PORT`
+
+如果 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 留空，管理接口会返回 `503`，管理页不能登录。
 
 如果你暂时不用 AI，可以把：
 
@@ -106,10 +110,9 @@ docker compose down
 这套方案是“能部署、能跑”的基线，不是完整生产方案。当前还没补：
 
 - HTTPS
-- 登录鉴权
 - 监控告警
 - 独立数据库
-- CI/CD
+- 自动部署 / 自动回滚
 
 ## 7. 进一步建议
 

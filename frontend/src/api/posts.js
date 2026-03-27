@@ -2,6 +2,50 @@ import axios from 'axios'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || ''
 const LONG_RUNNING_TIMEOUT = 10 * 60 * 1000
+const ADMIN_AUTH_STORAGE_KEY = 'fdy.admin.auth'
+
+const getSessionStorage = () => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    return window.sessionStorage
+  } catch (_error) {
+    return null
+  }
+}
+
+const encodeBasicToken = (username, password) => {
+  if (typeof window === 'undefined' || typeof window.btoa !== 'function') {
+    return ''
+  }
+
+  const payload = new TextEncoder().encode(`${username}:${password}`)
+  let binary = ''
+  payload.forEach((byte) => {
+    binary += String.fromCharCode(byte)
+  })
+  return `Basic ${window.btoa(binary)}`
+}
+
+const readAdminAuth = () => {
+  const storage = getSessionStorage()
+  if (!storage) return null
+
+  const rawValue = storage.getItem(ADMIN_AUTH_STORAGE_KEY)
+  if (!rawValue) return null
+
+  try {
+    const parsed = JSON.parse(rawValue)
+    if (!parsed?.username || !parsed?.token) {
+      return null
+    }
+    return parsed
+  } catch (_error) {
+    return null
+  }
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -9,6 +53,22 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json'
   }
+})
+
+api.interceptors.request.use((config) => {
+  const requestUrl = String(config?.url || '')
+  if (!requestUrl.startsWith('/api/admin/')) {
+    return config
+  }
+
+  const adminAuth = readAdminAuth()
+  if (!adminAuth?.token) {
+    return config
+  }
+
+  config.headers = config.headers || {}
+  config.headers.Authorization = adminAuth.token
+  return config
 })
 
 const canFallback = (error) => {
@@ -53,6 +113,43 @@ export const postsApi = {
 }
 
 export const adminApi = {
+  setCredentials(username, password) {
+    const normalizedUsername = String(username || '').trim()
+    const normalizedPassword = String(password || '')
+    if (!normalizedUsername || !normalizedPassword) {
+      return false
+    }
+
+    const token = encodeBasicToken(normalizedUsername, normalizedPassword)
+    if (!token) {
+      return false
+    }
+
+    const storage = getSessionStorage()
+    if (!storage) {
+      return false
+    }
+
+    storage.setItem(ADMIN_AUTH_STORAGE_KEY, JSON.stringify({
+      username: normalizedUsername,
+      token,
+    }))
+    return true
+  },
+
+  clearCredentials() {
+    const storage = getSessionStorage()
+    storage?.removeItem(ADMIN_AUTH_STORAGE_KEY)
+  },
+
+  hasCredentials() {
+    return Boolean(readAdminAuth()?.token)
+  },
+
+  getSavedUsername() {
+    return readAdminAuth()?.username || ''
+  },
+
   getTaskRuns(params = {}) {
     return api.get('/api/admin/task-runs', { params })
   },
