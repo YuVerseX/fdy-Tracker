@@ -740,6 +740,9 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.db.commit()
 
         with patch(
+            "src.services.ai_analysis_service.is_openai_ready",
+            return_value=True,
+        ), patch(
             "src.services.ai_analysis_service.analyze_post",
             new_callable=AsyncMock,
             side_effect=AssertionError("已有成功 OpenAI analysis，不应重复跑 analysis"),
