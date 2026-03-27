@@ -1,11 +1,12 @@
 """后台管理接口"""
 import asyncio
+from datetime import datetime, timezone
 from contextlib import suppress
+import hashlib
 import secrets
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -38,9 +39,6 @@ from src.services.duplicate_service import (
 from src.services.post_job_service import backfill_post_jobs, get_job_index_summary
 from src.services.scraper_service import backfill_existing_attachments, scrape_and_save
 
-admin_security = HTTPBasic(auto_error=False)
-
-
 def _secure_compare_text(left: str, right: str) -> bool:
     """支持 Unicode 的常量时间文本比较。"""
     return secrets.compare_digest(
@@ -49,10 +47,11 @@ def _secure_compare_text(left: str, right: str) -> bool:
     )
 
 
-def require_admin_access(credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> str:
-    """统一校验后台访问凭证。"""
+def _ensure_admin_auth_configured() -> tuple[str, str]:
+    """校验后台账号和会话配置。"""
     expected_username = (settings.ADMIN_USERNAME or "").strip()
     expected_password = (settings.ADMIN_PASSWORD or "").strip()
+    session_secret = (settings.ADMIN_SESSION_SECRET or "").strip()
 
     if not expected_username or not expected_password:
         raise HTTPException(
@@ -60,27 +59,68 @@ def require_admin_access(credentials: HTTPBasicCredentials | None = Depends(admi
             detail="后台鉴权还没配置，请先设置 ADMIN_USERNAME 和 ADMIN_PASSWORD。",
         )
 
-    if credentials is None:
+    if not session_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="后台会话鉴权还没配置，请先设置 ADMIN_SESSION_SECRET。",
+        )
+
+    return expected_username, expected_password
+
+
+def _build_admin_credential_fingerprint() -> str:
+    """生成当前后台凭证指纹，便于口令轮换后让旧会话失效。"""
+    expected_username, expected_password = _ensure_admin_auth_configured()
+    payload = "\n".join([
+        expected_username,
+        expected_password,
+        (settings.ADMIN_SESSION_SECRET or "").strip(),
+    ]).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _clear_admin_session(request: Request) -> None:
+    """清理后台会话。"""
+    request.session.pop("admin_auth", None)
+
+
+def require_admin_access(request: Request) -> str:
+    """统一校验后台会话。"""
+    expected_username, _expected_password = _ensure_admin_auth_configured()
+    admin_session = request.session.get("admin_auth") or {}
+    if not admin_session:
         raise HTTPException(
             status_code=401,
             detail="后台登录已开启，请先登录后再访问。",
-            headers={"WWW-Authenticate": "Basic"},
         )
 
-    if not _secure_compare_text(credentials.username or "", expected_username) or not _secure_compare_text(
-        credentials.password or "",
-        expected_password,
-    ):
+    if admin_session.get("username") != expected_username:
+        _clear_admin_session(request)
         raise HTTPException(
             status_code=401,
-            detail="后台登录失败，请检查账号或密码。",
-            headers={"WWW-Authenticate": "Basic"},
+            detail="后台登录状态已失效，请重新登录。",
         )
 
-    return credentials.username
+    if admin_session.get("credential_fingerprint") != _build_admin_credential_fingerprint():
+        _clear_admin_session(request)
+        raise HTTPException(
+            status_code=401,
+            detail="后台登录状态已失效，请重新登录。",
+        )
+
+    if not admin_session.get("issued_at"):
+        _clear_admin_session(request)
+        raise HTTPException(
+            status_code=401,
+            detail="后台登录状态已失效，请重新登录。",
+        )
+
+    return expected_username
 
 
-router = APIRouter(dependencies=[Depends(require_admin_access)])
+router = APIRouter()
+session_router = APIRouter(prefix="/admin/session")
+protected_router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin_access)])
 SCRAPE_TASK_TYPES = ["manual_scrape", "scheduled_scrape", "duplicate_backfill"]
 TASK_TYPE_LABELS = {
     "manual_scrape": "手动抓取最新数据",
@@ -126,12 +166,65 @@ class RunJobExtractionRequest(BaseModel):
     use_ai: bool = False
 
 
+class AdminSessionLoginRequest(BaseModel):
+    """后台登录请求"""
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
 class UpdateSchedulerConfigRequest(BaseModel):
     """更新定时抓取配置请求"""
     enabled: bool = True
     interval_seconds: int = Field(default=7200, ge=60, le=86400)
     default_source_id: int = Field(default=1, ge=1)
     default_max_pages: int = Field(default=5, ge=1, le=50)
+
+
+def _build_admin_session_payload(username: str) -> dict:
+    """构造写入会话的最小鉴权载荷。"""
+    return {
+        "username": username,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "credential_fingerprint": _build_admin_credential_fingerprint(),
+    }
+
+
+@session_router.post("/login")
+async def login_admin_session(payload: AdminSessionLoginRequest, request: Request):
+    """后台登录，写入会话。"""
+    expected_username, expected_password = _ensure_admin_auth_configured()
+    if not _secure_compare_text(payload.username, expected_username) or not _secure_compare_text(
+        payload.password,
+        expected_password,
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="后台登录失败，请检查账号或密码。",
+        )
+
+    request.session["admin_auth"] = _build_admin_session_payload(expected_username)
+    return {
+        "username": expected_username,
+        "authenticated": True,
+        "expires_in_seconds": settings.ADMIN_SESSION_MAX_AGE_SECONDS,
+    }
+
+
+@session_router.get("/me")
+async def get_admin_session(request: Request):
+    """读取当前后台登录状态。"""
+    username = require_admin_access(request)
+    return {
+        "username": username,
+        "authenticated": True,
+    }
+
+
+@session_router.post("/logout", status_code=204)
+async def logout_admin_session(request: Request):
+    """退出后台登录。"""
+    _clear_admin_session(request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def build_progress_details(
@@ -590,7 +683,7 @@ async def _run_job_extraction_in_background(
         db.close()
 
 
-@router.get("/admin/task-runs")
+@protected_router.get("/task-runs")
 async def get_task_runs(limit: int = Query(20, ge=1, le=50)):
     """获取最近的管理任务记录"""
     return {
@@ -598,13 +691,13 @@ async def get_task_runs(limit: int = Query(20, ge=1, le=50)):
     }
 
 
-@router.get("/admin/task-runs/summary")
+@protected_router.get("/task-runs/summary")
 async def get_task_runs_summary():
     """获取任务摘要，给前台显示数据新鲜度"""
     return get_task_summary()
 
 
-@router.get("/admin/sources")
+@protected_router.get("/sources")
 async def get_sources(db: Session = Depends(get_db)):
     """获取可用数据源"""
     sources = db.query(Source).order_by(Source.id.asc()).all()
@@ -622,14 +715,14 @@ async def get_sources(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/admin/scheduler-config")
+@protected_router.get("/scheduler-config")
 async def get_scheduler_runtime_config(db: Session = Depends(get_db)):
     """获取定时抓取配置"""
     config = load_scheduler_config(db)
     return serialize_scheduler_config(config)
 
 
-@router.put("/admin/scheduler-config")
+@protected_router.put("/scheduler-config")
 async def update_scheduler_runtime_config(
     request: UpdateSchedulerConfigRequest,
     db: Session = Depends(get_db)
@@ -655,19 +748,19 @@ async def update_scheduler_runtime_config(
     }
 
 
-@router.get("/admin/analysis-summary")
+@protected_router.get("/analysis-summary")
 async def get_admin_analysis_summary(db: Session = Depends(get_db)):
     """获取 AI 分析摘要"""
     return get_analysis_summary(db)
 
 
-@router.get("/admin/insight-summary")
+@protected_router.get("/insight-summary")
 async def get_admin_insight_summary(db: Session = Depends(get_db)):
     """获取 AI 统计字段摘要"""
     return get_insight_summary(db)
 
 
-@router.get("/admin/job-summary")
+@protected_router.get("/job-summary")
 async def get_admin_job_summary(db: Session = Depends(get_db)):
     """获取岗位级抽取摘要"""
     overview = get_job_index_summary(db)
@@ -679,13 +772,13 @@ async def get_admin_job_summary(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/admin/duplicate-summary")
+@protected_router.get("/duplicate-summary")
 async def get_admin_duplicate_summary(db: Session = Depends(get_db)):
     """获取重复治理摘要"""
     return get_duplicate_summary(db)
 
 
-@router.post("/admin/backfill-duplicates", status_code=202)
+@protected_router.post("/backfill-duplicates", status_code=202)
 async def backfill_duplicates_task(
     request: BackfillDuplicatesRequest,
     background_tasks: BackgroundTasks
@@ -712,7 +805,7 @@ async def backfill_duplicates_task(
     }
 
 
-@router.post("/admin/run-scrape", status_code=202)
+@protected_router.post("/run-scrape", status_code=202)
 async def run_scrape_task(
     request: RunScrapeRequest,
     background_tasks: BackgroundTasks
@@ -740,7 +833,7 @@ async def run_scrape_task(
     }
 
 
-@router.post("/admin/run-ai-analysis", status_code=202)
+@protected_router.post("/run-ai-analysis", status_code=202)
 async def run_ai_analysis_task(
     request: RunAIAnalysisRequest,
     background_tasks: BackgroundTasks
@@ -774,7 +867,7 @@ async def run_ai_analysis_task(
     }
 
 
-@router.post("/admin/backfill-attachments", status_code=202)
+@protected_router.post("/backfill-attachments", status_code=202)
 async def backfill_attachments_task(
     request: BackfillAttachmentsRequest,
     background_tasks: BackgroundTasks
@@ -801,7 +894,7 @@ async def backfill_attachments_task(
     }
 
 
-@router.post("/admin/run-job-extraction", status_code=202)
+@protected_router.post("/run-job-extraction", status_code=202)
 async def run_job_extraction_task(
     request: RunJobExtractionRequest,
     background_tasks: BackgroundTasks
@@ -838,3 +931,7 @@ async def run_job_extraction_task(
         "message": "岗位级抽取任务已提交，后台执行中",
         "task_run": running_task
     }
+
+
+router.include_router(session_router)
+router.include_router(protected_router)

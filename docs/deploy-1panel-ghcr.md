@@ -57,9 +57,15 @@ OPENAI_BASE_URL=
 AI_ANALYSIS_MODEL=gpt-5.4
 ADMIN_USERNAME=
 ADMIN_PASSWORD=
+ADMIN_SESSION_SECRET=
+ADMIN_SESSION_MAX_AGE_SECONDS=28800
+ADMIN_SESSION_SECURE=false
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 ```
 
-`ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 需要你自己显式填写。留空时，管理接口会返回 `503`，管理页不能登录。
+`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 需要你自己显式填写。留空时，管理接口会返回 `503`，管理页不能登录。
+
+管理页使用页面内会话登录，不再触发浏览器原生 Basic Auth 弹窗。
 
 如果你后面想固定到某个版本，也可以把：
 

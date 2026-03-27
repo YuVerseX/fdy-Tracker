@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # 管理台鉴权
     ADMIN_USERNAME: str = ""
     ADMIN_PASSWORD: str = ""
+    ADMIN_SESSION_SECRET: str = ""
+    ADMIN_SESSION_MAX_AGE_SECONDS: int = 28800
+    ADMIN_SESSION_SECURE: bool = False
+    CORS_ALLOWED_ORIGINS: str = "http://127.0.0.1:5173,http://localhost:5173"
 
     # 路径配置
     @property
@@ -49,6 +53,16 @@ class Settings(BaseSettings):
     def LOGS_DIR(self) -> Path:
         """日志目录"""
         return self.BASE_DIR / "logs"
+
+    @property
+    def CORS_ALLOWED_ORIGIN_LIST(self) -> list[str]:
+        """解析 CORS 来源配置"""
+        origins = [
+            item.strip()
+            for item in (self.CORS_ALLOWED_ORIGINS or "").split(",")
+            if item.strip()
+        ]
+        return origins or ["http://127.0.0.1:5173", "http://localhost:5173"]
 
     model_config = SettingsConfigDict(
         env_file=".env",

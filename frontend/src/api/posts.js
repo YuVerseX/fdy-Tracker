@@ -2,50 +2,6 @@ import axios from 'axios'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || ''
 const LONG_RUNNING_TIMEOUT = 10 * 60 * 1000
-const ADMIN_AUTH_STORAGE_KEY = 'fdy.admin.auth'
-
-const getSessionStorage = () => {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  try {
-    return window.sessionStorage
-  } catch (_error) {
-    return null
-  }
-}
-
-const encodeBasicToken = (username, password) => {
-  if (typeof window === 'undefined' || typeof window.btoa !== 'function') {
-    return ''
-  }
-
-  const payload = new TextEncoder().encode(`${username}:${password}`)
-  let binary = ''
-  payload.forEach((byte) => {
-    binary += String.fromCharCode(byte)
-  })
-  return `Basic ${window.btoa(binary)}`
-}
-
-const readAdminAuth = () => {
-  const storage = getSessionStorage()
-  if (!storage) return null
-
-  const rawValue = storage.getItem(ADMIN_AUTH_STORAGE_KEY)
-  if (!rawValue) return null
-
-  try {
-    const parsed = JSON.parse(rawValue)
-    if (!parsed?.username || !parsed?.token) {
-      return null
-    }
-    return parsed
-  } catch (_error) {
-    return null
-  }
-}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -55,20 +11,13 @@ const api = axios.create({
   }
 })
 
-api.interceptors.request.use((config) => {
-  const requestUrl = String(config?.url || '')
-  if (!requestUrl.startsWith('/api/admin/')) {
-    return config
+const adminApiClient = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 10000,
+  withCredentials: true,
+  headers: {
+    'Content-Type': 'application/json'
   }
-
-  const adminAuth = readAdminAuth()
-  if (!adminAuth?.token) {
-    return config
-  }
-
-  config.headers = config.headers || {}
-  config.headers.Authorization = adminAuth.token
-  return config
 })
 
 const canFallback = (error) => {
@@ -92,7 +41,6 @@ const requestWithFallback = async (requesters = []) => {
 }
 
 export const postsApi = {
-  // 获取招聘信息列表
   getPosts(params = {}) {
     return api.get('/api/posts', { params })
   },
@@ -101,116 +49,93 @@ export const postsApi = {
     return api.get('/api/posts/stats/summary', { params })
   },
 
-  // 获取招聘信息详情
   getPostById(id) {
     return api.get(`/api/posts/${id}`)
   },
 
-  // 健康检查
+  getFreshnessSummary() {
+    return api.get('/api/posts/freshness-summary')
+  },
+
   healthCheck() {
     return api.get('/api/health')
   }
 }
 
 export const adminApi = {
-  setCredentials(username, password) {
-    const normalizedUsername = String(username || '').trim()
-    const normalizedPassword = String(password || '')
-    if (!normalizedUsername || !normalizedPassword) {
-      return false
-    }
-
-    const token = encodeBasicToken(normalizedUsername, normalizedPassword)
-    if (!token) {
-      return false
-    }
-
-    const storage = getSessionStorage()
-    if (!storage) {
-      return false
-    }
-
-    storage.setItem(ADMIN_AUTH_STORAGE_KEY, JSON.stringify({
-      username: normalizedUsername,
-      token,
-    }))
-    return true
+  login(username, password) {
+    return adminApiClient.post('/api/admin/session/login', { username, password })
   },
 
-  clearCredentials() {
-    const storage = getSessionStorage()
-    storage?.removeItem(ADMIN_AUTH_STORAGE_KEY)
+  getSession() {
+    return adminApiClient.get('/api/admin/session/me')
   },
 
-  hasCredentials() {
-    return Boolean(readAdminAuth()?.token)
-  },
-
-  getSavedUsername() {
-    return readAdminAuth()?.username || ''
+  logout() {
+    return adminApiClient.post('/api/admin/session/logout')
   },
 
   getTaskRuns(params = {}) {
-    return api.get('/api/admin/task-runs', { params })
+    return adminApiClient.get('/api/admin/task-runs', { params })
   },
 
   getTaskSummary() {
-    return api.get('/api/admin/task-runs/summary')
+    return adminApiClient.get('/api/admin/task-runs/summary')
   },
 
   getSources() {
-    return api.get('/api/admin/sources')
+    return adminApiClient.get('/api/admin/sources')
   },
 
   getSchedulerConfig() {
-    return api.get('/api/admin/scheduler-config')
+    return adminApiClient.get('/api/admin/scheduler-config')
   },
 
   updateSchedulerConfig(payload = {}) {
-    return api.put('/api/admin/scheduler-config', payload)
+    return adminApiClient.put('/api/admin/scheduler-config', payload)
   },
 
   runScrape(payload = {}) {
-    return api.post('/api/admin/run-scrape', payload, { timeout: LONG_RUNNING_TIMEOUT })
+    return adminApiClient.post('/api/admin/run-scrape', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   backfillAttachments(payload = {}) {
-    return api.post('/api/admin/backfill-attachments', payload, { timeout: LONG_RUNNING_TIMEOUT })
+    return adminApiClient.post('/api/admin/backfill-attachments', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   getAnalysisSummary() {
-    return api.get('/api/admin/analysis-summary')
+    return adminApiClient.get('/api/admin/analysis-summary')
   },
 
   getInsightSummary() {
-    return api.get('/api/admin/insight-summary')
+    return adminApiClient.get('/api/admin/insight-summary')
   },
 
   getDuplicateSummary() {
-    return api.get('/api/admin/duplicate-summary')
+    return adminApiClient.get('/api/admin/duplicate-summary')
   },
 
   backfillDuplicates(payload = {}) {
-    return api.post('/api/admin/backfill-duplicates', payload, { timeout: LONG_RUNNING_TIMEOUT })
+    return adminApiClient.post('/api/admin/backfill-duplicates', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   runAiAnalysis(payload = {}) {
-    return api.post('/api/admin/run-ai-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
+    return adminApiClient.post('/api/admin/run-ai-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   getJobSummary(params = {}) {
     return requestWithFallback([
-      () => api.get('/api/admin/job-summary', { params }),
-      () => api.get('/api/admin/jobs-summary', { params }),
-      () => api.get('/api/admin/job-extraction-summary', { params })
+      () => adminApiClient.get('/api/admin/job-summary', { params }),
+      () => adminApiClient.get('/api/admin/jobs-summary', { params }),
+      () => adminApiClient.get('/api/admin/job-extraction-summary', { params })
     ])
   },
 
   runJobExtraction(payload = {}) {
     return requestWithFallback([
-      () => api.post('/api/admin/run-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
-      () => api.post('/api/admin/run-ai-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
-      () => api.post('/api/admin/run-job-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
+      () => adminApiClient.post('/api/admin/run-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
+      () => adminApiClient.post('/api/admin/run-ai-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
+      () => adminApiClient.post('/api/admin/run-job-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
     ])
   }
 }

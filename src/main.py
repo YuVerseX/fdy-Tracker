@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
+from starlette.middleware.sessions import SessionMiddleware
 from src.config import settings
 from src.api import admin, health, posts
 from src.database.bootstrap import initialize_database
@@ -30,10 +31,19 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Session 中间件配置
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.ADMIN_SESSION_SECRET or "dev-session-secret",
+    same_site="lax",
+    https_only=settings.ADMIN_SESSION_SECURE,
+    max_age=settings.ADMIN_SESSION_MAX_AGE_SECONDS,
+)
+
 # CORS 中间件配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应限制具体域名
+    allow_origins=settings.CORS_ALLOWED_ORIGIN_LIST,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

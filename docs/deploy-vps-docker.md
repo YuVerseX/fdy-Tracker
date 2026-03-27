@@ -46,9 +46,15 @@ cp .env.example .env
 - `AI_ANALYSIS_MODEL`
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
+- `ADMIN_SESSION_SECRET`
+- `ADMIN_SESSION_MAX_AGE_SECONDS`
+- `ADMIN_SESSION_SECURE`
+- `CORS_ALLOWED_ORIGINS`
 - `WEB_PORT`
 
-如果 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 留空，管理接口会返回 `503`，管理页不能登录。
+如果 `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET` 任一留空，管理接口会返回 `503`，管理页不能登录。
+
+管理页现在使用页面内会话登录，不再弹浏览器原生 Basic Auth 登录框。
 
 如果你暂时不用 AI，可以把：
 

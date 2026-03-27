@@ -322,7 +322,7 @@
 <script setup>
 import { computed, ref, onMounted, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { postsApi, adminApi } from '../api/posts'
+import { postsApi } from '../api/posts'
 
 const router = useRouter()
 const route = useRoute()
@@ -359,34 +359,17 @@ const fetchLatestSuccessTask = async () => {
   freshnessLoading.value = true
   freshnessUnavailable.value = false
   latestSuccessTask.value = null
-  const isRestricted = (error) => [401, 403, 503].includes(error?.response?.status)
 
   try {
-    const summaryResponse = await adminApi.getTaskSummary()
-    latestSuccessTask.value = normalizeSummaryResponse(summaryResponse.data)
+    const response = await postsApi.getFreshnessSummary()
+    latestSuccessTask.value = normalizeSummaryResponse({
+      latest_success_run: response?.data?.latest_success_run || null,
+      latest_success_at: response?.data?.latest_success_at || null,
+    })
   } catch (err) {
-    if (isRestricted(err)) {
-      freshnessUnavailable.value = true
-      freshnessLoading.value = false
-      return
-    }
+    freshnessUnavailable.value = true
     if (err?.response?.status && err.response.status !== 404) {
-      console.warn('任务摘要接口异常，准备回退到 task-runs:', err)
-    }
-  }
-
-  if (!latestSuccessTask.value) {
-    try {
-      const runsResponse = await adminApi.getTaskRuns({ limit: 20 })
-      latestSuccessTask.value = normalizeRunsResponse(runsResponse.data?.items || [])
-    } catch (err) {
-      if (isRestricted(err)) {
-        freshnessUnavailable.value = true
-        freshnessLoading.value = false
-        return
-      }
-      freshnessUnavailable.value = true
-      console.warn('获取后台任务记录失败:', err)
+      console.warn('获取公开任务新鲜度失败:', err)
     }
   }
 

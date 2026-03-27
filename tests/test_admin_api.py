@@ -1,13 +1,11 @@
-import unittest
-from base64 import b64encode
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
-from unittest.mock import MagicMock
 from datetime import datetime, timezone
+import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
-from fastapi.security import HTTPBasicCredentials
 from fastapi.testclient import TestClient
+from starlette.middleware.sessions import SessionMiddleware
 
 from src.api import admin as admin_api
 from src.services.admin_task_service import TaskAlreadyRunningError
@@ -16,12 +14,22 @@ from src.services.admin_task_service import TaskAlreadyRunningError
 class AdminApiTestCase(unittest.TestCase):
     def setUp(self):
         app = FastAPI()
+        app.add_middleware(
+            SessionMiddleware,
+            secret_key="test-session-secret",
+            same_site="lax",
+            https_only=False,
+            max_age=28800,
+        )
         app.include_router(admin_api.router, prefix="/api")
         self.db = MagicMock()
         self.settings_patcher = patch.multiple(
             "src.api.admin.settings",
             ADMIN_USERNAME="admin",
             ADMIN_PASSWORD="secret-pass",
+            ADMIN_SESSION_SECRET="test-session-secret",
+            ADMIN_SESSION_MAX_AGE_SECONDS=28800,
+            ADMIN_SESSION_SECURE=False,
         )
         self.settings_patcher.start()
 
@@ -30,35 +38,92 @@ class AdminApiTestCase(unittest.TestCase):
 
         app.dependency_overrides[admin_api.get_db] = override_get_db
         self.client = TestClient(app)
-        self.auth_headers = {
-            "Authorization": f"Basic {b64encode(b'admin:secret-pass').decode('ascii')}"
-        }
 
     def tearDown(self):
         self.settings_patcher.stop()
         self.client.close()
+
+    def _login(self, username="admin", password="secret-pass"):
+        return self.client.post(
+            "/api/admin/session/login",
+            json={"username": username, "password": password},
+        )
 
     def test_admin_routes_should_require_auth(self):
         response = self.client.get("/api/admin/task-runs")
 
         self.assertEqual(response.status_code, 401)
         self.assertIn("后台登录", response.json()["detail"])
+        self.assertNotIn("WWW-Authenticate", response.headers)
 
-    def test_require_admin_access_should_support_non_ascii_credentials(self):
+    def test_admin_session_login_should_set_cookie_and_return_username(self):
+        response = self._login()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["username"], "admin")
+        self.assertTrue(payload["authenticated"])
+        self.assertEqual(payload["expires_in_seconds"], 28800)
+        set_cookie = response.headers.get("set-cookie", "")
+        set_cookie_lower = set_cookie.lower()
+        self.assertIn("session=", set_cookie)
+        self.assertIn("httponly", set_cookie_lower)
+        self.assertIn("samesite=lax", set_cookie_lower)
+        self.assertIn("max-age=28800", set_cookie_lower)
+
+    def test_admin_session_me_should_require_login(self):
+        response = self.client.get("/api/admin/session/me")
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_session_logout_should_clear_access(self):
+        login_response = self._login()
+        self.assertEqual(login_response.status_code, 200)
+
+        logout_response = self.client.post("/api/admin/session/logout")
+        self.assertEqual(logout_response.status_code, 204)
+
+        response = self.client.get("/api/admin/task-runs")
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_session_login_should_support_non_ascii_credentials(self):
         with patch.multiple(
             "src.api.admin.settings",
             ADMIN_USERNAME="管理员",
             ADMIN_PASSWORD="复杂密码123",
+            ADMIN_SESSION_SECRET="test-session-secret",
         ):
-            username = admin_api.require_admin_access(
-                HTTPBasicCredentials(username="管理员", password="复杂密码123")
-            )
+            response = self._login(username="管理员", password="复杂密码123")
 
-        self.assertEqual(username, "管理员")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["username"], "管理员")
+
+    def test_admin_session_login_should_return_401_for_invalid_password(self):
+        response = self._login(password="wrong-pass")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("账号或密码", response.json()["detail"])
+
+    def test_admin_session_login_should_return_503_when_secret_missing(self):
+        with patch.multiple("src.api.admin.settings", ADMIN_SESSION_SECRET=""):
+            response = self._login()
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("ADMIN_SESSION_SECRET", response.json()["detail"])
+
+    def test_admin_session_should_be_invalid_after_password_rotation(self):
+        login_response = self._login()
+        self.assertEqual(login_response.status_code, 200)
+
+        with patch.multiple("src.api.admin.settings", ADMIN_PASSWORD="new-secret-pass"):
+            response = self.client.get("/api/admin/task-runs")
+
+        self.assertEqual(response.status_code, 401)
 
     def test_get_task_runs_should_return_items(self):
         with patch("src.api.admin.load_task_runs", return_value=[{"id": "1", "task_type": "manual_scrape"}]):
-            response = self.client.get("/api/admin/task-runs", headers=self.auth_headers)
+            self._login()
+            response = self.client.get("/api/admin/task-runs")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -74,7 +139,8 @@ class AdminApiTestCase(unittest.TestCase):
                 "total_runs": 3
             }
         ):
-            response = self.client.get("/api/admin/task-runs/summary", headers=self.auth_headers)
+            self._login()
+            response = self.client.get("/api/admin/task-runs/summary")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -92,7 +158,8 @@ class AdminApiTestCase(unittest.TestCase):
             )
         ]
 
-        response = self.client.get("/api/admin/sources", headers=self.auth_headers)
+        self._login()
+        response = self.client.get("/api/admin/sources")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -125,7 +192,8 @@ class AdminApiTestCase(unittest.TestCase):
                 "updated_at": "2026-03-24T10:00:00+00:00",
             }
         ):
-            response = self.client.get("/api/admin/scheduler-config", headers=self.auth_headers)
+            self._login()
+            response = self.client.get("/api/admin/scheduler-config")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -166,9 +234,9 @@ class AdminApiTestCase(unittest.TestCase):
                 "updated_at": "2026-03-24T10:00:00+00:00",
             }
         ):
+            self._login()
             response = self.client.put(
                 "/api/admin/scheduler-config",
-                headers=self.auth_headers,
                 json={
                     "enabled": True,
                     "interval_seconds": 3600,
@@ -197,9 +265,9 @@ class AdminApiTestCase(unittest.TestCase):
         )
         self.db.query.return_value = source_query
 
+        self._login()
         response = self.client.put(
             "/api/admin/scheduler-config",
-            headers=self.auth_headers,
             json={
                 "enabled": True,
                 "interval_seconds": 3600,
@@ -250,7 +318,8 @@ class AdminApiTestCase(unittest.TestCase):
                 "deadline_status_distribution": [{"deadline_status": "报名中", "count": 3}]
             }
         ):
-            response = self.client.get("/api/admin/analysis-summary", headers=self.auth_headers)
+            self._login()
+            response = self.client.get("/api/admin/analysis-summary")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -282,7 +351,8 @@ class AdminApiTestCase(unittest.TestCase):
                 "latest_analyzed_at": "2026-03-24T10:00:00+00:00",
             }
         ):
-            response = self.client.get("/api/admin/insight-summary", headers=self.auth_headers)
+            self._login()
+            response = self.client.get("/api/admin/insight-summary")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -310,7 +380,8 @@ class AdminApiTestCase(unittest.TestCase):
             }
         ):
             self.db.query.return_value = latest_query
-            response = self.client.get("/api/admin/job-summary", headers=self.auth_headers)
+            self._login()
+            response = self.client.get("/api/admin/job-summary")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -332,7 +403,8 @@ class AdminApiTestCase(unittest.TestCase):
                 "latest_groups": [],
             }
         ):
-            response = self.client.get("/api/admin/duplicate-summary", headers=self.auth_headers)
+            self._login()
+            response = self.client.get("/api/admin/duplicate-summary")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -347,7 +419,8 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin._run_duplicate_backfill_in_background",
             new=AsyncMock()
         ) as mocked_background:
-            response = self.client.post("/api/admin/backfill-duplicates", headers=self.auth_headers, json={"limit": 200})
+            self._login()
+            response = self.client.post("/api/admin/backfill-duplicates", json={"limit": 200})
 
         self.assertEqual(response.status_code, 202)
         payload = response.json()
@@ -370,7 +443,8 @@ class AdminApiTestCase(unittest.TestCase):
                 conflict_task_types=["manual_scrape", "scheduled_scrape", "duplicate_backfill"],
             )
         ):
-            response = self.client.post("/api/admin/backfill-duplicates", headers=self.auth_headers, json={"limit": 200})
+            self._login()
+            response = self.client.post("/api/admin/backfill-duplicates", json={"limit": 200})
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("手动抓取", response.json()["detail"])
@@ -383,7 +457,8 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin._run_scrape_task_in_background",
             new=AsyncMock()
         ) as mocked_background:
-            response = self.client.post("/api/admin/run-scrape", headers=self.auth_headers, json={"source_id": 1, "max_pages": 3})
+            self._login()
+            response = self.client.post("/api/admin/run-scrape", json={"source_id": 1, "max_pages": 3})
 
         self.assertEqual(response.status_code, 202)
         payload = response.json()
@@ -406,7 +481,8 @@ class AdminApiTestCase(unittest.TestCase):
                 conflict_task_types=["manual_scrape", "scheduled_scrape"],
             )
         ):
-            response = self.client.post("/api/admin/run-scrape", headers=self.auth_headers, json={"source_id": 1, "max_pages": 3})
+            self._login()
+            response = self.client.post("/api/admin/run-scrape", json={"source_id": 1, "max_pages": 3})
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("定时抓取", response.json()["detail"])
@@ -419,7 +495,8 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin._run_attachment_backfill_in_background",
             new=AsyncMock()
         ) as mocked_background:
-            response = self.client.post("/api/admin/backfill-attachments", headers=self.auth_headers, json={"limit": 50})
+            self._login()
+            response = self.client.post("/api/admin/backfill-attachments", json={"limit": 50})
 
         self.assertEqual(response.status_code, 202)
         payload = response.json()
@@ -435,7 +512,8 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin._run_ai_analysis_in_background",
             new=AsyncMock()
         ) as mocked_background:
-            response = self.client.post("/api/admin/run-ai-analysis", headers=self.auth_headers, json={"limit": 5, "only_unanalyzed": True})
+            self._login()
+            response = self.client.post("/api/admin/run-ai-analysis", json={"limit": 5, "only_unanalyzed": True})
 
         self.assertEqual(response.status_code, 202)
         payload = response.json()
@@ -445,7 +523,8 @@ class AdminApiTestCase(unittest.TestCase):
 
     def test_run_ai_analysis_task_should_return_409_when_openai_not_ready(self):
         with patch("src.api.admin.is_openai_ready", return_value=False):
-            response = self.client.post("/api/admin/run-ai-analysis", headers=self.auth_headers, json={"limit": 5, "only_unanalyzed": True})
+            self._login()
+            response = self.client.post("/api/admin/run-ai-analysis", json={"limit": 5, "only_unanalyzed": True})
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("OpenAI", response.json()["detail"])
@@ -464,9 +543,9 @@ class AdminApiTestCase(unittest.TestCase):
                 running_task=running_task,
             )
         ):
+            self._login()
             response = self.client.post(
                 "/api/admin/run-ai-analysis",
-                headers=self.auth_headers,
                 json={"limit": 5, "only_unanalyzed": True},
             )
 
@@ -481,9 +560,9 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin._run_job_extraction_in_background",
             new=AsyncMock()
         ) as mocked_background:
+            self._login()
             response = self.client.post(
                 "/api/admin/run-job-extraction",
-                headers=self.auth_headers,
                 json={"limit": 5, "only_unindexed": True, "use_ai": True}
             )
 
@@ -495,9 +574,9 @@ class AdminApiTestCase(unittest.TestCase):
 
     def test_run_job_extraction_task_should_return_409_when_ai_requested_but_not_ready(self):
         with patch("src.api.admin.is_openai_ready", return_value=False):
+            self._login()
             response = self.client.post(
                 "/api/admin/run-job-extraction",
-                headers=self.auth_headers,
                 json={"limit": 5, "only_unindexed": True, "use_ai": True}
             )
 
@@ -512,9 +591,9 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin._run_job_extraction_in_background",
             new=AsyncMock()
         ) as mocked_background:
+            self._login()
             response = self.client.post(
                 "/api/admin/run-job-extraction",
-                headers=self.auth_headers,
                 json={"limit": 3, "only_pending": False}
             )
 

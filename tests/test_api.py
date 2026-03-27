@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -758,6 +759,38 @@ class PostsApiTestCase(unittest.TestCase):
             for item in summary_payload["event_type_distribution"]
         }
         self.assertEqual(distribution["招聘公告"], 1)
+
+    @patch(
+        "src.api.posts.get_task_summary",
+        return_value={
+            "latest_success_run": {
+                "task_type": "scheduled_scrape",
+                "status": "success",
+                "finished_at": "2026-03-27T10:00:00+00:00",
+            },
+            "latest_success_at": "2026-03-27T10:00:00+00:00",
+            "running_tasks": [{"task_type": "ai_analysis"}],
+            "total_runs": 12,
+        },
+    )
+    def test_get_freshness_summary_returns_public_latest_success(self, _mock_summary):
+        response = self.client.get("/api/posts/freshness-summary")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["latest_success_run"]["task_type"], "scheduled_scrape")
+        self.assertEqual(payload["latest_success_run"]["task_label"], "定时抓取")
+        self.assertNotIn("running_tasks", payload)
+        self.assertNotIn("total_runs", payload)
+
+    @patch("src.api.posts.get_task_summary", return_value={"latest_success_run": None, "latest_success_at": None})
+    def test_get_freshness_summary_returns_empty_payload_when_no_success(self, _mock_summary):
+        response = self.client.get("/api/posts/freshness-summary")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["latest_success_at"], None)
+        self.assertEqual(payload["latest_success_run"], None)
 
 
 if __name__ == "__main__":

@@ -72,10 +72,11 @@ npm run dev
 
 - 地址：`/admin`
 - 作用：看任务状态、触发抓取、附件补处理、AI 分析、岗位重建、查看统计摘要
-- 现在默认要求后台账号密码
-  - 环境变量：`ADMIN_USERNAME` / `ADMIN_PASSWORD`
-  - 不配置时管理接口会返回 `503`
-  - 前端会话内登录，不做长期记住
+- 现在默认要求后台账号密码，并使用页面内会话登录
+  - 必填环境变量：`ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET`
+  - 任一未配置时，管理会话接口与管理业务接口会返回 `503`
+  - 不再触发浏览器原生 Basic Auth 弹窗
+  - 前台首页和详情页通过公开 `GET /api/posts/freshness-summary` 展示任务新鲜度，不要求后台登录
 
 ## 常用命令
 

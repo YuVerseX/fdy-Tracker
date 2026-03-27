@@ -1055,7 +1055,7 @@ const adminAuthorized = ref(false)
 const adminAuthChecking = ref(false)
 const adminAuthError = ref('')
 const adminAuthForm = ref({
-  username: adminApi.getSavedUsername(),
+  username: '',
   password: ''
 })
 const activeAdminSection = ref('overview')
@@ -1206,7 +1206,7 @@ const feedbackClass = computed(() => {
   }
   return 'border-red-200 bg-red-50 text-red-700'
 })
-const adminSavedUsername = computed(() => adminApi.getSavedUsername() || adminAuthForm.value.username || '')
+const adminSavedUsername = computed(() => adminAuthForm.value.username || '')
 const backendRunningTasks = computed(() => {
   if (!adminAuthorized.value) {
     return []
@@ -1438,7 +1438,7 @@ const healthAlerts = computed(() => {
   return alerts
 })
 
-const isAdminAuthStatus = (status) => status === 401 || status === 403 || status === 503
+const isAdminAuthStatus = (status) => status === 401 || status === 503
 
 const clearAdminRuntimeState = () => {
   taskRuns.value = []
@@ -1455,27 +1455,21 @@ const handleAdminAccessError = (error) => {
   adminAuthForm.value.password = ''
   clearAdminRuntimeState()
 
-  if (status === 401 || status === 403) {
-    adminApi.clearCredentials()
+  if (status === 401) {
+    adminAuthError.value = error?.response?.data?.detail || '后台登录状态已失效，请重新登录。'
+  } else {
+    adminAuthError.value = error?.response?.data?.detail || '后台会话鉴权暂不可用，请稍后再试。'
   }
-
-  adminAuthError.value = error?.response?.data?.detail || '后台登录状态已失效，请重新登录。'
   return true
 }
 
 const verifyAdminAccess = async () => {
-  if (!adminApi.hasCredentials()) {
-    adminAuthorized.value = false
-    clearAdminRuntimeState()
-    return false
-  }
-
   adminAuthChecking.value = true
   adminAuthError.value = ''
   try {
-    await adminApi.getTaskSummary()
+    const response = await adminApi.getSession()
     adminAuthorized.value = true
-    adminAuthForm.value.username = adminApi.getSavedUsername()
+    adminAuthForm.value.username = response?.data?.username || adminAuthForm.value.username
     return true
   } catch (error) {
     if (!handleAdminAccessError(error)) {
@@ -1488,27 +1482,47 @@ const verifyAdminAccess = async () => {
 }
 
 const submitAdminLogin = async () => {
-  if (!adminApi.setCredentials(adminAuthForm.value.username, adminAuthForm.value.password)) {
+  const username = String(adminAuthForm.value.username || '').trim()
+  const password = String(adminAuthForm.value.password || '')
+  if (!username || !password) {
     adminAuthError.value = '请输入后台账号和密码。'
     return
   }
 
-  const verified = await verifyAdminAccess()
-  if (!verified) {
-    return
+  adminAuthChecking.value = true
+  adminAuthError.value = ''
+  try {
+    const response = await adminApi.login(username, password)
+    adminAuthorized.value = true
+    adminAuthForm.value.username = response?.data?.username || username
+    adminAuthForm.value.password = ''
+    await fetchSources()
+    await refreshOverview()
+  } catch (error) {
+    if (!handleAdminAccessError(error)) {
+      adminAuthError.value = getErrorMessage(error, '后台登录失败')
+    }
+  } finally {
+    adminAuthChecking.value = false
   }
-
-  adminAuthForm.value.password = ''
-  await fetchSources()
-  await refreshOverview()
 }
 
-const logoutAdmin = () => {
-  adminApi.clearCredentials()
-  adminAuthorized.value = false
-  adminAuthForm.value.password = ''
-  clearAdminRuntimeState()
-  setFeedback('success', '已退出后台登录')
+const logoutAdmin = async () => {
+  let logoutSucceeded = false
+  try {
+    await adminApi.logout()
+    logoutSucceeded = true
+    setFeedback('success', '已退出后台登录')
+  } catch (error) {
+    setFeedback('error', getErrorMessage(error, '退出后台登录失败，请稍后再试。'))
+  } finally {
+    adminAuthorized.value = false
+    adminAuthForm.value.password = ''
+    clearAdminRuntimeState()
+    if (!logoutSucceeded) {
+      adminAuthError.value = '退出请求未完成，已清空当前页面状态。刷新后若仍是已登录，请重试退出。'
+    }
+  }
 }
 
 const applySchedulerConfig = (payload = {}) => {

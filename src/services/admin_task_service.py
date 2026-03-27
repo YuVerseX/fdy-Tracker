@@ -21,6 +21,15 @@ RUNNING_TASK_STALE_HOURS = {
     "attachment_backfill": 12,
     "duplicate_backfill": 12,
 }
+TASK_TYPE_LABELS = {
+    "manual_scrape": "手动抓取最新数据",
+    "scheduled_scrape": "定时抓取",
+    "attachment_backfill": "历史附件补处理",
+    "duplicate_backfill": "历史去重补齐",
+    "ai_analysis": "OpenAI 分析",
+    "job_extraction": "岗位级抽取",
+    "ai_job_extraction": "岗位级抽取",
+}
 TASK_RUNS_LOCK = RLock()
 
 
@@ -433,4 +442,29 @@ def get_task_summary() -> Dict[str, Any]:
         "latest_success_at": latest_success_run.get("finished_at") if latest_success_run else None,
         "running_tasks": running_tasks,
         "total_runs": len(task_runs)
+    }
+
+
+def get_task_type_label(task_type: str) -> str:
+    """把任务类型转成人可读标签。"""
+    return TASK_TYPE_LABELS.get(task_type, task_type)
+
+
+def serialize_public_task_freshness(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """序列化公开可见的任务新鲜度字段。"""
+    latest_success_run = summary.get("latest_success_run")
+    if not latest_success_run:
+        return {
+            "latest_success_at": None,
+            "latest_success_run": None,
+        }
+
+    task_type = latest_success_run.get("task_type") or ""
+    return {
+        "latest_success_at": summary.get("latest_success_at"),
+        "latest_success_run": {
+            "task_type": task_type,
+            "task_label": get_task_type_label(task_type),
+            "finished_at": latest_success_run.get("finished_at"),
+        },
     }
