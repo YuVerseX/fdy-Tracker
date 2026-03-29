@@ -487,6 +487,17 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("定时抓取", response.json()["detail"])
 
+    def test_run_scrape_task_should_return_404_when_source_missing(self):
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = None
+        self.db.query.return_value = source_query
+
+        self._login()
+        response = self.client.post("/api/admin/run-scrape", json={"source_id": 999, "max_pages": 3})
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("数据源不存在", response.json()["detail"])
+
     def test_backfill_attachments_task_should_return_task_run(self):
         with patch(
             "src.api.admin.start_task_run",
@@ -503,6 +514,26 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["task_run"]["status"], "running")
         self.assertIn("已提交", payload["message"])
         mocked_background.assert_called_once()
+
+    def test_backfill_attachments_task_should_return_409_when_scrape_is_running(self):
+        running_task = {
+            "id": "running-scrape-2",
+            "task_type": "manual_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00",
+        }
+        with patch(
+            "src.api.admin.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="attachment_backfill",
+                running_task=running_task,
+            ),
+        ):
+            self._login()
+            response = self.client.post("/api/admin/backfill-attachments", json={"limit": 50})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("手动抓取", response.json()["detail"])
 
     def test_run_ai_analysis_task_should_return_task_run(self):
         with patch("src.api.admin.is_openai_ready", return_value=True), patch(
@@ -552,6 +583,26 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("OpenAI 分析", response.json()["detail"])
 
+    def test_run_ai_analysis_task_should_return_409_when_scrape_is_running(self):
+        running_task = {
+            "id": "running-scrape-1",
+            "task_type": "manual_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00",
+        }
+        with patch("src.api.admin.is_openai_ready", return_value=True), patch(
+            "src.api.admin.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="ai_analysis",
+                running_task=running_task,
+            ),
+        ):
+            self._login()
+            response = self.client.post("/api/admin/run-ai-analysis", json={"limit": 5, "only_unanalyzed": True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("手动抓取", response.json()["detail"])
+
     def test_run_job_extraction_task_should_return_task_run(self):
         with patch("src.api.admin.is_openai_ready", return_value=True), patch(
             "src.api.admin.start_task_run",
@@ -571,6 +622,29 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["task_run"]["status"], "running")
         self.assertIn("已提交", payload["message"])
         mocked_background.assert_called_once()
+
+    def test_run_job_extraction_task_should_return_409_when_scrape_is_running(self):
+        running_task = {
+            "id": "running-scrape-3",
+            "task_type": "manual_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00",
+        }
+        with patch(
+            "src.api.admin.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="job_extraction",
+                running_task=running_task,
+            ),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-job-extraction",
+                json={"limit": 5, "only_unindexed": True, "use_ai": False},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("手动抓取", response.json()["detail"])
 
     def test_run_job_extraction_task_should_return_409_when_ai_requested_but_not_ready(self):
         with patch("src.api.admin.is_openai_ready", return_value=False):

@@ -171,6 +171,14 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(called_post_ids, list)
         self.assertGreaterEqual(len(called_post_ids), 1)
 
+    async def test_scrape_and_save_should_raise_for_inactive_source(self):
+        source = self.db.query(Source).filter(Source.id == 1).first()
+        source.is_active = False
+        self.db.commit()
+
+        with self.assertRaisesRegex(RuntimeError, "数据源已停用"):
+            await scrape_and_save(self.db, source_id=1, max_pages=1)
+
     async def test_scrape_and_save_should_sync_attachments_for_existing_post(self):
         existing_post = Post(
             source_id=1,

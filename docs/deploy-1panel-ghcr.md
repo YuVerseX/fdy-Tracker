@@ -59,13 +59,15 @@ ADMIN_USERNAME=
 ADMIN_PASSWORD=
 ADMIN_SESSION_SECRET=
 ADMIN_SESSION_MAX_AGE_SECONDS=28800
-ADMIN_SESSION_SECURE=false
+ADMIN_SESSION_SECURE=true
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 ```
 
 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 需要你自己显式填写。留空时，管理接口会返回 `503`，管理页不能登录。
 
 管理页使用页面内会话登录，不再触发浏览器原生 Basic Auth 弹窗。
+
+生产环境必须启用 HTTPS，并保持 `ADMIN_SESSION_SECURE=true`。如果还没接 HTTPS，不建议直接对公网开放管理页。
 
 如果你后面想固定到某个版本，也可以把：
 
@@ -84,6 +86,8 @@ IMAGE_TAG=sha-xxxxxxx
 ```env
 IMAGE_TAG=v1.1.0
 ```
+
+不建议把 `latest` 当成稳定部署锚点。生产环境优先使用 `v*` 或 `sha-*`，这样更容易回滚和追踪问题。
 
 ## 更新方式
 
@@ -107,6 +111,8 @@ docker compose -f docker-compose.ghcr.yml up -d
 - 更新更快
 - 回滚更简单
 - 编排页面里直接拉镜像就行
+
+但镜像发布并不会改变数据库边界。当前默认仍是 SQLite，更适合单机轻量场景，不适合作为长期高并发方案。
 
 ## 端口建议
 

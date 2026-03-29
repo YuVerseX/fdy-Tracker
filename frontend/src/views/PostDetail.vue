@@ -5,6 +5,8 @@
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between gap-4">
         <div class="flex items-center gap-4">
           <button
+            type="button"
+            aria-label="返回招聘列表"
             @click="goBack"
             class="p-2 hover:bg-gray-100 rounded-lg transition-colors duration-200 cursor-pointer"
           >
@@ -25,14 +27,19 @@
 
     <!-- Main Content -->
     <main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div class="mb-4 rounded-lg border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
-        <p v-if="freshnessLoading">正在获取后台任务状态...</p>
-        <p v-else-if="latestSuccessTask">
-          最近后台成功任务：{{ getTaskTypeLabel(latestSuccessTask.taskType) }}，完成于
-          {{ formatDateTime(latestSuccessTask.finishedAt) }}（{{ getRelativeTimeLabel(latestSuccessTask.finishedAt) }}）。
-        </p>
-        <p v-else-if="freshnessUnavailable">后台任务状态暂时不可用，不影响你查看当前详情。</p>
-        <p v-else>还没有可展示的后台成功任务记录。</p>
+      <div class="mb-4 rounded-lg border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800" aria-live="polite">
+        <p v-if="freshnessLoading">正在获取最近抓取记录...</p>
+        <template v-else-if="latestSuccessTask">
+          <p>
+            {{ freshnessHeadline }}，完成于
+            {{ formatDateTime(latestSuccessTask.finishedAt) }}（{{ getRelativeTimeLabel(latestSuccessTask.finishedAt) }}）。
+          </p>
+          <p class="mt-1 text-xs text-sky-700/80">
+            帮助判断系统最近是否抓取过更新，不直接代表当前公告刚发布。
+          </p>
+        </template>
+        <p v-else-if="freshnessUnavailable">抓取记录暂时不可用，不影响你查看当前详情。</p>
+        <p v-else>还没有可展示的抓取成功任务记录。</p>
       </div>
 
       <!-- Loading State -->
@@ -307,6 +314,8 @@
               查看原文
             </a>
             <button
+              type="button"
+              aria-label="返回招聘列表"
               @click="goBack"
               class="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors duration-200 cursor-pointer"
             >
@@ -323,6 +332,7 @@
 import { computed, ref, onMounted, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { postsApi } from '../api/posts'
+import { getPublicFreshnessHeadline } from '../utils/publicFreshness.js'
 
 const router = useRouter()
 const route = useRoute()
@@ -336,6 +346,13 @@ const freshnessUnavailable = ref(false)
 const latestSuccessTask = ref(null)
 const normalizedJobItems = ref([])
 const PRIMARY_FIELD_NAMES = ['岗位名称', '性别要求', '学历要求', '专业要求', '工作地点', '招聘人数', '政治面貌', '年龄要求']
+const freshnessHeadline = computed(() => {
+  if (!latestSuccessTask.value) return ''
+  return getPublicFreshnessHeadline({
+    ...latestSuccessTask.value,
+    taskLabel: latestSuccessTask.value.taskLabel || getTaskTypeLabel(latestSuccessTask.value.taskType)
+  })
+})
 
 // Methods
 const fetchPostDetail = async () => {
@@ -377,7 +394,12 @@ const fetchLatestSuccessTask = async () => {
 }
 
 const goBack = () => {
-  router.replace({
+  if (window.history.length > 1) {
+    router.back()
+    return
+  }
+
+  router.push({
     name: 'PostList',
     query: { ...route.query }
   })
@@ -466,8 +488,10 @@ const normalizeTaskRun = (run) => {
   if (!run) return null
   const finishedAt = run.finished_at || run.finishedAt || run.last_success_at || run.lastSuccessAt
   if (!finishedAt) return null
+  const taskType = run.task_type || run.taskType || ''
   return {
-    taskType: run.task_type || run.taskType || '',
+    taskType,
+    taskLabel: run.task_label || run.taskLabel || '',
     finishedAt
   }
 }

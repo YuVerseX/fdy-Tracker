@@ -649,6 +649,29 @@ def merge_jobs(local_jobs: list[dict[str, Any]], ai_jobs: list[dict[str, Any]]) 
     return deduplicate_jobs([*local_jobs, *ai_jobs])
 
 
+def build_existing_ai_job_payloads(post: Post) -> list[dict[str, Any]]:
+    """回填帖子已落库的 AI 岗位，供非 AI 重建复用"""
+    payloads: list[dict[str, Any]] = []
+    for job in post.jobs or []:
+        source_type = get_job_source_type(job)
+        if source_type not in {"ai", "hybrid"}:
+            continue
+
+        payloads.append({
+            "job_name": job.job_name,
+            "recruitment_count": job.recruitment_count,
+            "education_requirement": job.education_requirement,
+            "major_requirement": job.major_requirement,
+            "location": job.location,
+            "political_status": job.political_status,
+            "source_type": source_type,
+            "is_counselor": bool(job.is_counselor),
+            "confidence_score": job.confidence_score,
+            "raw_payload": get_job_raw_payload(job),
+        })
+    return payloads
+
+
 def replace_post_jobs(db: Session, post: Post, jobs: list[dict[str, Any]]) -> int:
     """覆盖写入岗位级结果"""
     db.query(PostJob).filter(PostJob.post_id == post.id).delete(synchronize_session=False)
@@ -708,15 +731,16 @@ def reconcile_post_counselor_flags(post: Post) -> bool:
 async def sync_post_jobs(db: Session, post: Post, use_ai: bool = False) -> dict[str, int | bool | str]:
     """同步单条帖子岗位级结果"""
     local_jobs = collect_local_jobs(post)
+    persisted_ai_jobs = build_existing_ai_job_payloads(post) if not use_ai else []
     ai_jobs = await extract_ai_jobs(post, local_jobs) if use_ai else []
-    final_jobs = merge_jobs(local_jobs, ai_jobs)
+    final_jobs = merge_jobs(local_jobs, [*persisted_ai_jobs, *ai_jobs])
     jobs_saved = replace_post_jobs(db, post, final_jobs)
     update_post_counselor_flags(post, final_jobs)
     db.flush()
 
     return {
         "jobs_saved": jobs_saved,
-        "ai_job_count": len(ai_jobs),
+        "ai_job_count": len([job for job in final_jobs if job.get("source_type") in {"ai", "hybrid"}]),
         "has_attachment_jobs": any(job.get("source_type") in {"attachment", "attachment_pdf", "hybrid"} for job in final_jobs),
         "has_counselor_job": post.has_counselor_job,
         "counselor_scope": post.counselor_scope or COUNSELOR_SCOPE_NONE,

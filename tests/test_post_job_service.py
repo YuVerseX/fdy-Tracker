@@ -260,6 +260,175 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_jobs[0].source_type, "ai")
         self.assertEqual(json.loads(saved_jobs[0].raw_payload_json)["job_name"], "专职辅导员")
 
+    async def test_sync_post_jobs_should_count_hybrid_jobs_as_ai_participation(self):
+        post = Post(
+            source_id=1,
+            title="综合招聘公告",
+            content="正文和 AI 都能抽出同名岗位。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/ai-hybrid",
+            original_url="https://example.com/posts/ai-hybrid",
+        )
+        self.db.add(post)
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+        with patch(
+            "src.services.post_job_service.collect_local_jobs",
+            return_value=[{
+                "job_name": "专职辅导员",
+                "recruitment_count": "2人",
+                "source_type": "field",
+                "is_counselor": True,
+                "raw_payload": {"job_name": "专职辅导员"},
+            }],
+        ), patch(
+            "src.services.post_job_service.extract_ai_jobs",
+            return_value=[{
+                "job_name": "专职辅导员",
+                "education_requirement": "硕士",
+                "source_type": "ai",
+                "is_counselor": True,
+                "confidence_score": 0.92,
+                "raw_payload": {"job_name": "专职辅导员"},
+            }],
+        ):
+            result = await sync_post_jobs(self.db, post, use_ai=True)
+        self.db.commit()
+
+        saved_jobs = self.db.query(PostJob).filter(PostJob.post_id == post.id).all()
+        self.assertEqual(len(saved_jobs), 1)
+        self.assertEqual(saved_jobs[0].source_type, "hybrid")
+        self.assertEqual(result["ai_job_count"], 1)
+
+    async def test_sync_post_jobs_should_keep_existing_ai_jobs_when_use_ai_false(self):
+        post = Post(
+            source_id=1,
+            title="综合招聘公告",
+            content="正文里只有招聘范围，没有明确岗位表。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/keep-ai",
+            original_url="https://example.com/posts/keep-ai",
+        )
+        self.db.add(post)
+        self.db.flush()
+        self.db.add(PostJob(
+            post_id=post.id,
+            job_name="AI 辅导员岗",
+            recruitment_count="2人",
+            education_requirement="硕士",
+            source_type="ai",
+            is_counselor=True,
+            confidence_score=0.91,
+            raw_payload_json=json.dumps({"job_name": "AI 辅导员岗"}, ensure_ascii=False),
+            sort_order=0,
+        ))
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+        with patch(
+            "src.services.post_job_service.collect_local_jobs",
+            return_value=[{
+                "job_name": "正文提取岗位",
+                "source_type": "field",
+                "is_counselor": False,
+                "raw_payload": {"job_name": "正文提取岗位"},
+            }],
+        ):
+            result = await sync_post_jobs(self.db, post, use_ai=False)
+        self.db.commit()
+
+        saved_jobs = self.db.query(PostJob).filter(PostJob.post_id == post.id).order_by(PostJob.sort_order.asc()).all()
+        self.assertEqual(result["ai_job_count"], 1)
+        self.assertEqual(sorted(job.source_type for job in saved_jobs), ["ai", "field"])
+
+    async def test_sync_post_jobs_should_keep_existing_hybrid_ai_semantics_when_use_ai_false(self):
+        post = Post(
+            source_id=1,
+            title="综合招聘公告",
+            content="正文里只有招聘范围，没有明确岗位表。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/keep-hybrid-ai",
+            original_url="https://example.com/posts/keep-hybrid-ai",
+        )
+        self.db.add(post)
+        self.db.flush()
+        self.db.add(PostJob(
+            post_id=post.id,
+            job_name="专职辅导员",
+            recruitment_count="2人",
+            education_requirement="硕士",
+            source_type="hybrid",
+            is_counselor=True,
+            confidence_score=0.93,
+            raw_payload_json=json.dumps({"job_name": "专职辅导员", "source_type": "hybrid"}, ensure_ascii=False),
+            sort_order=0,
+        ))
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+        with patch(
+            "src.services.post_job_service.collect_local_jobs",
+            return_value=[{
+                "job_name": "专职辅导员",
+                "source_type": "field",
+                "is_counselor": True,
+                "raw_payload": {"job_name": "专职辅导员"},
+            }],
+        ):
+            result = await sync_post_jobs(self.db, post, use_ai=False)
+        self.db.commit()
+
+        saved_jobs = self.db.query(PostJob).filter(PostJob.post_id == post.id).all()
+        self.assertEqual(len(saved_jobs), 1)
+        self.assertEqual(saved_jobs[0].source_type, "hybrid")
+        self.assertEqual(result["ai_job_count"], 1)
+
+    async def test_sync_post_jobs_should_replace_ai_jobs_when_use_ai_true(self):
+        post = Post(
+            source_id=1,
+            title="综合招聘公告",
+            content="正文里只有招聘范围，没有明确岗位表。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/keep-ai-use-ai-true",
+            original_url="https://example.com/posts/keep-ai-use-ai-true",
+        )
+        self.db.add(post)
+        self.db.flush()
+        self.db.add(PostJob(
+            post_id=post.id,
+            job_name="旧 AI 岗位",
+            recruitment_count="1人",
+            education_requirement="本科",
+            source_type="ai",
+            is_counselor=True,
+            confidence_score=0.6,
+            raw_payload_json=json.dumps({"job_name": "旧 AI 岗位"}, ensure_ascii=False),
+            sort_order=0,
+        ))
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+        with patch(
+            "src.services.post_job_service.collect_local_jobs",
+            return_value=[],
+        ), patch(
+            "src.services.post_job_service.extract_ai_jobs",
+            return_value=[{
+                "job_name": "新AI岗位",
+                "source_type": "ai",
+                "is_counselor": True,
+                "confidence_score": 0.95,
+                "raw_payload": {"job_name": "新AI岗位"},
+            }],
+        ):
+            await sync_post_jobs(self.db, post, use_ai=True)
+        self.db.commit()
+
+        saved_jobs = self.db.query(PostJob).filter(PostJob.post_id == post.id).all()
+        self.assertEqual(len(saved_jobs), 1)
+        self.assertEqual(saved_jobs[0].job_name, "新AI岗位")
+
     def test_filter_displayable_jobs_should_drop_noisy_field_aggregate_job(self):
         jobs = [
             {

@@ -1,6 +1,11 @@
 """应用配置模块"""
 from pathlib import Path
+from loguru import logger
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEBUG_TRUE_VALUES = {"true", "1", "yes", "on"}
+DEBUG_FALSE_VALUES = {"false", "0", "no", "off"}
 
 
 class Settings(BaseSettings):
@@ -9,6 +14,25 @@ class Settings(BaseSettings):
     # 应用配置
     APP_NAME: str = "江苏专职辅导员招聘追踪系统"
     DEBUG: bool = True
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def normalize_debug_value(cls, value):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return True
+
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return True
+        if normalized in DEBUG_TRUE_VALUES:
+            return True
+        if normalized in DEBUG_FALSE_VALUES:
+            return False
+
+        logger.warning("DEBUG 配置值非法，已回退为 False: {}", value)
+        return False
 
     # 数据库配置
     DATABASE_URL: str = "sqlite:///./data/fdy_tracker.db"

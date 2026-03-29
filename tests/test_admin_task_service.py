@@ -52,6 +52,67 @@ class AdminTaskServiceTestCase(unittest.TestCase):
 
         self.assertEqual(ctx.exception.running_task["task_type"], "scheduled_scrape")
 
+    def test_start_task_run_should_block_ai_analysis_when_manual_scrape_running(self):
+        self.write_task_runs([
+            {
+                "id": "running-1",
+                "task_type": "manual_scrape",
+                "status": "running",
+                "summary": "手动抓取进行中",
+                "params": {"source_id": 1, "max_pages": 3},
+                "details": {},
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": None,
+            }
+        ])
+
+        with self.assertRaises(admin_task_service.TaskAlreadyRunningError) as ctx:
+            admin_task_service.start_task_run(
+                task_type="ai_analysis",
+                summary="AI 分析进行中",
+                params={"limit": 10},
+            )
+
+        self.assertEqual(ctx.exception.running_task["task_type"], "manual_scrape")
+
+    def test_start_task_run_should_block_attachment_backfill_when_manual_scrape_running(self):
+        running_task = admin_task_service.start_task_run(
+            task_type="manual_scrape",
+            summary="手动抓取进行中",
+            params={"source_id": 1, "max_pages": 3},
+        )
+
+        with self.assertRaises(admin_task_service.TaskAlreadyRunningError) as ctx:
+            admin_task_service.start_task_run(
+                task_type="attachment_backfill",
+                summary="历史附件补处理中",
+                params={"source_id": 1, "limit": 50},
+            )
+
+        self.assertEqual(ctx.exception.running_task["id"], running_task["id"])
+        self.assertEqual(ctx.exception.running_task["task_type"], "manual_scrape")
+        self.assertIn("attachment_backfill", ctx.exception.conflict_task_types)
+        self.assertIn("manual_scrape", ctx.exception.conflict_task_types)
+
+    def test_start_task_run_should_block_job_extraction_when_scheduled_scrape_running(self):
+        running_task = admin_task_service.start_task_run(
+            task_type="scheduled_scrape",
+            summary="定时抓取进行中",
+            params={"source_id": 1, "max_pages": 3},
+        )
+
+        with self.assertRaises(admin_task_service.TaskAlreadyRunningError) as ctx:
+            admin_task_service.start_task_run(
+                task_type="job_extraction",
+                summary="岗位级抽取进行中",
+                params={"source_id": 1, "limit": 100, "only_unindexed": True, "use_ai": False},
+            )
+
+        self.assertEqual(ctx.exception.running_task["id"], running_task["id"])
+        self.assertEqual(ctx.exception.running_task["task_type"], "scheduled_scrape")
+        self.assertIn("job_extraction", ctx.exception.conflict_task_types)
+        self.assertIn("scheduled_scrape", ctx.exception.conflict_task_types)
+
     def test_start_task_run_should_initialize_phase_progress_and_heartbeat(self):
         task_run = admin_task_service.start_task_run(
             task_type="manual_scrape",
@@ -152,6 +213,34 @@ class AdminTaskServiceTestCase(unittest.TestCase):
 
         self.assertEqual(task_runs[0]["status"], "running")
         self.assertEqual(task_runs[0]["phase"], "抓取执行中")
+
+    def test_get_public_task_freshness_summary_should_skip_ai_analysis_runs(self):
+        self.write_task_runs([
+            {
+                "id": "ai-1",
+                "task_type": "ai_analysis",
+                "status": "success",
+                "summary": "AI 分析完成",
+                "params": {},
+                "details": {},
+                "started_at": "2026-03-28T10:00:00+00:00",
+                "finished_at": "2026-03-28T10:10:00+00:00",
+            },
+            {
+                "id": "scrape-1",
+                "task_type": "scheduled_scrape",
+                "status": "success",
+                "summary": "定时抓取完成",
+                "params": {},
+                "details": {},
+                "started_at": "2026-03-27T10:00:00+00:00",
+                "finished_at": "2026-03-27T10:05:00+00:00",
+            },
+        ])
+
+        summary = admin_task_service.get_public_task_freshness_summary()
+
+        self.assertEqual(summary["latest_success_run"]["task_type"], "scheduled_scrape")
 
 
 if __name__ == "__main__":

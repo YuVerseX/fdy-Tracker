@@ -761,7 +761,7 @@ class PostsApiTestCase(unittest.TestCase):
         self.assertEqual(distribution["招聘公告"], 1)
 
     @patch(
-        "src.api.posts.get_task_summary",
+        "src.api.posts.get_public_task_freshness_summary",
         return_value={
             "latest_success_run": {
                 "task_type": "scheduled_scrape",
@@ -769,11 +769,9 @@ class PostsApiTestCase(unittest.TestCase):
                 "finished_at": "2026-03-27T10:00:00+00:00",
             },
             "latest_success_at": "2026-03-27T10:00:00+00:00",
-            "running_tasks": [{"task_type": "ai_analysis"}],
-            "total_runs": 12,
         },
     )
-    def test_get_freshness_summary_returns_public_latest_success(self, _mock_summary):
+    def test_get_freshness_summary_should_only_return_scrape_success(self, _mock_public_summary):
         response = self.client.get("/api/posts/freshness-summary")
 
         self.assertEqual(response.status_code, 200)
@@ -783,7 +781,10 @@ class PostsApiTestCase(unittest.TestCase):
         self.assertNotIn("running_tasks", payload)
         self.assertNotIn("total_runs", payload)
 
-    @patch("src.api.posts.get_task_summary", return_value={"latest_success_run": None, "latest_success_at": None})
+    @patch(
+        "src.api.posts.get_public_task_freshness_summary",
+        return_value={"latest_success_run": None, "latest_success_at": None},
+    )
     def test_get_freshness_summary_returns_empty_payload_when_no_success(self, _mock_summary):
         response = self.client.get("/api/posts/freshness-summary")
 

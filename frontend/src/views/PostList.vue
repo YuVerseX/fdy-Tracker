@@ -18,14 +18,19 @@
 
     <!-- Main Content -->
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div class="mb-4 rounded-lg border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800">
-        <p v-if="freshnessLoading">正在获取后台任务状态...</p>
-        <p v-else-if="latestSuccessTask">
-          最近后台成功任务：{{ getTaskTypeLabel(latestSuccessTask.taskType) }}，完成于
-          {{ formatDateTime(latestSuccessTask.finishedAt) }}（{{ latestSuccessText }}）。
-        </p>
-        <p v-else-if="freshnessUnavailable">后台任务状态暂时不可用，不影响你继续筛选和浏览。</p>
-        <p v-else>还没有可展示的后台成功任务记录。</p>
+      <div class="mb-4 rounded-lg border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800" aria-live="polite">
+        <p v-if="freshnessLoading">正在获取最近抓取记录...</p>
+        <template v-else-if="latestSuccessTask">
+          <p>
+            {{ freshnessHeadline }}，完成于
+            {{ formatDateTime(latestSuccessTask.finishedAt) }}（{{ latestSuccessText }}）。
+          </p>
+          <p class="mt-1 text-xs text-sky-700/80">
+            帮助判断系统最近是否抓取过更新，不直接代表当前公告刚发布。
+          </p>
+        </template>
+        <p v-else-if="freshnessUnavailable">抓取记录暂时不可用，不影响你继续筛选和浏览。</p>
+        <p v-else>还没有可展示的抓取成功任务记录。</p>
       </div>
 
       <div class="mb-3 flex flex-col gap-2 text-sm text-gray-600 lg:flex-row lg:items-center lg:justify-between">
@@ -70,13 +75,19 @@
           <div class="flex flex-col md:flex-row gap-4">
             <!-- Search Input -->
             <div class="flex-1">
+              <label for="post-search" class="mb-2 block text-sm font-medium text-gray-700">搜索招聘信息</label>
               <input
+                id="post-search"
                 v-model="searchQuery"
                 type="text"
+                aria-describedby="post-search-hint"
                 placeholder="搜索招聘信息..."
                 class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-600 focus:border-transparent transition-all duration-200"
                 @input="handleSearchInput"
               />
+              <p id="post-search-hint" class="mt-2 text-xs text-gray-500">
+                输入关键词后会自动刷新列表，保留当前筛选结果。
+              </p>
             </div>
 
             <!-- Filter: Counselor Scope -->
@@ -95,6 +106,7 @@
 
             <!-- Toggle Advanced Filters -->
             <button
+              type="button"
               @click="showAdvancedFilters = !showAdvancedFilters"
               class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors duration-200 cursor-pointer flex items-center gap-2"
             >
@@ -106,6 +118,7 @@
 
             <!-- Search Button -->
             <button
+              type="button"
               @click="handleManualSearch"
               class="px-6 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 transition-colors duration-200 cursor-pointer"
             >
@@ -253,10 +266,18 @@
       <!-- Posts List -->
       <div v-else-if="posts.length > 0" class="space-y-4">
         <div
+          v-if="refreshing"
+          class="rounded-lg border border-sky-100 bg-sky-50 px-4 py-2 text-sm text-sky-700"
+          aria-live="polite"
+        >
+          正在刷新当前结果，列表和筛选条件会保留。
+        </div>
+        <router-link
           v-for="post in posts"
           :key="post.id"
-          @click="goToDetail(post.id)"
-          class="bg-white rounded-lg shadow-sm p-6 hover:shadow-md transition-all duration-200 cursor-pointer border border-transparent hover:border-sky-200"
+          :to="{ name: 'PostDetail', params: { id: post.id }, query: { ...route.query } }"
+          class="block bg-white rounded-lg shadow-sm p-6 hover:shadow-md transition-all duration-200 border border-transparent hover:border-sky-200 focus:outline-none focus:ring-2 focus:ring-sky-600"
+          :aria-label="`查看：${post.title}`"
         >
           <div class="flex items-start justify-between">
             <div class="flex-1">
@@ -349,7 +370,7 @@
               </span>
             </div>
           </div>
-        </div>
+        </router-link>
       </div>
 
       <!-- Empty State -->
@@ -388,6 +409,7 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { postsApi } from '../api/posts'
+import { getPublicFreshnessHeadline } from '../utils/publicFreshness.js'
 import {
   DEFAULT_COUNSELOR_SCOPE,
   buildPostParams as buildPostRequestParams,
@@ -400,6 +422,7 @@ const route = useRoute()
 // State
 const posts = ref([])
 const loading = ref(false)
+const refreshing = ref(false)
 const error = ref(null)
 const searchQuery = ref('')
 const currentPage = ref(1)
@@ -460,6 +483,13 @@ const hasActiveFilters = computed(() => {
 const latestSuccessText = computed(() => {
   if (!latestSuccessTask.value?.finishedAt) return ''
   return getRelativeTimeLabel(latestSuccessTask.value.finishedAt)
+})
+const freshnessHeadline = computed(() => {
+  if (!latestSuccessTask.value) return ''
+  return getPublicFreshnessHeadline({
+    ...latestSuccessTask.value,
+    taskLabel: latestSuccessTask.value.taskLabel || getTaskTypeLabel(latestSuccessTask.value.taskType)
+  })
 })
 const eventTypeOptions = computed(() => statsSummary.value?.event_type_distribution || [])
 
@@ -550,20 +580,20 @@ const buildPostParams = ({ scope = filters.value.counselorScope, skip = 0, limit
   })
 }
 
-const triggerFetch = ({ debounce = false } = {}) => {
+const triggerFetch = ({ debounce = false, silent = false } = {}) => {
   if (fetchDebounceTimer) {
     clearTimeout(fetchDebounceTimer)
     fetchDebounceTimer = null
   }
 
   if (!debounce) {
-    fetchPosts()
+    fetchPosts({ silent })
     return
   }
 
   fetchDebounceTimer = setTimeout(() => {
     fetchDebounceTimer = null
-    fetchPosts()
+    fetchPosts({ silent })
   }, FETCH_DEBOUNCE_MS)
 }
 
@@ -584,9 +614,13 @@ const triggerStatsFetch = ({ debounce = false } = {}) => {
   }, FETCH_DEBOUNCE_MS)
 }
 
-const fetchPosts = async () => {
+const fetchPosts = async ({ silent = false } = {}) => {
   const requestId = ++postsRequestSeq
-  loading.value = true
+  if (silent && posts.value.length > 0) {
+    refreshing.value = true
+  } else {
+    loading.value = true
+  }
   error.value = null
 
   try {
@@ -637,6 +671,7 @@ const fetchPosts = async () => {
   } finally {
     if (requestId === postsRequestSeq) {
       loading.value = false
+      refreshing.value = false
     }
   }
 }
@@ -644,7 +679,7 @@ const fetchPosts = async () => {
 const handleSearch = () => {
   currentPage.value = 1
   syncListRouteQuery()
-  triggerFetch({ debounce: true })
+  triggerFetch({ debounce: true, silent: true })
   triggerStatsFetch({ debounce: true })
 }
 
@@ -655,7 +690,7 @@ const handleSearchInput = () => {
 const handleLocationInput = () => {
   currentPage.value = 1
   syncListRouteQuery()
-  triggerFetch({ debounce: true })
+  triggerFetch({ debounce: true, silent: true })
   triggerStatsFetch({ debounce: true })
 }
 
@@ -663,14 +698,14 @@ const handleFilter = (changedField = '') => {
   currentPage.value = 1
   syncListRouteQuery()
   const shouldDebounce = FILTER_DEBOUNCE_FIELDS.has(changedField)
-  triggerFetch({ debounce: shouldDebounce })
+  triggerFetch({ debounce: shouldDebounce, silent: true })
   triggerStatsFetch({ debounce: shouldDebounce })
 }
 
 const handleManualSearch = () => {
   currentPage.value = 1
   syncListRouteQuery()
-  triggerFetch({ debounce: false })
+  triggerFetch({ debounce: false, silent: true })
   triggerStatsFetch({ debounce: false })
 }
 
@@ -694,14 +729,6 @@ const goToPage = (page) => {
     fetchPosts()
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
-}
-
-const goToDetail = (id) => {
-  router.push({
-    name: 'PostDetail',
-    params: { id },
-    query: { ...route.query }
-  })
 }
 
 const fetchLatestSuccessTask = async () => {
@@ -768,8 +795,10 @@ const normalizeTaskRun = (run) => {
   if (!run) return null
   const finishedAt = run.finished_at || run.finishedAt || run.last_success_at || run.lastSuccessAt
   if (!finishedAt) return null
+  const taskType = run.task_type || run.taskType || ''
   return {
-    taskType: run.task_type || run.taskType || '',
+    taskType,
+    taskLabel: run.task_label || run.taskLabel || '',
     finishedAt
   }
 }

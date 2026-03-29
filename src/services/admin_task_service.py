@@ -30,6 +30,20 @@ TASK_TYPE_LABELS = {
     "job_extraction": "岗位级抽取",
     "ai_job_extraction": "岗位级抽取",
 }
+SCRAPE_FRESHNESS_TASK_TYPES = {"manual_scrape", "scheduled_scrape"}
+CONTENT_MUTATION_TASK_TYPES = {
+    "manual_scrape",
+    "scheduled_scrape",
+    "attachment_backfill",
+    "duplicate_backfill",
+    "ai_analysis",
+    "job_extraction",
+    "ai_job_extraction",
+}
+TASK_CONFLICT_MATRIX = {
+    task_type: sorted(CONTENT_MUTATION_TASK_TYPES)
+    for task_type in CONTENT_MUTATION_TASK_TYPES
+}
 TASK_RUNS_LOCK = RLock()
 
 
@@ -232,17 +246,17 @@ def _load_task_runs_with_cleanup() -> List[Dict[str, Any]]:
     return _cleanup_stale_running_tasks(_read_task_runs())
 
 
-def _normalize_conflict_task_types(
+def resolve_conflict_task_types(
     task_type: str,
-    conflict_task_types: List[str] | None = None
+    extra: List[str] | None = None
 ) -> List[str]:
-    """归一化互斥任务类型"""
-    task_types: List[str] = []
-    for item in [task_type, *(conflict_task_types or [])]:
+    """解析指定任务的互斥任务类型集合。"""
+    resolved = list(TASK_CONFLICT_MATRIX.get(task_type, [task_type]))
+    for item in extra or []:
         normalized = (item or "").strip()
-        if normalized and normalized not in task_types:
-            task_types.append(normalized)
-    return task_types
+        if normalized and normalized not in resolved:
+            resolved.append(normalized)
+    return resolved
 
 
 def _find_running_task(
@@ -283,7 +297,7 @@ def start_task_run(
     """创建运行中的任务记录"""
     with TASK_RUNS_LOCK:
         current_runs = _load_task_runs_with_cleanup()
-        normalized_conflict_task_types = _normalize_conflict_task_types(task_type, conflict_task_types)
+        normalized_conflict_task_types = resolve_conflict_task_types(task_type, conflict_task_types)
         running_task = _find_running_task(current_runs, normalized_conflict_task_types)
         if running_task is not None:
             raise TaskAlreadyRunningError(
@@ -442,6 +456,23 @@ def get_task_summary() -> Dict[str, Any]:
         "latest_success_at": latest_success_run.get("finished_at") if latest_success_run else None,
         "running_tasks": running_tasks,
         "total_runs": len(task_runs)
+    }
+
+
+def get_public_task_freshness_summary() -> Dict[str, Any]:
+    """公开页面只关心抓取任务的成功时间。"""
+    task_runs = load_task_runs(limit=MAX_TASK_RUNS)
+    latest_success_run = next(
+        (
+            task_run for task_run in task_runs
+            if task_run.get("status") == "success"
+            and task_run.get("task_type") in SCRAPE_FRESHNESS_TASK_TYPES
+        ),
+        None,
+    )
+    return {
+        "latest_success_run": latest_success_run,
+        "latest_success_at": latest_success_run.get("finished_at") if latest_success_run else None,
     }
 
 

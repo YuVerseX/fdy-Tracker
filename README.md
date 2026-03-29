@@ -105,6 +105,14 @@ cd frontend
 npm run build
 ```
 
+### 前端回归（改列表 / 详情 / 管理台时）
+
+```bash
+cd frontend
+npm test
+npm run build
+```
+
 ### Docker
 
 ```bash
@@ -132,11 +140,13 @@ docker compose down
 
 发布触发方式：
 
-- push 到 `main`
-- push `v*` tag
-- 手动触发 workflow
+- push 到 `main`，并且先通过后端测试、前端测试、前端构建
+- push `v*` tag，并且先通过同一套 CI 门禁
+- 手动触发 `publish-images` workflow
 
 如果你在 VPS / 1Panel 上直接拉镜像，优先使用根目录 `docker-compose.ghcr.yml`。对应说明见 `docs/deploy-1panel-ghcr.md`。
+
+不建议把 `latest` 当成稳定部署锚点。要做可回滚部署，优先使用 `v*` 或 `sha-*` 标签。
 
 ## 项目结构
 
@@ -189,5 +199,5 @@ fdy-Tracker/
 
 - 协议：`MIT`
 - 欢迎提 Issue / PR，提交流程见 `CONTRIBUTING.md`
-- 已补基础 CI（后端测试 + 前端构建），PR 默认走自动检查
+- 已补基础 CI（后端测试 + 前端测试 + 前端构建），PR 默认走自动检查
 - `data/`、`logs/`、构建产物、运行日志、临时文件默认不进仓库

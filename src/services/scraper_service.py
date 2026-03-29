@@ -16,12 +16,38 @@ SCRAPER_REGISTRY = {
 }
 
 
+class ScrapeSourceError(RuntimeError):
+    """抓取数据源不可用时抛出的统一异常。"""
+
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def create_scraper(source: Source):
     """根据数据源配置创建爬虫实例"""
     scraper_class = SCRAPER_REGISTRY.get(source.scraper_class)
     if not scraper_class:
         raise ValueError(f"未注册的爬虫类: {source.scraper_class}")
     return scraper_class()
+
+
+def ensure_scrape_source_ready(db: Session, source_id: int) -> Source:
+    """统一校验抓取数据源是否存在且可用。"""
+    try:
+        source = db.query(Source).filter(Source.id == source_id).first()
+    except SQLAlchemyError as exc:
+        logger.error(f"读取数据源失败，数据库可能尚未初始化: {exc}")
+        db.rollback()
+        raise RuntimeError("读取数据源失败") from exc
+
+    if not source:
+        raise ScrapeSourceError("数据源不存在", 404)
+
+    if not source.is_active:
+        raise ScrapeSourceError("数据源已停用，不能启动抓取任务", 409)
+
+    return source
 
 
 def merge_field_data(base_fields: list[dict], extra_fields: list[dict] | None = None) -> list[dict]:
@@ -363,21 +389,7 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
     """
     logger.info(f"开始抓取数据源 ID: {source_id}")
 
-    # 获取数据源配置
-    try:
-        source = db.query(Source).filter(Source.id == source_id).first()
-    except SQLAlchemyError as e:
-        logger.error(f"读取数据源失败，数据库可能尚未初始化: {e}")
-        db.rollback()
-        return 0
-
-    if not source:
-        logger.error(f"数据源 {source_id} 不存在")
-        return 0
-
-    if not source.is_active:
-        logger.warning(f"数据源 {source.name} 未启用")
-        return 0
+    source = ensure_scrape_source_ready(db, source_id)
 
     # 创建爬虫实例
     try:

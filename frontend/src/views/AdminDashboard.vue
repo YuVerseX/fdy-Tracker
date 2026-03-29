@@ -105,42 +105,42 @@
           <article class="rounded-lg bg-white/80 px-4 py-4 shadow-sm ring-1 ring-black/5">
             <div class="text-xs text-gray-500">定时抓取</div>
             <div class="mt-2 text-lg font-semibold text-sky-900">
-              {{ schedulerForm.enabled ? '已启用' : '已关闭' }}
+              {{ displayLoadedBoolean(schedulerLoaded, schedulerForm.enabled, '已启用', '已关闭') }}
             </div>
-            <div class="mt-1 text-xs text-gray-500">间隔 {{ formatIntervalLabel(schedulerForm.intervalSeconds) }}</div>
+            <div class="mt-1 text-xs text-gray-500">间隔 {{ schedulerLoaded ? formatIntervalLabel(schedulerForm.intervalSeconds) : LOADING_LABEL }}</div>
             <div class="mt-1 text-xs text-gray-500">
-              {{ schedulerForm.nextRunAt ? `下次 ${formatDateTime(schedulerForm.nextRunAt)}` : '还没拿到下次运行时间' }}
+              {{ !schedulerLoaded ? '下次 加载中' : (schedulerForm.nextRunAt ? `下次 ${formatDateTime(schedulerForm.nextRunAt)}` : '还没拿到下次运行时间') }}
             </div>
           </article>
 
           <article class="rounded-lg bg-white/80 px-4 py-4 shadow-sm ring-1 ring-black/5">
             <div class="text-xs text-gray-500">AI 分析</div>
             <div class="mt-2 text-lg font-semibold text-sky-900">
-              {{ openaiReady ? '已就绪' : '未就绪' }}
+              {{ displayLoadedBoolean(analysisLoaded, openaiReady, '已就绪', '未就绪') }}
             </div>
-            <div class="mt-1 text-xs text-gray-500">模型 {{ analysisRuntime.model_name || '--' }}</div>
-            <div class="mt-1 text-xs text-gray-500">待 OpenAI {{ analysisOverview.openai_pending_posts || 0 }} 条</div>
-            <div class="mt-1 text-xs text-gray-500">待统计 {{ insightOverview.pending_insight_posts || 0 }} 条</div>
+            <div class="mt-1 text-xs text-gray-500">模型 {{ displayLoadedText(analysisLoaded, analysisRuntime?.model_name) }}</div>
+            <div class="mt-1 text-xs text-gray-500">待 OpenAI {{ displayLoadedCount(analysisLoaded, analysisOverview?.openai_pending_posts) }} 条</div>
+            <div class="mt-1 text-xs text-gray-500">待统计 {{ displayLoadedCount(insightLoaded, insightOverview?.pending_insight_posts) }} 条</div>
           </article>
 
           <article class="rounded-lg bg-white/80 px-4 py-4 shadow-sm ring-1 ring-black/5">
             <div class="text-xs text-gray-500">岗位索引</div>
             <div class="mt-2 text-lg font-semibold text-sky-900">
-              {{ jobsOverview.total_jobs }} 个岗位
+              {{ jobsLoaded ? `${displayLoadedCount(jobsLoaded, jobsOverview?.total_jobs)} 个岗位` : LOADING_LABEL }}
             </div>
-            <div class="mt-1 text-xs text-gray-500">含岗位帖子 {{ jobsOverview.posts_with_jobs || 0 }} 条</div>
-            <div class="mt-1 text-xs text-gray-500">待抽取 {{ jobsOverview.pending_posts || 0 }} 条</div>
+            <div class="mt-1 text-xs text-gray-500">含岗位帖子 {{ displayLoadedCount(jobsLoaded, jobsOverview?.posts_with_jobs) }} 条</div>
+            <div class="mt-1 text-xs text-gray-500">待抽取 {{ displayLoadedCount(jobsLoaded, jobsOverview?.pending_posts) }} 条</div>
           </article>
 
           <article class="rounded-lg bg-white/80 px-4 py-4 shadow-sm ring-1 ring-black/5">
             <div class="text-xs text-gray-500">最近任务</div>
             <div class="mt-2 text-sm font-semibold text-sky-900">
-              {{ latestSuccessTask ? getTaskTypeLabel(latestSuccessTask.taskType) : '还没有成功记录' }}
+              {{ !recentTaskLoaded ? LOADING_LABEL : (latestSuccessTask ? getTaskTypeLabel(latestSuccessTask.taskType) : '还没有成功记录') }}
             </div>
             <div class="mt-1 text-xs text-gray-500">
-              {{ latestSuccessTask ? `${formatDateTime(latestSuccessTask.finishedAt)}（${latestSuccessText}）` : '先跑一次任务后再看这里' }}
+              {{ !recentTaskLoaded ? '最近任务信息加载中' : (latestSuccessTask ? `${formatDateTime(latestSuccessTask.finishedAt)}（${latestSuccessText}）` : '先跑一次任务后再看这里') }}
             </div>
-            <div v-if="latestFailedTask" class="mt-2 text-xs text-red-600">
+            <div v-if="recentTaskLoaded && latestFailedTask" class="mt-2 text-xs text-red-600">
               最近失败：{{ getTaskTypeLabel(latestFailedTask.taskType) }}，{{ latestFailedText }}
             </div>
           </article>
@@ -210,19 +210,19 @@
         <div class="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div class="rounded-lg bg-rose-50 px-4 py-3">
             <div class="text-xs text-gray-500">重复组数</div>
-            <div class="mt-1 text-xl font-semibold text-rose-700">{{ duplicateSummary.overview.duplicate_groups }}</div>
+            <div class="mt-1 text-xl font-semibold text-rose-700">{{ displayLoadedCount(duplicateLoaded, duplicateOverview?.duplicate_groups) }}</div>
           </div>
           <div class="rounded-lg bg-amber-50 px-4 py-3">
             <div class="text-xs text-gray-500">折叠帖子</div>
-            <div class="mt-1 text-xl font-semibold text-amber-700">{{ duplicateSummary.overview.duplicate_posts }}</div>
+            <div class="mt-1 text-xl font-semibold text-amber-700">{{ displayLoadedCount(duplicateLoaded, duplicateOverview?.duplicate_posts) }}</div>
           </div>
           <div class="rounded-lg bg-emerald-50 px-4 py-3">
             <div class="text-xs text-gray-500">主记录</div>
-            <div class="mt-1 text-xl font-semibold text-emerald-700">{{ duplicateSummary.overview.primary_posts }}</div>
+            <div class="mt-1 text-xl font-semibold text-emerald-700">{{ displayLoadedCount(duplicateLoaded, duplicateOverview?.primary_posts) }}</div>
           </div>
           <div class="rounded-lg bg-slate-50 px-4 py-3">
             <div class="text-xs text-gray-500">未检查</div>
-            <div class="mt-1 text-xl font-semibold text-slate-700">{{ duplicateSummary.overview.unchecked_posts }}</div>
+            <div class="mt-1 text-xl font-semibold text-slate-700">{{ displayLoadedCount(duplicateLoaded, duplicateOverview?.unchecked_posts) }}</div>
           </div>
         </div>
 
@@ -267,17 +267,15 @@
 
         <div
           class="mt-4 rounded-lg border px-4 py-3 text-sm"
-          :class="schedulerForm.enabled
-            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-            : 'border-gray-200 bg-gray-50 text-gray-700'"
+          :class="schedulerNoticeClass"
         >
           <p>
-            当前状态：{{ schedulerForm.enabled ? '已启用定时抓取' : '已停用定时抓取' }}；
-            间隔 {{ formatIntervalLabel(schedulerForm.intervalSeconds) }}；
-            默认抓 {{ schedulerForm.defaultMaxPages }} 页。
+            当前状态：{{ displayLoadedBoolean(schedulerLoaded, schedulerForm.enabled, '已启用定时抓取', '已停用定时抓取') }}；
+            间隔 {{ schedulerLoaded ? formatIntervalLabel(schedulerForm.intervalSeconds) : LOADING_LABEL }}；
+            默认抓 {{ displayLoadedCount(schedulerLoaded, schedulerForm.defaultMaxPages) }} 页。
           </p>
-          <p v-if="schedulerForm.nextRunAt" class="mt-1 text-xs opacity-80">
-            下次预计运行：{{ formatDateTime(schedulerForm.nextRunAt) }}
+          <p class="mt-1 text-xs opacity-80">
+            下次预计运行：{{ displayLoadedText(schedulerLoaded, formatDateTime(schedulerForm.nextRunAt), NOT_FETCHED_LABEL) }}
           </p>
         </div>
 
@@ -467,47 +465,48 @@
 
             <div
               class="mt-6 rounded-lg border px-4 py-3 text-sm"
-              :class="openaiReady
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                : 'border-amber-200 bg-amber-50 text-amber-800'"
+              :class="analysisNoticeClass"
             >
-              <p v-if="openaiReady">
-                OpenAI 已就绪，当前模型是 {{ analysisRuntime.model_name }}。现在点“开始 OpenAI 分析”会真的走 AI。
+              <p v-if="!analysisLoaded">
+                分析摘要加载中，稍后再显示 OpenAI 运行状态。
+              </p>
+              <p v-else-if="openaiReady">
+                OpenAI 已就绪，当前模型是 {{ displayLoadedText(analysisLoaded, analysisRuntime?.model_name) }}。现在点“开始 OpenAI 分析”会真的走 AI。
               </p>
               <p v-else>
                 当前还没接上 OpenAI，页面里看到的“分析结果”还是规则分析。{{ openaiUnavailableReason }}
               </p>
               <p class="mt-1 text-xs opacity-80">
-                分析总开关：{{ analysisRuntime.analysis_enabled ? '已开启' : '已关闭' }}；
-                当前 provider：{{ analysisRuntime.provider }}；
-                接口地址：{{ analysisRuntime.base_url_configured ? analysisRuntime.base_url : 'OpenAI 官方默认' }}
+                分析总开关：{{ displayLoadedBoolean(analysisLoaded, analysisRuntime?.analysis_enabled, '已开启', '已关闭') }}；
+                当前 provider：{{ displayLoadedText(analysisLoaded, analysisRuntime?.provider) }}；
+                接口地址：{{ !analysisLoaded ? LOADING_LABEL : (analysisRuntime ? (analysisRuntime.base_url_configured ? displayLoadedText(true, analysisRuntime.base_url, NOT_FETCHED_LABEL) : 'OpenAI 官方默认') : EMPTY_LABEL) }}
               </p>
             </div>
 
             <div class="mt-6 grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
               <div class="rounded-lg bg-sky-50 px-4 py-3">
                 <div class="text-xs text-gray-500">总帖子</div>
-                <div class="mt-1 text-xl font-semibold text-sky-900">{{ analysisOverview.total_posts }}</div>
+                <div class="mt-1 text-xl font-semibold text-sky-900">{{ displayLoadedCount(analysisLoaded, analysisOverview?.total_posts) }}</div>
               </div>
               <div class="rounded-lg bg-emerald-50 px-4 py-3">
                 <div class="text-xs text-gray-500">任意分析</div>
-                <div class="mt-1 text-xl font-semibold text-emerald-700">{{ analysisOverview.analyzed_posts }}</div>
+                <div class="mt-1 text-xl font-semibold text-emerald-700">{{ displayLoadedCount(analysisLoaded, analysisOverview?.analyzed_posts) }}</div>
               </div>
               <div class="rounded-lg bg-amber-50 px-4 py-3">
                 <div class="text-xs text-gray-500">规则分析</div>
-                <div class="mt-1 text-xl font-semibold text-amber-700">{{ analysisOverview.rule_analyzed_posts }}</div>
+                <div class="mt-1 text-xl font-semibold text-amber-700">{{ displayLoadedCount(analysisLoaded, analysisOverview?.rule_analyzed_posts) }}</div>
               </div>
               <div class="rounded-lg bg-indigo-50 px-4 py-3">
                 <div class="text-xs text-gray-500">OpenAI 分析</div>
-                <div class="mt-1 text-xl font-semibold text-indigo-700">{{ analysisOverview.openai_analyzed_posts }}</div>
+                <div class="mt-1 text-xl font-semibold text-indigo-700">{{ displayLoadedCount(analysisLoaded, analysisOverview?.openai_analyzed_posts) }}</div>
               </div>
               <div class="rounded-lg bg-violet-50 px-4 py-3">
                 <div class="text-xs text-gray-500">待 OpenAI</div>
-                <div class="mt-1 text-xl font-semibold text-violet-700">{{ analysisOverview.openai_pending_posts }}</div>
+                <div class="mt-1 text-xl font-semibold text-violet-700">{{ displayLoadedCount(analysisLoaded, analysisOverview?.openai_pending_posts) }}</div>
               </div>
               <div class="rounded-lg bg-cyan-50 px-4 py-3">
                 <div class="text-xs text-gray-500">含附件</div>
-                <div class="mt-1 text-xl font-semibold text-cyan-700">{{ analysisOverview.attachment_posts }}</div>
+                <div class="mt-1 text-xl font-semibold text-cyan-700">{{ displayLoadedCount(analysisLoaded, analysisOverview?.attachment_posts) }}</div>
               </div>
             </div>
 
@@ -582,19 +581,19 @@
               <div class="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
                 <div class="rounded-lg bg-white px-3 py-3">
                   <div class="text-gray-500">岗位总数</div>
-                  <div class="mt-1 font-semibold text-cyan-900">{{ jobsOverview.total_jobs }}</div>
+                  <div class="mt-1 font-semibold text-cyan-900">{{ displayLoadedCount(jobsLoaded, jobsOverview?.total_jobs) }}</div>
                 </div>
                 <div class="rounded-lg bg-white px-3 py-3">
                   <div class="text-gray-500">含岗位帖子</div>
-                  <div class="mt-1 font-semibold text-cyan-900">{{ jobsOverview.posts_with_jobs }}</div>
+                  <div class="mt-1 font-semibold text-cyan-900">{{ displayLoadedCount(jobsLoaded, jobsOverview?.posts_with_jobs) }}</div>
                 </div>
                 <div class="rounded-lg bg-white px-3 py-3">
                   <div class="text-gray-500">辅导员岗位数</div>
-                  <div class="mt-1 font-semibold text-emerald-700">{{ jobsOverview.counselor_jobs }}</div>
+                  <div class="mt-1 font-semibold text-emerald-700">{{ displayLoadedCount(jobsLoaded, jobsOverview?.counselor_jobs) }}</div>
                 </div>
                 <div class="rounded-lg bg-white px-3 py-3">
                   <div class="text-gray-500">待抽取帖子</div>
-                  <div class="mt-1 font-semibold text-amber-700">{{ jobsOverview.pending_posts }}</div>
+                  <div class="mt-1 font-semibold text-amber-700">{{ displayLoadedCount(jobsLoaded, jobsOverview?.pending_posts) }}</div>
                 </div>
               </div>
 
@@ -671,26 +670,29 @@
               </div>
 
               <p v-if="jobsSummaryUnavailable" class="mt-3 text-xs text-amber-700">
-                后端还没开放岗位级摘要接口，当前先显示 0，不影响别的功能。
+                后端还没开放岗位级摘要接口，当前先显示占位值，不影响别的功能。
               </p>
-              <p v-if="jobSummary.latest_extracted_at" class="mt-2 text-xs text-gray-500">
-                最近岗位抽取完成时间：{{ formatDateTime(jobSummary.latest_extracted_at) }}
+              <p v-if="jobsLoaded && jobLatestExtractedAt" class="mt-2 text-xs text-gray-500">
+                最近岗位抽取完成时间：{{ formatDateTime(jobLatestExtractedAt) }}
               </p>
             </div>
 
-            <p v-if="!openaiReady" class="mt-3 text-xs text-amber-700">
+            <p v-if="analysisLoaded && !openaiReady" class="mt-3 text-xs text-amber-700">
               先在后端 `.env` 里补 `OPENAI_API_KEY`，必要时再补 `OPENAI_BASE_URL`，然后重启后端。
             </p>
 
-            <p v-if="analysisSummary.latest_analyzed_at" class="mt-4 text-xs text-gray-500">
-              最近一次分析完成时间：{{ formatDateTime(analysisSummary.latest_analyzed_at) }}
+            <p v-if="analysisLoaded && analysisLatestAnalyzedAt" class="mt-4 text-xs text-gray-500">
+              最近一次分析完成时间：{{ formatDateTime(analysisLatestAnalyzedAt) }}
             </p>
           </div>
 
           <div class="lg:w-80 space-y-6">
             <div>
               <h3 class="text-sm font-semibold text-gray-700">分析来源分布</h3>
-              <div v-if="analysisProviderStats.length" class="mt-4 space-y-3">
+              <div v-if="!analysisLoaded" class="mt-4 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+                分析摘要加载中。
+              </div>
+              <div v-else-if="analysisProviderStats.length" class="mt-4 space-y-3">
                 <div
                   v-for="item in analysisProviderStats.slice(0, 4)"
                   :key="item.analysis_provider"
@@ -709,9 +711,12 @@
 
             <div>
               <h3 class="text-sm font-semibold text-gray-700">事件类型分布</h3>
-              <div v-if="analysisSummary.event_type_distribution?.length" class="mt-4 space-y-3">
+              <div v-if="!analysisLoaded" class="mt-4 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+                分析摘要加载中。
+              </div>
+              <div v-else-if="analysisEventTypeStats.length" class="mt-4 space-y-3">
                 <div
-                  v-for="item in analysisSummary.event_type_distribution.slice(0, 6)"
+                  v-for="item in analysisEventTypeStats.slice(0, 6)"
                   :key="item.event_type"
                   class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3"
                 >
@@ -751,47 +756,50 @@
 
         <div class="mt-6 rounded-lg border border-fuchsia-200 bg-fuchsia-50 px-4 py-4 text-sm text-fuchsia-900">
           <p>
-            当前已提取 {{ insightOverview.insight_posts || 0 }} 条统计结果，
-            覆盖率 {{ formatPercent(insightOverview.insight_posts, analysisOverview.total_posts) }}；
-            其中 OpenAI 占 {{ formatPercent(insightOverview.openai_insight_posts, insightOverview.insight_posts) }}。
+            当前已提取 {{ displayLoadedCount(insightLoaded, insightOverview?.insight_posts) }} 条统计结果，
+            覆盖率 {{ displayLoadedPercent(analysisLoaded && insightLoaded, insightOverview?.insight_posts, analysisOverview?.total_posts) }}；
+            其中 OpenAI 占 {{ displayLoadedPercent(insightLoaded, insightOverview?.openai_insight_posts, insightOverview?.insight_posts) }}。
           </p>
           <p class="mt-1 text-xs opacity-80">
-            失败 {{ insightOverview.failed_insight_posts || 0 }} 条，跳过 {{ insightOverview.skipped_insight_posts || 0 }} 条。
-            {{ insightLatestAnalyzedAt ? `最近统计完成于 ${formatDateTime(insightLatestAnalyzedAt)}` : '还没有统计完成时间。' }}
+            失败 {{ displayLoadedCount(insightLoaded, insightOverview?.failed_insight_posts) }} 条，跳过 {{ displayLoadedCount(insightLoaded, insightOverview?.skipped_insight_posts) }} 条。
+            {{ !insightLoaded ? '最近统计完成时间加载中。' : (insightLatestAnalyzedAt ? `最近统计完成于 ${formatDateTime(insightLatestAnalyzedAt)}` : '还没有统计完成时间。') }}
           </p>
         </div>
 
         <div class="mt-6 grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           <div class="rounded-lg bg-fuchsia-50 px-4 py-3">
             <div class="text-xs text-gray-500">已提取</div>
-            <div class="mt-1 text-xl font-semibold text-fuchsia-700">{{ insightOverview.insight_posts || 0 }}</div>
+            <div class="mt-1 text-xl font-semibold text-fuchsia-700">{{ displayLoadedCount(insightLoaded, insightOverview?.insight_posts) }}</div>
           </div>
           <div class="rounded-lg bg-slate-50 px-4 py-3">
             <div class="text-xs text-gray-500">待提取</div>
-            <div class="mt-1 text-xl font-semibold text-slate-700">{{ insightOverview.pending_insight_posts || 0 }}</div>
+            <div class="mt-1 text-xl font-semibold text-slate-700">{{ displayLoadedCount(insightLoaded, insightOverview?.pending_insight_posts) }}</div>
           </div>
           <div class="rounded-lg bg-indigo-50 px-4 py-3">
             <div class="text-xs text-gray-500">OpenAI 统计</div>
-            <div class="mt-1 text-xl font-semibold text-indigo-700">{{ insightOverview.openai_insight_posts || 0 }}</div>
+            <div class="mt-1 text-xl font-semibold text-indigo-700">{{ displayLoadedCount(insightLoaded, insightOverview?.openai_insight_posts) }}</div>
           </div>
           <div class="rounded-lg bg-amber-50 px-4 py-3">
             <div class="text-xs text-gray-500">规则统计</div>
-            <div class="mt-1 text-xl font-semibold text-amber-700">{{ insightOverview.rule_insight_posts || 0 }}</div>
+            <div class="mt-1 text-xl font-semibold text-amber-700">{{ displayLoadedCount(insightLoaded, insightOverview?.rule_insight_posts) }}</div>
           </div>
           <div class="rounded-lg bg-emerald-50 px-4 py-3">
             <div class="text-xs text-gray-500">有截止时间</div>
-            <div class="mt-1 text-xl font-semibold text-emerald-700">{{ insightOverview.posts_with_deadline || 0 }}</div>
+            <div class="mt-1 text-xl font-semibold text-emerald-700">{{ displayLoadedCount(insightLoaded, insightOverview?.posts_with_deadline) }}</div>
           </div>
           <div class="rounded-lg bg-cyan-50 px-4 py-3">
             <div class="text-xs text-gray-500">有附件岗位表</div>
-            <div class="mt-1 text-xl font-semibold text-cyan-700">{{ insightOverview.posts_with_attachment_job_table || 0 }}</div>
+            <div class="mt-1 text-xl font-semibold text-cyan-700">{{ displayLoadedCount(insightLoaded, insightOverview?.posts_with_attachment_job_table) }}</div>
           </div>
         </div>
 
         <div class="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
           <div class="rounded-lg border border-gray-200 bg-white px-4 py-4">
             <h3 class="text-sm font-semibold text-gray-700">截止状态分布</h3>
-            <div v-if="insightDeadlineStats.length" class="mt-4 space-y-3">
+            <div v-if="!insightLoaded" class="mt-4 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+              统计摘要加载中。
+            </div>
+            <div v-else-if="insightDeadlineStats.length" class="mt-4 space-y-3">
               <div
                 v-for="item in insightDeadlineStats.slice(0, 4)"
                 :key="item.deadline_status"
@@ -816,7 +824,10 @@
 
           <div class="rounded-lg border border-gray-200 bg-white px-4 py-4">
             <h3 class="text-sm font-semibold text-gray-700">学历下限分布</h3>
-            <div v-if="insightDegreeStats.length" class="mt-4 space-y-3">
+            <div v-if="!insightLoaded" class="mt-4 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+              统计摘要加载中。
+            </div>
+            <div v-else-if="insightDegreeStats.length" class="mt-4 space-y-3">
               <div
                 v-for="item in insightDegreeStats.slice(0, 5)"
                 :key="item.degree_floor"
@@ -841,7 +852,10 @@
 
           <div class="rounded-lg border border-gray-200 bg-white px-4 py-4">
             <h3 class="text-sm font-semibold text-gray-700">城市分布</h3>
-            <div v-if="insightCityStats.length" class="mt-4 space-y-3">
+            <div v-if="!insightLoaded" class="mt-4 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+              统计摘要加载中。
+            </div>
+            <div v-else-if="insightCityStats.length" class="mt-4 space-y-3">
               <div
                 v-for="item in insightCityStats.slice(0, 6)"
                 :key="item.city"
@@ -868,19 +882,19 @@
         <div class="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div class="rounded-lg border border-gray-200 bg-white px-4 py-3">
             <div class="text-xs text-gray-500">含笔试</div>
-            <div class="mt-1 text-lg font-semibold text-gray-900">{{ insightOverview.posts_with_written_exam || 0 }}</div>
+            <div class="mt-1 text-lg font-semibold text-gray-900">{{ displayLoadedCount(insightLoaded, insightOverview?.posts_with_written_exam) }}</div>
           </div>
           <div class="rounded-lg border border-gray-200 bg-white px-4 py-3">
             <div class="text-xs text-gray-500">含面试</div>
-            <div class="mt-1 text-lg font-semibold text-gray-900">{{ insightOverview.posts_with_interview || 0 }}</div>
+            <div class="mt-1 text-lg font-semibold text-gray-900">{{ displayLoadedCount(insightLoaded, insightOverview?.posts_with_interview) }}</div>
           </div>
           <div class="rounded-lg border border-gray-200 bg-white px-4 py-3">
             <div class="text-xs text-gray-500">统计失败</div>
-            <div class="mt-1 text-lg font-semibold text-red-600">{{ insightOverview.failed_insight_posts || 0 }}</div>
+            <div class="mt-1 text-lg font-semibold text-red-600">{{ displayLoadedCount(insightLoaded, insightOverview?.failed_insight_posts) }}</div>
           </div>
           <div class="rounded-lg border border-gray-200 bg-white px-4 py-3">
             <div class="text-xs text-gray-500">统计跳过</div>
-            <div class="mt-1 text-lg font-semibold text-gray-700">{{ insightOverview.skipped_insight_posts || 0 }}</div>
+            <div class="mt-1 text-lg font-semibold text-gray-700">{{ displayLoadedCount(insightLoaded, insightOverview?.skipped_insight_posts) }}</div>
           </div>
         </div>
       </section>
@@ -900,7 +914,7 @@
           </button>
         </div>
 
-        <div v-if="loadingRuns" class="py-10 text-center text-sm text-gray-500">正在加载任务记录...</div>
+        <div v-if="loadingRuns || !taskRunsLoaded" class="py-10 text-center text-sm text-gray-500">正在加载任务记录...</div>
 
         <div v-else-if="taskRuns.length === 0" class="py-10 text-center text-sm text-gray-500">
           还没有管理任务记录，先手动跑一次任务。
@@ -929,7 +943,14 @@
                     <span>{{ run.phase || getDefaultTaskPhase(run) }}</span>
                     <span>{{ getTaskProgressLabel(run) }}</span>
                   </div>
-                  <div class="h-2 rounded-full bg-gray-200">
+                  <div
+                    class="h-2 rounded-full bg-gray-200"
+                    role="progressbar"
+                    :aria-valuemin="0"
+                    :aria-valuemax="100"
+                    :aria-valuenow="getTaskProgress(run)"
+                    :aria-label="`${getTaskTypeLabel(run.task_type || run.taskType)} 进度`"
+                  >
                     <div
                       class="h-2 rounded-full transition-all duration-300"
                       :class="getTaskProgressBarClass(run)"
@@ -1071,56 +1092,22 @@ const jobsLoading = ref(false)
 const duplicateLoading = ref(false)
 const schedulerLoading = ref(false)
 const schedulerSaving = ref(false)
+const schedulerLoaded = ref(false)
+const analysisLoaded = ref(false)
+const insightLoaded = ref(false)
+const jobsLoaded = ref(false)
+const duplicateLoaded = ref(false)
+const taskSummaryLoaded = ref(false)
+const taskRunsLoaded = ref(false)
 const jobsSummaryUnavailable = ref(false)
 const overviewRefreshing = ref(false)
 const taskRuns = ref([])
 const taskSummary = ref(null)
 const expandedTaskIds = ref([])
-const analysisSummary = ref({
-  runtime: {
-    analysis_enabled: true,
-    provider: 'openai',
-    model_name: 'gpt-5-mini',
-    openai_ready: false,
-    openai_configured: false,
-    openai_sdk_available: true,
-    base_url_configured: false,
-    base_url: ''
-  },
-  overview: {
-    total_posts: 0,
-    analyzed_posts: 0,
-    pending_posts: 0,
-    attachment_posts: 0,
-    rule_analyzed_posts: 0,
-    openai_analyzed_posts: 0,
-    openai_pending_posts: 0
-  },
-  provider_distribution: [],
-  event_type_distribution: [],
-  latest_analyzed_at: ''
-})
+const analysisSummary = ref(null)
 const insightSummary = ref(null)
-const jobSummary = ref({
-  overview: {
-    total_jobs: 0,
-    posts_with_jobs: 0,
-    counselor_jobs: 0,
-    pending_posts: 0
-  },
-  latest_extracted_at: ''
-})
-const duplicateSummary = ref({
-  overview: {
-    duplicate_groups: 0,
-    duplicate_posts: 0,
-    primary_posts: 0,
-    unchecked_posts: 0
-  },
-  reason_distribution: [],
-  latest_checked_at: '',
-  latest_groups: []
-})
+const jobSummary = ref(null)
+const duplicateSummary = ref(null)
 const feedback = ref({
   type: '',
   message: ''
@@ -1164,18 +1151,9 @@ const jobsForm = ref({
   onlyPending: true,
   useAi: false
 })
-const EMPTY_INSIGHT_OVERVIEW = {
-  insight_posts: 0,
-  pending_insight_posts: 0,
-  openai_insight_posts: 0,
-  rule_insight_posts: 0,
-  failed_insight_posts: 0,
-  skipped_insight_posts: 0,
-  posts_with_deadline: 0,
-  posts_with_written_exam: 0,
-  posts_with_interview: 0,
-  posts_with_attachment_job_table: 0
-}
+const LOADING_LABEL = '加载中'
+const EMPTY_LABEL = '--'
+const NOT_FETCHED_LABEL = '未获取'
 const TASK_HEARTBEAT_STALE_MS = 10 * 60 * 1000
 const TASK_POLL_INTERVAL_MS = 15 * 1000
 const getMaxDistributionCount = (items = []) => {
@@ -1189,6 +1167,41 @@ const formatPercent = (part, total) => {
     return '0%'
   }
   return `${Math.round((numerator / denominator) * 100)}%`
+}
+const displayLoadedCount = (loaded, value, empty = EMPTY_LABEL) => {
+  if (!loaded) {
+    return LOADING_LABEL
+  }
+  if (value === null || value === undefined || value === '') {
+    return empty
+  }
+  const normalized = Number(value)
+  return Number.isFinite(normalized) ? String(normalized) : empty
+}
+const displayLoadedText = (loaded, value, empty = EMPTY_LABEL) => {
+  if (!loaded) {
+    return LOADING_LABEL
+  }
+  if (value === null || value === undefined) {
+    return empty
+  }
+  const normalized = String(value).trim()
+  return normalized || empty
+}
+const displayLoadedBoolean = (loaded, value, truthy, falsy, pending = LOADING_LABEL) => {
+  if (!loaded) {
+    return pending
+  }
+  return value ? truthy : falsy
+}
+const displayLoadedPercent = (loaded, part, total, empty = EMPTY_LABEL) => {
+  if (!loaded) {
+    return LOADING_LABEL
+  }
+  if (part === null || part === undefined || total === null || total === undefined) {
+    return empty
+  }
+  return formatPercent(part, total)
 }
 const getDistributionBarStyle = (count, maxCount) => {
   const normalizedCount = Number(count || 0)
@@ -1207,6 +1220,7 @@ const feedbackClass = computed(() => {
   return 'border-red-200 bg-red-50 text-red-700'
 })
 const adminSavedUsername = computed(() => adminAuthForm.value.username || '')
+const recentTaskLoaded = computed(() => taskSummaryLoaded.value && taskRunsLoaded.value)
 const backendRunningTasks = computed(() => {
   if (!adminAuthorized.value) {
     return []
@@ -1263,42 +1277,35 @@ const activeTaskHints = computed(() => {
   })
   return [...new Set(hints)]
 })
-const analysisOverview = computed(() => analysisSummary.value?.overview || {
-  total_posts: 0,
-  analyzed_posts: 0,
-  pending_posts: 0,
-  attachment_posts: 0,
-  rule_analyzed_posts: 0,
-  openai_analyzed_posts: 0,
-  openai_pending_posts: 0
-})
-const analysisRuntime = computed(() => analysisSummary.value?.runtime || {
-  analysis_enabled: true,
-  provider: 'openai',
-  model_name: 'gpt-5-mini',
-  openai_ready: false,
-  openai_configured: false,
-  openai_sdk_available: true,
-  base_url_configured: false,
-  base_url: ''
-})
-const analysisProviderStats = computed(() => analysisSummary.value?.provider_distribution || [])
-const insightOverview = computed(() => insightSummary.value?.overview || analysisSummary.value?.insight_overview || EMPTY_INSIGHT_OVERVIEW)
-const insightDegreeStats = computed(() => insightSummary.value?.degree_floor_distribution || analysisSummary.value?.degree_floor_distribution || [])
-const insightDeadlineStats = computed(() => insightSummary.value?.deadline_status_distribution || analysisSummary.value?.deadline_status_distribution || [])
-const insightCityStats = computed(() => insightSummary.value?.city_distribution || analysisSummary.value?.city_distribution || [])
+const analysisOverview = computed(() => analysisSummary.value?.overview ?? null)
+const analysisRuntime = computed(() => analysisSummary.value?.runtime ?? null)
+const analysisProviderStats = computed(() => analysisSummary.value?.provider_distribution ?? [])
+const analysisEventTypeStats = computed(() => analysisSummary.value?.event_type_distribution ?? [])
+const analysisLatestAnalyzedAt = computed(() => analysisSummary.value?.latest_analyzed_at || '')
+const insightOverview = computed(() => insightSummary.value?.overview ?? analysisSummary.value?.insight_overview ?? null)
+const insightDegreeStats = computed(() => insightSummary.value?.degree_floor_distribution ?? analysisSummary.value?.degree_floor_distribution ?? [])
+const insightDeadlineStats = computed(() => insightSummary.value?.deadline_status_distribution ?? analysisSummary.value?.deadline_status_distribution ?? [])
+const insightCityStats = computed(() => insightSummary.value?.city_distribution ?? analysisSummary.value?.city_distribution ?? [])
 const insightLatestAnalyzedAt = computed(() => insightSummary.value?.latest_analyzed_at || analysisSummary.value?.latest_insight_at || '')
 const insightDegreeMaxCount = computed(() => getMaxDistributionCount(insightDegreeStats.value))
 const insightDeadlineMaxCount = computed(() => getMaxDistributionCount(insightDeadlineStats.value))
 const insightCityMaxCount = computed(() => getMaxDistributionCount(insightCityStats.value))
-const jobsOverview = computed(() => jobSummary.value?.overview || {
-  total_jobs: 0,
-  posts_with_jobs: 0,
-  counselor_jobs: 0,
-  pending_posts: 0
-})
-const openaiReady = computed(() => Boolean(analysisRuntime.value?.openai_ready))
+const jobsOverview = computed(() => jobSummary.value?.overview ?? null)
+const jobLatestExtractedAt = computed(() => jobSummary.value?.latest_extracted_at || '')
+const duplicateOverview = computed(() => duplicateSummary.value?.overview ?? null)
+const overviewReady = computed(() => (
+  schedulerLoaded.value &&
+  analysisLoaded.value &&
+  insightLoaded.value &&
+  jobsLoaded.value &&
+  duplicateLoaded.value &&
+  recentTaskLoaded.value
+))
+const openaiReady = computed(() => analysisLoaded.value && Boolean(analysisRuntime.value?.openai_ready))
 const openaiUnavailableReason = computed(() => {
+  if (!analysisLoaded.value || !analysisRuntime.value) {
+    return '分析运行信息加载中。'
+  }
   if (!analysisRuntime.value.analysis_enabled) {
     return '因为 AI 总开关现在就是关着的。'
   }
@@ -1330,7 +1337,26 @@ const latestFailedText = computed(() => {
   if (!latestFailedTask.value?.finishedAt) return ''
   return getRelativeTimeLabel(latestFailedTask.value.finishedAt)
 })
+const schedulerNoticeClass = computed(() => {
+  if (!schedulerLoaded.value) {
+    return 'border-slate-200 bg-slate-50 text-slate-700'
+  }
+  return schedulerForm.value.enabled
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+    : 'border-gray-200 bg-gray-50 text-gray-700'
+})
+const analysisNoticeClass = computed(() => {
+  if (!analysisLoaded.value) {
+    return 'border-slate-200 bg-slate-50 text-slate-700'
+  }
+  return openaiReady.value
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+    : 'border-amber-200 bg-amber-50 text-amber-800'
+})
 const healthStatusLevel = computed(() => {
+  if (!overviewReady.value) {
+    return 'unknown'
+  }
   const hasFreshFailure = latestFailedTask.value?.finishedAt && (
     !latestSuccessTask.value?.finishedAt ||
     new Date(latestFailedTask.value.finishedAt).getTime() > new Date(latestSuccessTask.value.finishedAt).getTime()
@@ -1342,9 +1368,9 @@ const healthStatusLevel = computed(() => {
 
   if (
     !openaiReady.value ||
-    Number(analysisOverview.value.openai_pending_posts || 0) > 0 ||
-    Number(insightOverview.value.pending_insight_posts || 0) > 0 ||
-    Number(jobsOverview.value.pending_posts || 0) > 0
+    Number(analysisOverview.value?.openai_pending_posts || 0) > 0 ||
+    Number(insightOverview.value?.pending_insight_posts || 0) > 0 ||
+    Number(jobsOverview.value?.pending_posts || 0) > 0
   ) {
     return 'attention'
   }
@@ -1352,11 +1378,15 @@ const healthStatusLevel = computed(() => {
   return 'healthy'
 })
 const healthStatusLabel = computed(() => {
+  if (healthStatusLevel.value === 'unknown') return '加载中'
   if (healthStatusLevel.value === 'warning') return '需处理'
   if (healthStatusLevel.value === 'attention') return '需关注'
   return '正常'
 })
 const healthPanelClass = computed(() => {
+  if (healthStatusLevel.value === 'unknown') {
+    return 'border-slate-200 bg-slate-100/80'
+  }
   if (healthStatusLevel.value === 'warning') {
     return 'border-red-200 bg-red-50/80'
   }
@@ -1366,6 +1396,9 @@ const healthPanelClass = computed(() => {
   return 'border-emerald-200 bg-emerald-50/80'
 })
 const healthBadgeClass = computed(() => {
+  if (healthStatusLevel.value === 'unknown') {
+    return 'bg-slate-200 text-slate-700'
+  }
   if (healthStatusLevel.value === 'warning') {
     return 'bg-red-100 text-red-700'
   }
@@ -1375,6 +1408,9 @@ const healthBadgeClass = computed(() => {
   return 'bg-emerald-100 text-emerald-700'
 })
 const healthTextClass = computed(() => {
+  if (healthStatusLevel.value === 'unknown') {
+    return 'text-slate-700'
+  }
   if (healthStatusLevel.value === 'warning') {
     return 'text-red-700'
   }
@@ -1384,6 +1420,9 @@ const healthTextClass = computed(() => {
   return 'text-emerald-800'
 })
 const healthStatusSummary = computed(() => {
+  if (healthStatusLevel.value === 'unknown') {
+    return '总览数据加载中，稍后再显示真实健康状态。'
+  }
   if (healthStatusLevel.value === 'warning') {
     return '当前有会影响持续更新的项，建议优先看下面的提示。'
   }
@@ -1393,6 +1432,9 @@ const healthStatusSummary = computed(() => {
   return '抓取、分析和岗位抽取都在正常状态。'
 })
 const healthAlerts = computed(() => {
+  if (!overviewReady.value) {
+    return []
+  }
   const alerts = []
   const latestSuccessAt = latestSuccessTask.value?.finishedAt
   const intervalMs = Number(schedulerForm.value.intervalSeconds || 0) * 1000
@@ -1417,22 +1459,22 @@ const healthAlerts = computed(() => {
     alerts.push('OpenAI 现在还没就绪，分析层会继续回到规则分析。')
   }
 
-  if (Number(analysisOverview.value.openai_pending_posts || 0) > 0) {
-    alerts.push(`还有 ${analysisOverview.value.openai_pending_posts} 条帖子待 OpenAI 分析。`)
+  if (Number(analysisOverview.value?.openai_pending_posts || 0) > 0) {
+    alerts.push(`还有 ${analysisOverview.value?.openai_pending_posts} 条帖子待 OpenAI 分析。`)
   }
 
-  if (Number(insightOverview.value.pending_insight_posts || 0) > 0) {
-    alerts.push(`还有 ${insightOverview.value.pending_insight_posts} 条帖子待统计字段提取。`)
+  if (Number(insightOverview.value?.pending_insight_posts || 0) > 0) {
+    alerts.push(`还有 ${insightOverview.value?.pending_insight_posts} 条帖子待统计字段提取。`)
   }
 
-  if (Number(insightOverview.value.failed_insight_posts || 0) > 0) {
-    alerts.push(`统计字段提取失败 ${insightOverview.value.failed_insight_posts} 条，建议点开 AI 统计看板看看。`)
+  if (Number(insightOverview.value?.failed_insight_posts || 0) > 0) {
+    alerts.push(`统计字段提取失败 ${insightOverview.value?.failed_insight_posts} 条，建议点开 AI 统计看板看看。`)
   }
 
   if (jobsSummaryUnavailable.value) {
     alerts.push('岗位摘要接口当前不可用，岗位健康度只能看到部分信息。')
-  } else if (Number(jobsOverview.value.pending_posts || 0) > 0) {
-    alerts.push(`还有 ${jobsOverview.value.pending_posts} 条帖子待岗位抽取。`)
+  } else if (Number(jobsOverview.value?.pending_posts || 0) > 0) {
+    alerts.push(`还有 ${jobsOverview.value?.pending_posts} 条帖子待岗位抽取。`)
   }
 
   return alerts
@@ -1443,6 +1485,19 @@ const isAdminAuthStatus = (status) => status === 401 || status === 503
 const clearAdminRuntimeState = () => {
   taskRuns.value = []
   taskSummary.value = null
+  expandedTaskIds.value = []
+  analysisSummary.value = null
+  insightSummary.value = null
+  jobSummary.value = null
+  duplicateSummary.value = null
+  taskSummaryLoaded.value = false
+  taskRunsLoaded.value = false
+  schedulerLoaded.value = false
+  analysisLoaded.value = false
+  insightLoaded.value = false
+  jobsLoaded.value = false
+  duplicateLoaded.value = false
+  jobsSummaryUnavailable.value = false
 }
 
 const handleAdminAccessError = (error) => {
@@ -1544,7 +1599,10 @@ const fetchTaskRuns = async () => {
   try {
     const response = await adminApi.getTaskRuns({ limit: 10 })
     taskRuns.value = response.data.items || []
+    taskRunsLoaded.value = true
   } catch (error) {
+    taskRuns.value = []
+    taskRunsLoaded.value = false
     if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '加载任务记录失败'))
   } finally {
@@ -1556,9 +1614,11 @@ const fetchTaskSummary = async () => {
   try {
     const response = await adminApi.getTaskSummary()
     taskSummary.value = response.data || null
+    taskSummaryLoaded.value = true
   } catch (error) {
+    taskSummary.value = null
+    taskSummaryLoaded.value = false
     if (handleAdminAccessError(error)) {
-      taskSummary.value = null
       return
     }
     console.warn('获取任务摘要失败，继续回退到任务记录:', error)
@@ -1599,7 +1659,9 @@ const fetchSchedulerConfig = async () => {
   try {
     const response = await adminApi.getSchedulerConfig()
     applySchedulerConfig(response.data || {})
+    schedulerLoaded.value = true
   } catch (error) {
+    schedulerLoaded.value = false
     if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '加载定时抓取配置失败'))
   } finally {
@@ -1611,8 +1673,11 @@ const fetchAnalysisSummary = async () => {
   analysisLoading.value = true
   try {
     const response = await adminApi.getAnalysisSummary()
-    analysisSummary.value = response.data || analysisSummary.value
+    analysisSummary.value = response.data || null
+    analysisLoaded.value = true
   } catch (error) {
+    analysisSummary.value = null
+    analysisLoaded.value = false
     if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '加载 AI 摘要失败'))
   } finally {
@@ -1624,12 +1689,15 @@ const fetchInsightSummary = async () => {
   insightLoading.value = true
   try {
     const response = await adminApi.getInsightSummary()
-    insightSummary.value = response.data || insightSummary.value
+    insightSummary.value = response.data || null
+    insightLoaded.value = true
   } catch (error) {
+    insightSummary.value = null
     if (handleAdminAccessError(error)) return
     if (error?.response?.status === 404 || error?.response?.status === 405) {
-      insightSummary.value = null
+      insightLoaded.value = true
     } else {
+      insightLoaded.value = false
       setFeedback('error', getErrorMessage(error, '加载 AI 统计看板失败'))
     }
   } finally {
@@ -1642,12 +1710,16 @@ const fetchJobSummary = async () => {
   jobsSummaryUnavailable.value = false
   try {
     const response = await adminApi.getJobSummary()
-    jobSummary.value = response.data || jobSummary.value
+    jobSummary.value = response.data || null
+    jobsLoaded.value = true
   } catch (error) {
+    jobSummary.value = null
     if (handleAdminAccessError(error)) return
     if (error?.response?.status === 404 || error?.response?.status === 405) {
       jobsSummaryUnavailable.value = true
+      jobsLoaded.value = true
     } else {
+      jobsLoaded.value = false
       setFeedback('error', getErrorMessage(error, '加载岗位摘要失败'))
     }
   } finally {
@@ -1659,8 +1731,11 @@ const fetchDuplicateSummary = async () => {
   duplicateLoading.value = true
   try {
     const response = await adminApi.getDuplicateSummary()
-    duplicateSummary.value = response.data || duplicateSummary.value
+    duplicateSummary.value = response.data || null
+    duplicateLoaded.value = true
   } catch (error) {
+    duplicateSummary.value = null
+    duplicateLoaded.value = false
     if (handleAdminAccessError(error)) return
     setFeedback('error', getErrorMessage(error, '加载重复治理摘要失败'))
   } finally {
@@ -1821,6 +1896,7 @@ const saveSchedulerConfig = async () => {
     const response = await adminApi.updateSchedulerConfig(payload)
     const configPayload = response.data?.config || payload
     applySchedulerConfig(configPayload)
+    schedulerLoaded.value = true
     setFeedback('success', response.data?.message || '定时抓取配置已更新')
   } catch (error) {
     if (handleAdminAccessError(error)) return

@@ -79,6 +79,7 @@ class SchedulerJobsAsyncTestCase(unittest.IsolatedAsyncioTestCase):
             default_source_id=1,
             default_max_pages=3,
         )
+        expected_conflict_task_types = ["manual_scrape", "scheduled_scrape", "ai_analysis"]
 
         with patch("src.scheduler.jobs.SessionLocal", return_value=db), patch(
             "src.scheduler.jobs.load_scheduler_config",
@@ -95,11 +96,27 @@ class SchedulerJobsAsyncTestCase(unittest.IsolatedAsyncioTestCase):
                     "task_type": "manual_scrape",
                     "status": "running",
                 },
-                conflict_task_types=["manual_scrape", "scheduled_scrape"],
+                conflict_task_types=expected_conflict_task_types,
             ),
-        ), patch("src.scheduler.jobs.scrape_and_save", new_callable=AsyncMock) as mocked_scrape:
+        ) as mocked_start_task_run, patch(
+            "src.scheduler.jobs.resolve_conflict_task_types",
+            return_value=expected_conflict_task_types,
+        ) as mocked_resolve_conflict_task_types, patch(
+            "src.scheduler.jobs.scrape_and_save",
+            new_callable=AsyncMock,
+        ) as mocked_scrape:
             await scheduler_jobs.scheduled_scrape()
 
+        mocked_resolve_conflict_task_types.assert_called_once_with("scheduled_scrape")
+        mocked_start_task_run.assert_called_once_with(
+            task_type="scheduled_scrape",
+            summary="定时抓取进行中",
+            params={
+                "source_id": 1,
+                "max_pages": 3,
+            },
+            conflict_task_types=expected_conflict_task_types,
+        )
         mocked_scrape.assert_not_called()
         db.close.assert_called_once()
 

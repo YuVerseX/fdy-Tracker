@@ -56,6 +56,14 @@ cp .env.example .env
 
 管理页现在使用页面内会话登录，不再弹浏览器原生 Basic Auth 登录框。
 
+生产环境必须启用 HTTPS，并把：
+
+```env
+ADMIN_SESSION_SECURE=true
+```
+
+只有在本机或纯内网临时调试 HTTP 时，才建议短时设为 `false`。
+
 如果你暂时不用 AI，可以把：
 
 ```env
@@ -105,6 +113,8 @@ git pull
 docker compose up -d --build
 ```
 
+如果你后面改用 GHCR 镜像部署，不建议把 `latest` 当成稳定部署锚点，优先使用 `v*` 或 `sha-*` 标签。
+
 停止：
 
 ```bash
@@ -119,6 +129,9 @@ docker compose down
 - 监控告警
 - 独立数据库
 - 自动部署 / 自动回滚
+- 长期高并发下的数据库升级
+
+当前默认还是 SQLite，适合单机轻量部署，不适合作为长期高并发方案。
 
 ## 7. 进一步建议
 

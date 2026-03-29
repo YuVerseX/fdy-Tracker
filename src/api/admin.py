@@ -29,6 +29,7 @@ from src.services.admin_task_service import (
     get_task_summary,
     load_task_runs,
     record_task_run,
+    resolve_conflict_task_types,
     start_task_run,
     update_task_run,
 )
@@ -37,7 +38,12 @@ from src.services.duplicate_service import (
     get_duplicate_summary,
 )
 from src.services.post_job_service import backfill_post_jobs, get_job_index_summary
-from src.services.scraper_service import backfill_existing_attachments, scrape_and_save
+from src.services.scraper_service import (
+    ScrapeSourceError,
+    backfill_existing_attachments,
+    ensure_scrape_source_ready,
+    scrape_and_save,
+)
 
 def _secure_compare_text(left: str, right: str) -> bool:
     """支持 Unicode 的常量时间文本比较。"""
@@ -121,7 +127,6 @@ def require_admin_access(request: Request) -> str:
 router = APIRouter()
 session_router = APIRouter(prefix="/admin/session")
 protected_router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin_access)])
-SCRAPE_TASK_TYPES = ["manual_scrape", "scheduled_scrape", "duplicate_backfill"]
 TASK_TYPE_LABELS = {
     "manual_scrape": "手动抓取最新数据",
     "scheduled_scrape": "定时抓取",
@@ -265,7 +270,7 @@ def _start_task_or_raise_conflict(
             task_type=task_type,
             summary=summary,
             params=params,
-            conflict_task_types=conflict_task_types,
+            conflict_task_types=resolve_conflict_task_types(task_type, conflict_task_types),
         )
     except TaskAlreadyRunningError as exc:
         running_task_type = exc.running_task.get("task_type") or task_type
@@ -791,7 +796,6 @@ async def backfill_duplicates_task(
         task_type="duplicate_backfill",
         summary="历史去重补齐进行中",
         params=params,
-        conflict_task_types=SCRAPE_TASK_TYPES,
     )
     background_tasks.add_task(
         _run_duplicate_backfill_in_background,
@@ -808,9 +812,15 @@ async def backfill_duplicates_task(
 @protected_router.post("/run-scrape", status_code=202)
 async def run_scrape_task(
     request: RunScrapeRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
     """手动抓取最新数据"""
+    try:
+        ensure_scrape_source_ready(db, request.source_id)
+    except ScrapeSourceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     params = {
         "source_id": request.source_id,
         "max_pages": request.max_pages
@@ -819,7 +829,6 @@ async def run_scrape_task(
         task_type="manual_scrape",
         summary="手动抓取进行中",
         params=params,
-        conflict_task_types=SCRAPE_TASK_TYPES,
     )
     background_tasks.add_task(
         _run_scrape_task_in_background,

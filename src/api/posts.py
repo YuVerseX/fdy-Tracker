@@ -22,7 +22,10 @@ from src.services.post_job_service import (
     is_counselor_related_post,
     serialize_post_job,
 )
-from src.services.admin_task_service import get_task_summary, serialize_public_task_freshness
+from src.services.admin_task_service import (
+    get_public_task_freshness_summary,
+    serialize_public_task_freshness,
+)
 
 router = APIRouter()
 RESULT_NOTICE_EVENT_TYPE = "结果公示"
@@ -696,7 +699,7 @@ async def get_posts_summary(
 @router.get("/posts/freshness-summary")
 async def get_posts_freshness_summary():
     """公开任务新鲜度摘要，只暴露前台展示所需字段。"""
-    summary = get_task_summary()
+    summary = get_public_task_freshness_summary()
     return serialize_public_task_freshness(summary)
 
 

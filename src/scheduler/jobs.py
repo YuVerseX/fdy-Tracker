@@ -12,6 +12,7 @@ from src.database.models import SchedulerConfig, Source
 from src.services.admin_task_service import (
     TaskAlreadyRunningError,
     record_task_run,
+    resolve_conflict_task_types,
     start_task_run,
     update_task_run,
 )
@@ -22,7 +23,6 @@ scheduler = AsyncIOScheduler()
 SCRAPE_JOB_ID = "scrape_job"
 DEFAULT_SOURCE_ID = 1
 DEFAULT_MAX_PAGES = 5
-SCRAPE_TASK_TYPES = ["manual_scrape", "scheduled_scrape", "duplicate_backfill"]
 
 
 async def _run_with_task_heartbeat(
@@ -201,7 +201,7 @@ async def scheduled_scrape():
                 task_type="scheduled_scrape",
                 summary="定时抓取进行中",
                 params=params,
-                conflict_task_types=SCRAPE_TASK_TYPES,
+                conflict_task_types=resolve_conflict_task_types("scheduled_scrape"),
             )
         except TaskAlreadyRunningError as exc:
             logger.info(
