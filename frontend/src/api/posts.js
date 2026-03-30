@@ -1,7 +1,7 @@
 import axios from 'axios'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || ''
-const LONG_RUNNING_TIMEOUT = 10 * 60 * 1000
+const API_BASE_URL = import.meta.env?.VITE_API_BASE_URL?.trim() || ''
+export const LONG_RUNNING_TIMEOUT = 10 * 60 * 1000
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -62,82 +62,88 @@ export const postsApi = {
   }
 }
 
-export const adminApi = {
+export const createAdminApi = (client) => ({
   login(username, password) {
-    return adminApiClient.post('/api/admin/session/login', { username, password })
+    return client.post('/api/admin/session/login', { username, password })
   },
 
   getSession() {
-    return adminApiClient.get('/api/admin/session/me')
+    return client.get('/api/admin/session/me')
   },
 
   logout() {
-    return adminApiClient.post('/api/admin/session/logout')
+    return client.post('/api/admin/session/logout')
   },
 
   getTaskRuns(params = {}) {
-    return adminApiClient.get('/api/admin/task-runs', { params })
+    return client.get('/api/admin/task-runs', { params })
   },
 
   getTaskSummary() {
-    return adminApiClient.get('/api/admin/task-runs/summary')
+    return client.get('/api/admin/task-runs/summary')
   },
 
   getSources() {
-    return adminApiClient.get('/api/admin/sources')
+    return client.get('/api/admin/sources')
   },
 
   getSchedulerConfig() {
-    return adminApiClient.get('/api/admin/scheduler-config')
+    return client.get('/api/admin/scheduler-config')
   },
 
   updateSchedulerConfig(payload = {}) {
-    return adminApiClient.put('/api/admin/scheduler-config', payload)
+    return client.put('/api/admin/scheduler-config', payload)
   },
 
   runScrape(payload = {}) {
-    return adminApiClient.post('/api/admin/run-scrape', payload, { timeout: LONG_RUNNING_TIMEOUT })
+    return client.post('/api/admin/run-scrape', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   backfillAttachments(payload = {}) {
-    return adminApiClient.post('/api/admin/backfill-attachments', payload, { timeout: LONG_RUNNING_TIMEOUT })
+    return client.post('/api/admin/backfill-attachments', payload, { timeout: LONG_RUNNING_TIMEOUT })
+  },
+
+  backfillBaseAnalysis(payload = {}) {
+    return client.post('/api/admin/backfill-base-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   getAnalysisSummary() {
-    return adminApiClient.get('/api/admin/analysis-summary')
+    return client.get('/api/admin/analysis-summary')
   },
 
   getInsightSummary() {
-    return adminApiClient.get('/api/admin/insight-summary')
+    return client.get('/api/admin/insight-summary')
   },
 
   getDuplicateSummary() {
-    return adminApiClient.get('/api/admin/duplicate-summary')
+    return client.get('/api/admin/duplicate-summary')
   },
 
   backfillDuplicates(payload = {}) {
-    return adminApiClient.post('/api/admin/backfill-duplicates', payload, { timeout: LONG_RUNNING_TIMEOUT })
+    return client.post('/api/admin/backfill-duplicates', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   runAiAnalysis(payload = {}) {
-    return adminApiClient.post('/api/admin/run-ai-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
+    return client.post('/api/admin/run-ai-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
   },
 
   getJobSummary(params = {}) {
     return requestWithFallback([
-      () => adminApiClient.get('/api/admin/job-summary', { params }),
-      () => adminApiClient.get('/api/admin/jobs-summary', { params }),
-      () => adminApiClient.get('/api/admin/job-extraction-summary', { params })
+      () => client.get('/api/admin/job-summary', { params }),
+      () => client.get('/api/admin/jobs-summary', { params }),
+      () => client.get('/api/admin/job-extraction-summary', { params })
     ])
   },
 
   runJobExtraction(payload = {}) {
     return requestWithFallback([
-      () => adminApiClient.post('/api/admin/run-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
-      () => adminApiClient.post('/api/admin/run-ai-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
-      () => adminApiClient.post('/api/admin/run-job-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
+      () => client.post('/api/admin/run-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
+      () => client.post('/api/admin/run-ai-job-extraction', payload, { timeout: LONG_RUNNING_TIMEOUT }),
+      () => client.post('/api/admin/run-job-analysis', payload, { timeout: LONG_RUNNING_TIMEOUT })
     ])
   }
-}
+})
+
+export const adminApi = createAdminApi(adminApiClient)
 
 export default api

@@ -14,6 +14,7 @@ from src.config import settings
 from src.database.database import SessionLocal, get_db
 from src.database.models import Post, PostJob, Source
 from src.services.ai_analysis_service import (
+    backfill_base_analysis,
     get_analysis_summary,
     get_insight_summary,
     is_openai_ready,
@@ -132,10 +133,21 @@ TASK_TYPE_LABELS = {
     "scheduled_scrape": "定时抓取",
     "attachment_backfill": "历史附件补处理",
     "duplicate_backfill": "历史去重补齐",
+    "base_analysis_backfill": "基础分析补齐",
     "ai_analysis": "OpenAI 分析",
     "job_extraction": "岗位级抽取",
     "ai_job_extraction": "岗位级抽取",
 }
+CONTENT_MUTATION_TASK_TYPES = [
+    "manual_scrape",
+    "scheduled_scrape",
+    "attachment_backfill",
+    "duplicate_backfill",
+    "base_analysis_backfill",
+    "ai_analysis",
+    "job_extraction",
+    "ai_job_extraction",
+]
 
 
 class RunScrapeRequest(BaseModel):
@@ -160,6 +172,13 @@ class RunAIAnalysisRequest(BaseModel):
     source_id: Optional[int] = Field(default=None, ge=1)
     limit: int = Field(default=50, ge=1, le=500)
     only_unanalyzed: bool = True
+
+
+class BackfillBaseAnalysisRequest(BaseModel):
+    """基础分析补齐请求"""
+    source_id: Optional[int] = Field(default=None, ge=1)
+    limit: int = Field(default=100, ge=1, le=1000)
+    only_pending: bool = True
 
 
 class RunJobExtractionRequest(BaseModel):
@@ -616,6 +635,87 @@ async def _run_ai_analysis_in_background(
         db.close()
 
 
+async def _run_base_analysis_in_background(
+    task_id: str,
+    started_at: str | None,
+    params: dict,
+) -> None:
+    """后台执行基础分析补齐并写任务记录。"""
+    try:
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在准备基础分析补齐",
+            progress=10,
+            details=build_progress_details("indeterminate"),
+        )
+        result = await _run_with_heartbeat(
+            task_id=task_id,
+            phase="正在补齐基础 analysis / insight",
+            progress=65,
+            awaitable=asyncio.to_thread(
+                _run_base_analysis_with_new_session,
+                params,
+            ),
+        )
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase="正在整理基础分析结果",
+            progress=90,
+            details=build_progress_details("indeterminate"),
+        )
+        record_task_run(
+            task_type="base_analysis_backfill",
+            status="success",
+            summary=(
+                f"基础分析补齐完成，扫描 {result['posts_scanned']} 条，更新 {result['posts_updated']} 条，"
+                f"analysis 新增/刷新 {result['analysis_created'] + result['analysis_refreshed']} 条，"
+                f"insight 新增/刷新 {result['insight_created'] + result['insight_refreshed']} 条"
+            ),
+            details={
+                **params,
+                **result,
+                **build_progress_details("indeterminate"),
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="基础分析补齐完成",
+            progress=100,
+        )
+    except Exception as exc:
+        record_task_run(
+            task_type="base_analysis_backfill",
+            status="failed",
+            summary="基础分析补齐失败",
+            details={
+                **params,
+                "error": str(exc),
+                **build_progress_details("indeterminate"),
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase="基础分析补齐失败",
+            progress=100,
+        )
+
+
+def _run_base_analysis_with_new_session(params: dict) -> dict:
+    """在线程内创建独立 Session 执行基础分析补齐。"""
+    db = SessionLocal()
+    try:
+        return backfill_base_analysis(
+            db,
+            source_id=params["source_id"],
+            limit=params["limit"],
+            only_pending=params["only_pending"],
+        )
+    finally:
+        db.close()
+
+
 async def _run_job_extraction_in_background(
     task_id: str,
     started_at: str | None,
@@ -796,6 +896,7 @@ async def backfill_duplicates_task(
         task_type="duplicate_backfill",
         summary="历史去重补齐进行中",
         params=params,
+        conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
     )
     background_tasks.add_task(
         _run_duplicate_backfill_in_background,
@@ -829,6 +930,7 @@ async def run_scrape_task(
         task_type="manual_scrape",
         summary="手动抓取进行中",
         params=params,
+        conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
     )
     background_tasks.add_task(
         _run_scrape_task_in_background,
@@ -842,6 +944,35 @@ async def run_scrape_task(
     }
 
 
+@protected_router.post("/backfill-base-analysis", status_code=202)
+async def backfill_base_analysis_task(
+    request: BackfillBaseAnalysisRequest,
+    background_tasks: BackgroundTasks,
+):
+    """补齐基础 analysis / insight。"""
+    params = {
+        "source_id": request.source_id,
+        "limit": request.limit,
+        "only_pending": request.only_pending,
+    }
+    running_task = _start_task_or_raise_conflict(
+        task_type="base_analysis_backfill",
+        summary="基础分析补齐进行中",
+        params=params,
+        conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
+    )
+    background_tasks.add_task(
+        _run_base_analysis_in_background,
+        running_task["id"],
+        running_task.get("started_at"),
+        params,
+    )
+    return {
+        "message": "基础分析补齐任务已提交，后台执行中",
+        "task_run": running_task,
+    }
+
+
 @protected_router.post("/run-ai-analysis", status_code=202)
 async def run_ai_analysis_task(
     request: RunAIAnalysisRequest,
@@ -851,7 +982,11 @@ async def run_ai_analysis_task(
     if not is_openai_ready():
         raise HTTPException(
             status_code=409,
-            detail="OpenAI 还没配置好，当前页面展示的是规则分析结果。先在 .env 里补 OPENAI_API_KEY 并重启后端。"
+            detail=(
+                "AI 增强当前不可用，基础分析仍可继续使用。"
+                "先在 .env 里补 OPENAI_API_KEY 并重启后端；"
+                "如只需要基础处理，请改用 /api/admin/backfill-base-analysis。"
+            ),
         )
 
     params = {
@@ -863,6 +998,7 @@ async def run_ai_analysis_task(
         task_type="ai_analysis",
         summary="AI 分析进行中",
         params=params,
+        conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
     )
     background_tasks.add_task(
         _run_ai_analysis_in_background,
@@ -890,6 +1026,7 @@ async def backfill_attachments_task(
         task_type="attachment_backfill",
         summary="历史附件补处理中",
         params=params,
+        conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
     )
     background_tasks.add_task(
         _run_attachment_backfill_in_background,
@@ -929,6 +1066,7 @@ async def run_job_extraction_task(
         task_type="job_extraction",
         summary="岗位级抽取进行中",
         params=params,
+        conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
     )
     background_tasks.add_task(
         _run_job_extraction_in_background,

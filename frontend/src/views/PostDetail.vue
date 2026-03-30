@@ -175,18 +175,15 @@
           <div class="mb-4 flex flex-wrap items-center gap-2">
             <h2 class="text-xl font-semibold text-sky-900">分析结果</h2>
             <span
-              class="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium"
-              :class="getAnalysisProviderClass(post.analysis.analysis_provider)"
-            >
-              {{ getAnalysisProviderLabel(post.analysis.analysis_provider) }}
-            </span>
-            <span
               v-if="post.analysis.model_name"
               class="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-gray-200"
             >
               {{ post.analysis.model_name }}
             </span>
           </div>
+          <p class="mb-4 text-xs text-gray-500">
+            {{ getAnalysisProviderLabel(post.analysis.analysis_provider) }}
+          </p>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div class="rounded-lg bg-white p-4 shadow-sm border border-gray-200">
               <div class="text-sm font-medium text-gray-500">事件类型</div>
@@ -570,16 +567,6 @@ const getAnalysisProviderLabel = (provider) => {
     rule: '规则分析'
   }
   return labels[provider] || '分析结果'
-}
-
-const getAnalysisProviderClass = (provider) => {
-  if (provider === 'openai') {
-    return 'bg-emerald-100 text-emerald-800'
-  }
-  if (provider === 'rule') {
-    return 'bg-amber-100 text-amber-800'
-  }
-  return 'bg-sky-100 text-sky-800'
 }
 
 const formatJobSource = (value) => {

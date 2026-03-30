@@ -284,6 +284,7 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin.get_analysis_summary",
             return_value={
                 "runtime": {
+                    "mode": "basic",
                     "analysis_enabled": True,
                     "provider": "openai",
                     "model_name": "gpt-5-mini",
@@ -297,6 +298,8 @@ class AdminApiTestCase(unittest.TestCase):
                     "total_posts": 10,
                     "analyzed_posts": 6,
                     "pending_posts": 4,
+                    "base_ready_posts": 6,
+                    "base_pending_posts": 4,
                     "attachment_posts": 2,
                     "rule_analyzed_posts": 6,
                     "openai_analyzed_posts": 0,
@@ -325,6 +328,8 @@ class AdminApiTestCase(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["overview"]["analyzed_posts"], 6)
         self.assertEqual(payload["insight_overview"]["insight_posts"], 5)
+        self.assertEqual(payload["runtime"]["mode"], "basic")
+        self.assertEqual(payload["overview"]["base_pending_posts"], 4)
         self.assertFalse(payload["runtime"]["openai_ready"])
         self.assertEqual(payload["event_type_distribution"][0]["event_type"], "招聘公告")
         self.assertEqual(payload["degree_floor_distribution"][0]["degree_floor"], "硕士")
@@ -427,6 +432,49 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["task_run"]["status"], "running")
         self.assertIn("已提交", payload["message"])
         mocked_background.assert_called_once()
+
+    def test_backfill_base_analysis_task_should_return_task_run_when_openai_not_ready(self):
+        with patch("src.api.admin.is_openai_ready", return_value=False), patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-base-1", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
+        ), patch(
+            "src.api.admin._run_base_analysis_in_background",
+            new=AsyncMock()
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/backfill-base-analysis",
+                json={"limit": 20, "only_pending": True},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertIn("基础分析", payload["message"])
+        mocked_background.assert_called_once()
+
+    def test_backfill_base_analysis_task_should_return_409_when_scrape_is_running(self):
+        running_task = {
+            "id": "running-scrape-base-1",
+            "task_type": "manual_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00",
+        }
+        with patch(
+            "src.api.admin.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="base_analysis_backfill",
+                running_task=running_task,
+            ),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/backfill-base-analysis",
+                json={"limit": 20, "only_pending": True},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("手动抓取", response.json()["detail"])
 
     def test_backfill_duplicates_task_should_return_409_when_scrape_is_already_running(self):
         running_task = {
@@ -558,7 +606,8 @@ class AdminApiTestCase(unittest.TestCase):
             response = self.client.post("/api/admin/run-ai-analysis", json={"limit": 5, "only_unanalyzed": True})
 
         self.assertEqual(response.status_code, 409)
-        self.assertIn("OpenAI", response.json()["detail"])
+        self.assertIn("AI 增强", response.json()["detail"])
+        self.assertIn("基础分析", response.json()["detail"])
 
     def test_run_ai_analysis_task_should_return_409_when_same_task_is_already_running(self):
         running_task = {
@@ -677,6 +726,65 @@ class AdminApiTestCase(unittest.TestCase):
         mocked_background.assert_called_once()
         args, _kwargs = mocked_background.call_args
         self.assertFalse(args[2]["only_unindexed"])
+
+class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_run_base_analysis_in_background_should_open_session_inside_to_thread(self):
+        params = {"source_id": 1, "limit": 20, "only_pending": True}
+        fake_db = MagicMock()
+        thread_state = {"active": False}
+
+        def fake_session_local():
+            if not thread_state["active"]:
+                raise AssertionError("SessionLocal should be created inside asyncio.to_thread")
+            return fake_db
+
+        async def fake_to_thread(func, *args, **kwargs):
+            thread_state["active"] = True
+            try:
+                return func(*args, **kwargs)
+            finally:
+                thread_state["active"] = False
+
+        async def fake_run_with_heartbeat(*, awaitable, **_kwargs):
+            return await awaitable
+
+        with patch("src.api.admin.SessionLocal", side_effect=fake_session_local), patch(
+            "src.api.admin.asyncio.to_thread",
+            side_effect=fake_to_thread,
+        ) as mocked_to_thread, patch(
+            "src.api.admin._run_with_heartbeat",
+            side_effect=fake_run_with_heartbeat,
+        ) as mocked_heartbeat, patch(
+            "src.api.admin.backfill_base_analysis",
+            return_value={
+                "posts_scanned": 2,
+                "posts_updated": 2,
+                "analysis_created": 1,
+                "analysis_refreshed": 1,
+                "analysis_skipped": 0,
+                "insight_created": 1,
+                "insight_refreshed": 1,
+                "insight_skipped": 0,
+            },
+        ) as mocked_backfill, patch("src.api.admin.update_task_run"), patch(
+            "src.api.admin.record_task_run",
+        ) as mocked_record:
+            await admin_api._run_base_analysis_in_background(
+                "task-base-1",
+                "2026-03-24T09:00:00+00:00",
+                params,
+            )
+
+        mocked_to_thread.assert_called_once()
+        mocked_heartbeat.assert_called_once()
+        mocked_backfill.assert_called_once_with(
+            fake_db,
+            source_id=1,
+            limit=20,
+            only_pending=True,
+        )
+        fake_db.close.assert_called_once()
+        mocked_record.assert_called_once()
 
 
 if __name__ == "__main__":

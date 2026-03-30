@@ -9,11 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.database.models import Base, Post, PostAnalysis, Source
+from src.database.models import Base, Post, PostAnalysis, PostInsight, Source
 from src.services.attachment_service import write_attachment_parse_result
 from src.services.ai_analysis_service import (
     AIAnalysisResult,
     AIInsightResult,
+    backfill_base_analysis,
     build_post_analysis_payload,
     build_post_insight_payload,
     build_rule_based_result,
@@ -91,6 +92,20 @@ class AIAnalysisServiceTestCase(unittest.TestCase):
         self.assertFalse(runtime["openai_ready"])
         self.assertFalse(runtime["openai_configured"])
         self.assertEqual(runtime["model_name"], "gpt-5-mini")
+
+    def test_get_analysis_runtime_status_should_keep_basic_mode_when_ai_switch_is_off(self):
+        with patch("src.services.ai_analysis_service.OpenAI", object), \
+             patch("src.services.ai_analysis_service.settings.AI_ANALYSIS_ENABLED", False), \
+             patch("src.services.ai_analysis_service.settings.AI_ANALYSIS_PROVIDER", "openai"), \
+             patch("src.services.ai_analysis_service.settings.AI_ANALYSIS_MODEL", "gpt-5-mini"), \
+             patch("src.services.ai_analysis_service.settings.OPENAI_API_KEY", "test-key"), \
+             patch("src.services.ai_analysis_service.settings.OPENAI_BASE_URL", ""):
+            runtime = get_analysis_runtime_status()
+
+        self.assertEqual(runtime["mode"], "basic")
+        self.assertFalse(runtime["analysis_enabled"])
+        self.assertFalse(runtime["openai_ready"])
+        self.assertTrue(runtime["openai_configured"])
 
     def test_extract_json_object_should_support_markdown_fence(self):
         payload = extract_json_object("""```json
@@ -535,8 +550,6 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["city_distribution"][0]["city"], "南京")
 
     def test_get_analysis_summary_should_exclude_duplicate_posts(self):
-        from src.database.models import PostInsight
-
         duplicate_post = self.db.query(Post).filter(Post.id == 2).first()
         duplicate_post.duplicate_status = "duplicate"
         duplicate_post.primary_post_id = 1
@@ -613,9 +626,351 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["overview"]["pending_posts"], 0)
         self.assertEqual(summary["insight_overview"]["insight_posts"], 1)
 
-    async def test_run_ai_analysis_should_backfill_missing_insight_for_existing_openai_analysis(self):
-        from src.database.models import PostInsight
+    def test_backfill_base_analysis_should_fill_analysis_and_insight_for_pending_primary_posts(self):
+        duplicate_post = self.db.query(Post).filter(Post.id == 2).first()
+        duplicate_post.duplicate_status = "duplicate"
+        duplicate_post.primary_post_id = 1
 
+        self.db.add(Post(
+            id=3,
+            source_id=1,
+            title="无锡高校专职辅导员公告",
+            content="工作地点无锡，学历要求博士。",
+            publish_date=datetime(2026, 3, 12, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/3",
+            original_url="https://example.com/posts/3",
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+        ))
+        self.db.commit()
+
+        result = backfill_base_analysis(self.db, source_id=1, limit=10, only_pending=True)
+
+        primary_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 3).first()
+        primary_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 3).first()
+        duplicate_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 2).first()
+        duplicate_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 2).first()
+        openai_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 1).first()
+        openai_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 1).first()
+
+        self.assertEqual(result["posts_scanned"], 2)
+        self.assertEqual(result["posts_updated"], 2)
+        self.assertIsNotNone(primary_analysis)
+        self.assertEqual(primary_analysis.analysis_provider, "rule")
+        self.assertIsNotNone(primary_insight)
+        self.assertEqual(primary_insight.insight_provider, "rule")
+        self.assertIsNone(duplicate_analysis)
+        self.assertIsNone(duplicate_insight)
+        self.assertEqual(openai_analysis.analysis_provider, "openai")
+        self.assertIsNotNone(openai_insight)
+        self.assertEqual(openai_insight.insight_provider, "rule")
+
+    def test_backfill_base_analysis_should_refresh_existing_rule_records_when_only_pending_false(self):
+        self.db.add(Source(
+            id=2,
+            name="无锡市人社局",
+            province="江苏",
+            source_type="government_website",
+            base_url="https://example.com/source-2",
+            scraper_class="WuxiHRSSScraper",
+            is_active=True,
+        ))
+        self.db.add(Post(
+            id=3,
+            source_id=2,
+            title="无锡高校专职辅导员公告",
+            content="工作地点无锡，学历要求博士。",
+            publish_date=datetime(2026, 3, 12, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/3",
+            original_url="https://example.com/posts/3",
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+        ))
+        self.db.add(PostAnalysis(
+            post_id=3,
+            analysis_status="success",
+            analysis_provider="rule",
+            model_name="rule-based",
+            prompt_version="v1",
+            event_type="其他",
+            recruitment_stage="其他",
+            tracking_priority="low",
+            school_name="旧学校",
+            city="旧城市",
+            should_track=False,
+            summary="旧规则分析",
+            tags_json="[]",
+            entities_json="[]",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        ))
+        self.db.add(PostInsight(
+            post_id=3,
+            insight_status="success",
+            insight_provider="rule",
+            model_name="rule-based",
+            prompt_version="v1",
+            recruitment_count_total=1,
+            counselor_recruitment_count=1,
+            degree_floor="未说明",
+            city_list_json=json.dumps([], ensure_ascii=False),
+            gender_restriction="未说明",
+            political_status_required="",
+            deadline_text="",
+            deadline_status="未说明",
+            has_written_exam=None,
+            has_interview=None,
+            has_attachment_job_table=False,
+            evidence_summary="旧规则洞察",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        ))
+        self.db.commit()
+
+        result = backfill_base_analysis(self.db, source_id=2, limit=10, only_pending=False)
+
+        saved_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 3).first()
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 3).first()
+
+        self.assertEqual(result["posts_scanned"], 1)
+        self.assertEqual(result["posts_updated"], 1)
+        self.assertEqual(result["analysis_refreshed"], 1)
+        self.assertEqual(result["insight_refreshed"], 1)
+        self.assertEqual(saved_analysis.analysis_provider, "rule")
+        self.assertNotEqual(saved_analysis.summary, "旧规则分析")
+        self.assertEqual(json.loads(saved_analysis.raw_result_json)["reason"], "auto_rule_backfill")
+        self.assertEqual(saved_insight.insight_provider, "rule")
+        self.assertNotEqual(saved_insight.evidence_summary, "旧规则洞察")
+
+    def test_backfill_base_analysis_should_keep_successful_openai_records_when_only_pending_false(self):
+        self.db.add(Source(
+            id=3,
+            name="常州市人社局",
+            province="江苏",
+            source_type="government_website",
+            base_url="https://example.com/source-3",
+            scraper_class="ChangzhouHRSSScraper",
+            is_active=True,
+        ))
+        self.db.add(Post(
+            id=4,
+            source_id=3,
+            title="常州高校专职辅导员公告",
+            content="工作地点常州，学历要求硕士。",
+            publish_date=datetime(2026, 3, 13, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/4",
+            original_url="https://example.com/posts/4",
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+        ))
+        self.db.add(PostAnalysis(
+            post_id=4,
+            analysis_status="success",
+            analysis_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            event_type="招聘公告",
+            recruitment_stage="招聘启动",
+            tracking_priority="high",
+            school_name="常州高校",
+            city="常州",
+            should_track=True,
+            summary="保留的 OpenAI 分析",
+            tags_json="[]",
+            entities_json="[]",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 13, tzinfo=timezone.utc),
+        ))
+        self.db.add(PostInsight(
+            post_id=4,
+            insight_status="success",
+            insight_provider="openai",
+            model_name="gpt-5.4",
+            prompt_version="v1",
+            recruitment_count_total=2,
+            counselor_recruitment_count=2,
+            degree_floor="硕士",
+            city_list_json=json.dumps(["常州"], ensure_ascii=False),
+            gender_restriction="不限",
+            political_status_required="中共党员",
+            deadline_text="2026年4月6日",
+            deadline_date="2026-04-06",
+            deadline_status="报名中",
+            has_written_exam=True,
+            has_interview=True,
+            has_attachment_job_table=False,
+            evidence_summary="保留的 OpenAI 洞察",
+            raw_result_json="{}",
+            analyzed_at=datetime(2026, 3, 13, tzinfo=timezone.utc),
+        ))
+        self.db.commit()
+
+        result = backfill_base_analysis(self.db, source_id=3, limit=10, only_pending=False)
+
+        saved_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 4).first()
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 4).first()
+
+        self.assertEqual(result["posts_scanned"], 1)
+        self.assertEqual(result["posts_updated"], 0)
+        self.assertEqual(result["analysis_skipped"], 1)
+        self.assertEqual(result["insight_skipped"], 1)
+        self.assertEqual(saved_analysis.summary, "保留的 OpenAI 分析")
+        self.assertEqual(saved_insight.insight_provider, "openai")
+        self.assertEqual(saved_insight.evidence_summary, "保留的 OpenAI 洞察")
+
+    def test_get_analysis_summary_and_backfill_base_analysis_should_share_pending_semantics(self):
+        self.db.add_all([
+            Post(
+                id=3,
+                source_id=1,
+                title="扬州高校专职辅导员公告",
+                content="工作地点扬州。",
+                publish_date=datetime(2026, 3, 12, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/3",
+                original_url="https://example.com/posts/3",
+                is_counselor=True,
+                counselor_scope="dedicated",
+                has_counselor_job=True,
+            ),
+            Post(
+                id=4,
+                source_id=1,
+                title="镇江高校专职辅导员公告",
+                content="工作地点镇江。",
+                publish_date=datetime(2026, 3, 13, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/4",
+                original_url="https://example.com/posts/4",
+                is_counselor=True,
+                counselor_scope="dedicated",
+                has_counselor_job=True,
+            ),
+        ])
+        self.db.add_all([
+            PostInsight(
+                post_id=1,
+                insight_status="success",
+                insight_provider="rule",
+                model_name="rule-based",
+                prompt_version="v1",
+                recruitment_count_total=3,
+                counselor_recruitment_count=3,
+                degree_floor="硕士",
+                city_list_json=json.dumps(["南京"], ensure_ascii=False),
+                gender_restriction="不限",
+                political_status_required="中共党员",
+                deadline_text="2026年4月1日",
+                deadline_status="报名中",
+                has_written_exam=True,
+                has_interview=True,
+                has_attachment_job_table=True,
+                evidence_summary="ready 洞察",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 10, tzinfo=timezone.utc),
+            ),
+            PostInsight(
+                post_id=2,
+                insight_status="success",
+                insight_provider="rule",
+                model_name="rule-based",
+                prompt_version="v1",
+                recruitment_count_total=1,
+                counselor_recruitment_count=1,
+                degree_floor="本科",
+                city_list_json=json.dumps(["苏州"], ensure_ascii=False),
+                gender_restriction="未说明",
+                political_status_required="",
+                deadline_text="",
+                deadline_status="未说明",
+                has_written_exam=None,
+                has_interview=None,
+                has_attachment_job_table=False,
+                evidence_summary="保留的规则洞察",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 11, tzinfo=timezone.utc),
+            ),
+            PostAnalysis(
+                post_id=3,
+                analysis_status="success",
+                analysis_provider="rule",
+                model_name="rule-based",
+                prompt_version="v1",
+                event_type="招聘公告",
+                recruitment_stage="招聘启动",
+                tracking_priority="medium",
+                school_name="扬州高校",
+                city="扬州",
+                should_track=True,
+                summary="保留的规则分析",
+                tags_json="[]",
+                entities_json="[]",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 12, tzinfo=timezone.utc),
+            ),
+            PostAnalysis(
+                post_id=4,
+                analysis_status="failed",
+                analysis_provider="rule",
+                model_name="rule-based",
+                prompt_version="v1",
+                error_message="旧失败结果",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 13, tzinfo=timezone.utc),
+            ),
+            PostInsight(
+                post_id=4,
+                insight_status="success",
+                insight_provider="rule",
+                model_name="rule-based",
+                prompt_version="v1",
+                recruitment_count_total=1,
+                counselor_recruitment_count=1,
+                degree_floor="本科",
+                city_list_json=json.dumps(["镇江"], ensure_ascii=False),
+                gender_restriction="未说明",
+                political_status_required="",
+                deadline_text="",
+                deadline_status="未说明",
+                has_written_exam=None,
+                has_interview=None,
+                has_attachment_job_table=False,
+                evidence_summary="失败 analysis 对应的 insight",
+                raw_result_json="{}",
+                analyzed_at=datetime(2026, 3, 13, tzinfo=timezone.utc),
+            ),
+        ])
+        self.db.commit()
+
+        summary_before = get_analysis_summary(self.db)
+        result = backfill_base_analysis(self.db, source_id=1, limit=10, only_pending=True)
+        summary_after = get_analysis_summary(self.db)
+
+        post2_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 2).first()
+        post3_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 3).first()
+        post3_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 3).first()
+        post4_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 4).first()
+
+        self.assertEqual(summary_before["overview"]["total_posts"], 4)
+        self.assertEqual(summary_before["overview"]["base_ready_posts"], 1)
+        self.assertEqual(summary_before["overview"]["base_pending_posts"], 3)
+        self.assertEqual(result["posts_scanned"], 3)
+        self.assertEqual(result["posts_updated"], 3)
+        self.assertEqual(result["analysis_created"], 1)
+        self.assertEqual(result["analysis_refreshed"], 1)
+        self.assertEqual(result["analysis_skipped"], 1)
+        self.assertEqual(result["insight_created"], 1)
+        self.assertEqual(result["insight_skipped"], 2)
+        self.assertEqual(post2_insight.evidence_summary, "保留的规则洞察")
+        self.assertEqual(post3_analysis.summary, "保留的规则分析")
+        self.assertIsNotNone(post3_insight)
+        self.assertEqual(post3_insight.insight_status, "success")
+        self.assertEqual(post4_analysis.analysis_status, "success")
+        self.assertEqual(summary_after["overview"]["base_ready_posts"], 4)
+        self.assertEqual(summary_after["overview"]["base_pending_posts"], 0)
+
+    async def test_run_ai_analysis_should_backfill_missing_insight_for_existing_openai_analysis(self):
         self.db.add(PostInsight(
             post_id=2,
             insight_status="success",
@@ -675,8 +1030,6 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_insight.deadline_status, "报名中")
 
     async def test_run_ai_analysis_should_upgrade_rule_insight_when_openai_analysis_success(self):
-        from src.database.models import PostInsight
-
         self.db.add(Source(
             id=2,
             name="南京市人社局",
@@ -783,8 +1136,6 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_insight.insight_provider, "openai")
 
     async def test_run_ai_analysis_should_keep_openai_provider_when_openai_insight_unavailable(self):
-        from src.database.models import PostInsight
-
         self.db.add(Source(
             id=4,
             name="无锡市人社局",
@@ -846,8 +1197,6 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_insight.insight_provider, "openai")
 
     async def test_run_ai_analysis_should_rerun_existing_openai_analysis_when_only_unanalyzed_false(self):
-        from src.database.models import PostInsight
-
         self.db.add(Source(
             id=5,
             name="苏州市人社局",

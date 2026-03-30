@@ -1069,11 +1069,19 @@ def is_openai_ready() -> bool:
 def get_analysis_runtime_status() -> dict[str, Any]:
     """给管理台返回当前分析运行状态"""
     base_url = (settings.OPENAI_BASE_URL or "").strip()
+    analysis_enabled = bool(settings.AI_ANALYSIS_ENABLED)
+    openai_ready = is_openai_ready()
+    if openai_ready:
+        mode = "ai_enhanced"
+    else:
+        mode = "basic"
+
     return {
-        "analysis_enabled": bool(settings.AI_ANALYSIS_ENABLED),
+        "mode": mode,
+        "analysis_enabled": analysis_enabled,
         "provider": (settings.AI_ANALYSIS_PROVIDER or "").strip() or "openai",
         "model_name": (settings.AI_ANALYSIS_MODEL or "").strip() or "gpt-5-mini",
-        "openai_ready": is_openai_ready(),
+        "openai_ready": openai_ready,
         "openai_configured": bool((settings.OPENAI_API_KEY or "").strip()),
         "openai_sdk_available": OpenAI is not None,
         "base_url_configured": bool(base_url),
@@ -1436,12 +1444,42 @@ def upsert_post_analysis(db: Session, post: Post, outcome: AnalysisOutcome) -> P
     return analysis
 
 
-def has_successful_openai_analysis(post: Post) -> bool:
-    """判断是否已有可复用的 OpenAI 分析结果"""
-    analysis = getattr(post, "analysis", None)
+def is_successful_openai_analysis_record(analysis: PostAnalysis | None) -> bool:
+    """判断分析记录是否为成功的 OpenAI 结果"""
     if analysis is None:
         return False
     return analysis.analysis_status == "success" and analysis.analysis_provider == "openai"
+
+
+def has_successful_openai_analysis(post: Post) -> bool:
+    """判断是否已有可复用的 OpenAI 分析结果"""
+    return is_successful_openai_analysis_record(getattr(post, "analysis", None))
+
+
+def is_successful_analysis_record(analysis: PostAnalysis | None) -> bool:
+    """判断分析记录是否成功，不区分 provider。"""
+    if analysis is None:
+        return False
+    return analysis.analysis_status == "success"
+
+
+def is_successful_openai_insight_record(insight: PostInsight | None) -> bool:
+    """判断统计记录是否为成功的 OpenAI 结果"""
+    if insight is None:
+        return False
+    return insight.insight_status == "success" and insight.insight_provider == "openai"
+
+
+def has_successful_openai_insight(post: Post) -> bool:
+    """判断是否已有可复用的 OpenAI 统计结果"""
+    return is_successful_openai_insight_record(getattr(post, "insight", None))
+
+
+def is_successful_insight_record(insight: PostInsight | None) -> bool:
+    """判断统计记录是否成功，不区分 provider。"""
+    if insight is None:
+        return False
+    return insight.insight_status == "success"
 
 
 def should_use_openai_insight(post: Post, analysis_outcome: AnalysisOutcome | None = None) -> bool:
@@ -1535,7 +1573,7 @@ def ensure_rule_analysis(
 ) -> PostAnalysis:
     """给帖子补规则分析，不主动覆盖已有 OpenAI 结果"""
     existing = post.analysis
-    if existing is not None and existing.analysis_provider == "openai" and not force_refresh:
+    if is_successful_openai_analysis_record(existing) and not force_refresh:
         return existing
 
     outcome = build_rule_analysis_outcome(post, reason="auto_rule_backfill")
@@ -1549,11 +1587,139 @@ def ensure_rule_insight(
 ) -> PostInsight:
     """给帖子补规则版统计洞察，不主动覆盖已有 OpenAI 结果"""
     existing = post.insight
-    if existing is not None and existing.insight_provider == "openai" and existing.insight_status == "success" and not force_refresh:
+    if is_successful_openai_insight_record(existing) and not force_refresh:
         return existing
 
     outcome = build_rule_insight_outcome(post, reason="auto_rule_backfill")
     return upsert_post_insight(db, post, outcome)
+
+
+def ensure_rule_analysis_bundle(
+    db: Session,
+    post: Post,
+    force_refresh: bool = False,
+) -> tuple[PostAnalysis, PostInsight]:
+    """一次补齐基础 analysis 和 insight，不覆盖已有成功 OpenAI 结果"""
+    analysis = post.analysis
+    if not is_successful_openai_analysis_record(analysis) or force_refresh:
+        analysis_outcome = build_rule_analysis_outcome(post, reason="auto_rule_backfill")
+        analysis = upsert_post_analysis(db, post, analysis_outcome)
+
+    insight = post.insight
+    if not is_successful_openai_insight_record(insight) or force_refresh:
+        insight_outcome = build_rule_insight_outcome(post, reason="auto_rule_backfill")
+        insight = upsert_post_insight(db, post, insight_outcome)
+
+    return analysis, insight
+
+
+def ensure_pending_base_analysis_bundle(
+    db: Session,
+    post: Post,
+) -> tuple[PostAnalysis | None, PostInsight | None]:
+    """只补齐基础处理中缺失或失败的一侧，不重刷已成功结果。"""
+    analysis = post.analysis
+    if not is_successful_analysis_record(analysis):
+        analysis_outcome = build_rule_analysis_outcome(post, reason="auto_rule_backfill")
+        analysis = upsert_post_analysis(db, post, analysis_outcome)
+
+    insight = post.insight
+    if not is_successful_insight_record(insight):
+        insight_outcome = build_rule_insight_outcome(post, reason="auto_rule_backfill")
+        insight = upsert_post_insight(db, post, insight_outcome)
+
+    return analysis, insight
+
+
+def backfill_base_analysis(
+    db: Session,
+    source_id: int | None = None,
+    limit: int = 100,
+    only_pending: bool = True,
+) -> dict[str, int]:
+    """为主记录补齐基础 analysis 与 insight"""
+    query = db.query(Post).options(
+        selectinload(Post.source),
+        selectinload(Post.fields),
+        selectinload(Post.attachments),
+        selectinload(Post.jobs),
+        selectinload(Post.analysis),
+        selectinload(Post.insight),
+    ).filter(
+        build_primary_post_filter()
+    ).order_by(Post.publish_date.desc(), Post.id.desc())
+
+    if source_id is not None:
+        query = query.filter(Post.source_id == source_id)
+
+    if only_pending:
+        query = query.outerjoin(
+            PostAnalysis,
+            PostAnalysis.post_id == Post.id,
+        ).outerjoin(
+            PostInsight,
+            PostInsight.post_id == Post.id,
+        ).filter(
+            or_(
+                PostAnalysis.id.is_(None),
+                PostAnalysis.analysis_status.is_(None),
+                PostAnalysis.analysis_status != "success",
+                PostInsight.id.is_(None),
+                PostInsight.insight_status.is_(None),
+                PostInsight.insight_status != "success",
+            )
+        )
+
+    if limit > 0:
+        query = query.limit(limit)
+
+    posts = query.all()
+    result = {
+        "posts_scanned": len(posts),
+        "posts_updated": 0,
+        "analysis_created": 0,
+        "analysis_refreshed": 0,
+        "analysis_skipped": 0,
+        "insight_created": 0,
+        "insight_refreshed": 0,
+        "insight_skipped": 0,
+    }
+
+    for post in posts:
+        if only_pending:
+            should_update_analysis = not is_successful_analysis_record(post.analysis)
+            should_update_insight = not is_successful_insight_record(post.insight)
+        else:
+            should_update_analysis = not is_successful_openai_analysis_record(post.analysis)
+            should_update_insight = not is_successful_openai_insight_record(post.insight)
+
+        if not should_update_analysis:
+            result["analysis_skipped"] += 1
+        elif post.analysis is None:
+            result["analysis_created"] += 1
+        else:
+            result["analysis_refreshed"] += 1
+
+        if not should_update_insight:
+            result["insight_skipped"] += 1
+        elif post.insight is None:
+            result["insight_created"] += 1
+        else:
+            result["insight_refreshed"] += 1
+
+        if not (should_update_analysis or should_update_insight):
+            continue
+
+        if only_pending:
+            ensure_pending_base_analysis_bundle(db, post)
+        else:
+            ensure_rule_analysis_bundle(db, post)
+        result["posts_updated"] += 1
+
+    if result["posts_updated"]:
+        db.commit()
+
+    return result
 
 
 def backfill_rule_analyses(db: Session, limit: int | None = None) -> dict[str, int]:
@@ -1765,6 +1931,17 @@ def get_analysis_summary(db: Session) -> dict[str, Any]:
         Post,
         Post.id == PostAnalysis.post_id,
     ).filter(primary_post_filter).scalar()
+    base_ready_posts = db.query(func.count(func.distinct(Post.id))).join(
+        PostAnalysis,
+        PostAnalysis.post_id == Post.id,
+    ).join(
+        PostInsight,
+        PostInsight.post_id == Post.id,
+    ).filter(
+        primary_post_filter,
+        PostAnalysis.analysis_status == "success",
+        PostInsight.insight_status == "success",
+    ).scalar() or 0
     runtime = get_analysis_runtime_status()
 
     event_type_distribution = db.query(
@@ -1812,6 +1989,7 @@ def get_analysis_summary(db: Session) -> dict[str, Any]:
     rule_analyzed_posts = provider_count_map.get("rule", 0)
     job_index_summary = get_job_index_summary(db)
     insight_summary = get_insight_summary(db)
+    base_pending_posts = max(total_posts - base_ready_posts, 0)
 
     return {
         "runtime": runtime,
@@ -1820,6 +1998,8 @@ def get_analysis_summary(db: Session) -> dict[str, Any]:
             "counselor_posts": counselor_posts,
             "analyzed_posts": analyzed_posts,
             "pending_posts": pending_posts,
+            "base_ready_posts": base_ready_posts,
+            "base_pending_posts": base_pending_posts,
             "attachment_posts": attachment_posts,
             "rule_analyzed_posts": rule_analyzed_posts,
             "openai_analyzed_posts": openai_analyzed_posts,

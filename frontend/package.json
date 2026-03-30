@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test tests/postFilters.test.mjs tests/routerScroll.test.mjs tests/publicFreshness.test.mjs",
+    "test": "node --test tests/postFilters.test.mjs tests/routerScroll.test.mjs tests/publicFreshness.test.mjs tests/adminDashboardMeta.test.mjs tests/adminApiPosts.test.mjs tests/adminDashboardViewModels.test.mjs tests/adminDashboardHealth.test.mjs tests/adminDashboardTaskActions.test.mjs tests/adminDashboardSectionAdapters.test.mjs tests/adminDashboardDataService.test.mjs tests/adminDashboardStateBindings.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.exc import SQLAlchemyError
 from loguru import logger
 from src.scrapers.jiangsu_hrss import JiangsuHRSSScraper
-from src.services.ai_analysis_service import ensure_rule_analysis
+from src.services.ai_analysis_service import ensure_rule_analysis_bundle
 from src.services.attachment_service import ensure_attachments_processed
 from src.services.duplicate_service import refresh_duplicate_posts
 from src.services.filter_service import is_counselor_position
@@ -322,7 +322,8 @@ async def backfill_existing_attachments(
                 post = db.query(Post).options(
                     selectinload(Post.attachments),
                     selectinload(Post.fields),
-                    selectinload(Post.jobs)
+                    selectinload(Post.jobs),
+                    selectinload(Post.insight),
                 ).filter(Post.id == post.id).first()
 
                 attachment_result = await enrich_post_from_attachments(
@@ -345,7 +346,8 @@ async def backfill_existing_attachments(
                     selectinload(Post.attachments),
                     selectinload(Post.fields),
                     selectinload(Post.analysis),
-                    selectinload(Post.jobs)
+                    selectinload(Post.insight),
+                    selectinload(Post.jobs),
                 ).filter(Post.id == post.id).first()
 
                 if len(post.fields) > before_field_count:
@@ -355,7 +357,7 @@ async def backfill_existing_attachments(
                 if job_result["jobs_saved"] or job_result["has_counselor_job"]:
                     did_update = True
 
-                ensure_rule_analysis(db, post)
+                ensure_rule_analysis_bundle(db, post)
 
                 if did_update:
                     result["posts_updated"] += 1
@@ -464,12 +466,13 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
                         selectinload(Post.fields),
                         selectinload(Post.attachments),
                         selectinload(Post.analysis),
-                        selectinload(Post.jobs)
+                        selectinload(Post.insight),
+                        selectinload(Post.jobs),
                     ).filter(Post.id == existing_post.id).first()
                     job_result = await sync_post_jobs(db, refreshed_post, use_ai=False)
                     if job_result["jobs_saved"] or job_result["has_counselor_job"]:
                         did_update = True
-                    ensure_rule_analysis(db, refreshed_post)
+                    ensure_rule_analysis_bundle(db, refreshed_post)
 
                     if did_update:
                         updated_count += 1
@@ -517,10 +520,11 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
                     selectinload(Post.fields),
                     selectinload(Post.attachments),
                     selectinload(Post.analysis),
-                    selectinload(Post.jobs)
+                    selectinload(Post.insight),
+                    selectinload(Post.jobs),
                 ).filter(Post.id == post.id).first()
                 await sync_post_jobs(db, post, use_ai=False)
-                ensure_rule_analysis(db, post)
+                ensure_rule_analysis_bundle(db, post)
                 touched_post_ids.add(post.id)
 
                 new_count += 1
