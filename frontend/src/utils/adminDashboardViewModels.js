@@ -3,6 +3,8 @@ import { getAdminRuntimeCopy } from './adminDashboardMeta.js'
 const EMPTY_LABEL = '--'
 const NOT_FETCHED_LABEL = '未获取'
 const DEFAULT_AI_DISABLED_REASON = 'AI 增强当前不可用，基础模式仍可继续补齐。'
+const DEFAULT_HEARTBEAT_STALE_MS = 10 * 60 * 1000
+const RUNNING_TASK_STATUSES = ['queued', 'pending', 'running', 'processing']
 
 const TASK_TYPE_LABELS = {
   manual_scrape: '手动抓取最新数据',
@@ -83,7 +85,58 @@ export const formatAdminDurationMs = (durationMs) => {
   return `${minutes}分${restSeconds}秒`
 }
 
+const parseTimeToMs = (value) => {
+  if (!value) return null
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) ? time : null
+}
+
+const getTaskRunKey = (run) => run?.id || `${run?.task_type || run?.taskType || 'task'}-${run?.started_at || run?.startedAt || run?.finished_at || run?.finishedAt || ''}`
+
 export const getTaskTypeLabel = (taskType) => TASK_TYPE_LABELS[taskType] || taskType || EMPTY_LABEL
+export const isRunningTaskStatus = (status) => RUNNING_TASK_STATUSES.includes(status)
+export const getTaskHeartbeatAt = (run) => run?.heartbeat_at || run?.heartbeatAt || run?.started_at || run?.startedAt || ''
+export const isTaskRunPossiblyStuck = (run, nowTs = Date.now(), heartbeatStaleMs = DEFAULT_HEARTBEAT_STALE_MS) => {
+  if (!isRunningTaskStatus(run?.status)) return false
+  const heartbeatMs = parseTimeToMs(getTaskHeartbeatAt(run))
+  return heartbeatMs !== null && nowTs - heartbeatMs >= heartbeatStaleMs
+}
+
+export function buildTaskRunsPresentation({
+  taskRuns = [],
+  nowTs = Date.now(),
+  heartbeatStaleMs = DEFAULT_HEARTBEAT_STALE_MS,
+  maxAttentionRuns = 4,
+  maxRecentSuccessRuns = 3
+} = {}) {
+  const attentionRunsAll = taskRuns.filter((run) => run?.status === 'failed' || isRunningTaskStatus(run?.status))
+  const recentSuccessRunsAll = taskRuns.filter((run) => run?.status === 'success')
+  const attentionRuns = attentionRunsAll.slice(0, maxAttentionRuns)
+  const recentSuccessRuns = recentSuccessRunsAll.slice(0, maxRecentSuccessRuns)
+  const featuredRunKeys = new Set([...attentionRuns, ...recentSuccessRuns].map((run) => getTaskRunKey(run)))
+  const historyRuns = taskRuns.filter((run) => !featuredRunKeys.has(getTaskRunKey(run)))
+  const stuckCount = attentionRunsAll.filter((run) => isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)).length
+  const runningCount = taskRuns.filter((run) => isRunningTaskStatus(run?.status)).length
+
+  return {
+    summaryCards: [
+      buildStat('需关注', formatCount(attentionRunsAll.length, ' 条'), 'rose'),
+      buildStat('运行中', formatCount(runningCount, ' 条'), 'amber'),
+      buildStat('最近完成', formatCount(recentSuccessRunsAll.length, ' 条'), 'emerald'),
+      buildStat('历史记录', formatCount(historyRuns.length, ' 条'), 'slate')
+    ],
+    attentionRuns,
+    recentSuccessRuns,
+    historyRuns,
+    counts: {
+      attention: attentionRunsAll.length,
+      running: runningCount,
+      success: recentSuccessRunsAll.length,
+      history: historyRuns.length,
+      stuck: stuckCount
+    }
+  }
+}
 
 const findLatestTask = (taskRuns = [], taskTypes = [], status = 'success') => {
   return taskRuns.find((run) => {
@@ -213,12 +266,20 @@ export function buildAiEnhancementPanels({
     disabledReason,
     analysisRuntime
   })
-  const baseUrl = analysisRuntime?.base_url_configured ? analysisRuntime?.base_url || NOT_FETCHED_LABEL : 'OpenAI 官方默认'
+  const modelLabel = openaiReady
+    ? (analysisRuntime?.model_name || NOT_FETCHED_LABEL)
+    : '未配置'
+  const modelHelper = openaiReady
+    ? '只影响 AI 增强任务，不会改变基础处理链路。'
+    : '没配 OpenAI 时，系统仍以基础模式继续运行。'
+  const modelMeta = openaiReady
+    ? '可用于补摘要、阶段判断和更难恢复的岗位识别。'
+    : '完成 OpenAI 配置后，才会开放 AI 增强任务。'
 
   return [
     {
       id: 'ai-runtime-status',
-      title: 'OpenAI 就绪状态',
+      title: '当前运行模式',
       value: readinessLabel,
       helper: runtimeCopy.description,
       meta: runtimeCopy.emphasis,
@@ -227,10 +288,10 @@ export function buildAiEnhancementPanels({
     },
     {
       id: 'ai-models',
-      title: '模型',
-      value: analysisRuntime?.model_name || NOT_FETCHED_LABEL,
-      helper: `provider ${analysisRuntime?.provider || NOT_FETCHED_LABEL}`,
-      meta: `接口 ${baseUrl}`,
+      title: '增强模型',
+      value: modelLabel,
+      helper: modelHelper,
+      meta: modelMeta,
       disabled: !openaiReady,
       disabledReason: resolvedDisabledReason
     },
