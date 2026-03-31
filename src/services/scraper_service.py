@@ -402,7 +402,7 @@ async def scrape_and_save(
     source_id: int = 1,
     max_pages: int = 10,
     progress_callback: ProgressCallback | None = None,
-) -> int:
+) -> dict[str, int]:
     """
     抓取数据并保存到数据库
 
@@ -412,7 +412,7 @@ async def scrape_and_save(
         max_pages: 最大抓取页数
 
     Returns:
-        int: 新增记录数
+        dict[str, int]: 抓取结果摘要
     """
     logger.info(f"开始抓取数据源 ID: {source_id}")
 
@@ -435,6 +435,7 @@ async def scrape_and_save(
     # 保存到数据库
     new_count = 0
     updated_count = 0
+    failure_count = 0
     touched_post_ids: set[int] = set()
     total_results = len(results)
     for index, result in enumerate(results, start=1):
@@ -563,6 +564,7 @@ async def scrape_and_save(
 
         except Exception as e:
             logger.error(f"保存记录失败: {e}")
+            failure_count += 1
             continue
         finally:
             emit_progress(
@@ -575,6 +577,7 @@ async def scrape_and_save(
                     "posts_total": total_results,
                     "posts_created": new_count,
                     "posts_updated": updated_count,
+                    "failures": failure_count,
                 },
             )
 
@@ -592,4 +595,11 @@ async def scrape_and_save(
         db.rollback()
         raise RuntimeError(str(e)) from e
 
-    return new_count + updated_count
+    return {
+        "processed_records": new_count + updated_count,
+        "posts_created": new_count,
+        "posts_updated": updated_count,
+        "posts_seen": total_results,
+        "posts_total": total_results,
+        "failures": failure_count,
+    }

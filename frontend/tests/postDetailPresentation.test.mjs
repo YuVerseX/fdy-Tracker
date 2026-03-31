@@ -7,6 +7,7 @@ import {
   buildPostFacts,
   shouldShowAdminFacingMetadata
 } from '../src/utils/postDetailPresentation.js'
+import { shouldShowPostFactsSection } from '../src/utils/postFactsSection.js'
 
 test('buildPostFacts should keep the public facts compact and ordered', () => {
   const facts = buildPostFacts({
@@ -46,4 +47,9 @@ test('buildInfoDisclosureItems should move provenance copy into disclosure area'
   })
 
   assert.ok(items.some((item) => /最近一次抓取成功/.test(item.value)))
+})
+
+test('shouldShowPostFactsSection should keep the section visible when supplemental facts exist', () => {
+  assert.equal(shouldShowPostFactsSection([], [{ label: '报名时间', value: '4 月 1 日' }]), true)
+  assert.equal(shouldShowPostFactsSection([], []), false)
 })

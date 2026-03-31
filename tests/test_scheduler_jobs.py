@@ -150,7 +150,14 @@ class SchedulerJobsAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "src.scheduler.jobs.scrape_and_save",
             new_callable=AsyncMock,
-            return_value=1,
+            return_value={
+                "processed_records": 1,
+                "posts_created": 1,
+                "posts_updated": 0,
+                "posts_seen": 1,
+                "posts_total": 1,
+                "failures": 0,
+            },
         ), patch(
             "src.scheduler.jobs._run_with_task_heartbeat",
             side_effect=fake_run_with_task_heartbeat,
@@ -159,6 +166,55 @@ class SchedulerJobsAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             await scheduler_jobs.scheduled_scrape()
 
+        db.close.assert_called_once()
+
+    async def test_scheduled_scrape_should_record_failed_when_result_contains_failures(self):
+        db = MagicMock()
+        config = SimpleNamespace(
+            enabled=True,
+            default_source_id=1,
+            default_max_pages=3,
+        )
+        running_task = {
+            "id": "scheduled-run-2",
+            "task_type": "scheduled_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00",
+        }
+        result = {
+            "processed_records": 2,
+            "posts_created": 2,
+            "posts_updated": 0,
+            "failures": 1,
+        }
+
+        async def fake_run_with_task_heartbeat(*, awaitable, **_kwargs):
+            return await awaitable
+
+        with patch("src.scheduler.jobs.SessionLocal", return_value=db), patch(
+            "src.scheduler.jobs.load_scheduler_config",
+            return_value=config,
+        ), patch(
+            "src.scheduler.jobs.is_scheduler_ready",
+            return_value=True,
+        ), patch(
+            "src.scheduler.jobs.start_task_run",
+            return_value=running_task,
+        ), patch(
+            "src.scheduler.jobs.scrape_and_save",
+            new_callable=AsyncMock,
+            return_value=result,
+        ), patch(
+            "src.scheduler.jobs._run_with_task_heartbeat",
+            side_effect=fake_run_with_task_heartbeat,
+        ), patch("src.scheduler.jobs.update_task_run"), patch(
+            "src.scheduler.jobs.record_task_run",
+        ) as mocked_record:
+            await scheduler_jobs.scheduled_scrape()
+
+        self.assertEqual(mocked_record.call_args.kwargs["status"], "failed")
+        self.assertIn("失败", mocked_record.call_args.kwargs["summary"])
+        self.assertEqual(mocked_record.call_args.kwargs["details"]["failures"], 1)
         db.close.assert_called_once()
 
 

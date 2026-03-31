@@ -1,5 +1,5 @@
 <template>
-  <section v-if="facts.length > 0" class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
+  <section v-if="shouldShowSection" class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
     <h2 class="text-lg font-semibold text-slate-950">关键信息</h2>
     <dl class="mt-5 grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2">
       <div
@@ -25,8 +25,16 @@
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+import { shouldShowPostFactsSection } from '../../utils/postFactsSection.js'
+
+const props = defineProps({
   facts: { type: Array, required: true },
   supplementalFacts: { type: Array, default: () => [] }
 })
+
+const shouldShowSection = computed(() => (
+  shouldShowPostFactsSection(props.facts, props.supplementalFacts)
+))
 </script>

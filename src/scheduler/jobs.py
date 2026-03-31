@@ -255,7 +255,7 @@ async def scheduled_scrape():
             progress=None,
             details=build_progress_details("stage_only"),
         )
-        count = await _run_with_task_heartbeat(
+        result = await _run_with_task_heartbeat(
             task_id=running_task["id"],
             phase="正在抓取源站并写入数据库",
             details=build_progress_details("stage_only"),
@@ -266,12 +266,18 @@ async def scheduled_scrape():
                 progress_callback=build_scheduler_progress_callback(running_task["id"]),
             ),
         )
-        if count > 0:
-            logger.success(f"定时抓取完成，新增或更新 {count} 条记录")
-            summary = f"定时抓取完成，新增或更新 {count} 条记录"
+        processed_records = result["processed_records"]
+        if processed_records > 0:
+            logger.success(f"定时抓取完成，新增或更新 {processed_records} 条记录")
+            success_summary = f"定时抓取完成，新增或更新 {processed_records} 条记录"
         else:
             logger.info("定时抓取完成，没有新增数据")
-            summary = "定时抓取完成，没有新增数据"
+            success_summary = "定时抓取完成，没有新增数据"
+        failed = int(result.get("failures") or 0) > 0
+        failure_summary = (
+            f"定时抓取失败，新增或更新 {processed_records} 条记录，"
+            f"另有 {result['failures']} 条未完成"
+        )
         update_task_run(
             task_id=running_task["id"],
             status="running",
@@ -282,20 +288,20 @@ async def scheduled_scrape():
 
         record_task_run(
             task_type="scheduled_scrape",
-            status="success",
-            summary=summary,
+            status="failed" if failed else "success",
+            summary=failure_summary if failed else success_summary,
             details={
                 **params,
-                "processed_records": count,
+                **result,
                 **build_progress_details(
                     "stage_only",
-                    metrics={"processed_records": count},
+                    metrics=result,
                 ),
             },
             params=params,
             task_id=running_task["id"],
             started_at=running_task.get("started_at"),
-            phase="定时抓取完成",
+            phase="定时抓取失败" if failed else "定时抓取完成",
             progress=100,
         )
     except Exception as e:

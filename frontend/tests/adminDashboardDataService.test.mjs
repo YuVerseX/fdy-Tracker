@@ -199,3 +199,37 @@ test('retryTaskRun should rerun duplicate backfill with recheck_recent scope', a
   assert.equal(state.retryingTaskId, '')
   assert.equal(state.retryingTaskActionKey, '')
 })
+
+test('retryTaskRun should reuse legacy task shape params for rerun payloads', async () => {
+  let receivedPayload = null
+  const { service, state } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async (payload) => {
+        receivedPayload = payload
+        return { data: { message: '智能整理任务已提交' } }
+      }
+    }
+  })
+
+  await service.retryTaskRun({
+    id: 'run-ai-legacy-1',
+    taskType: 'ai_analysis',
+    status: 'success',
+    details: {
+      params: {
+        source_id: '6',
+        limit: '40',
+        only_unanalyzed: false
+      }
+    }
+  }, 'incremental')
+
+  assert.deepEqual(receivedPayload, {
+    source_id: 6,
+    limit: 40,
+    only_unanalyzed: true,
+    rerun_of_task_id: 'run-ai-legacy-1'
+  })
+  assert.equal(state.retryingTaskId, '')
+  assert.equal(state.retryingTaskActionKey, '')
+})

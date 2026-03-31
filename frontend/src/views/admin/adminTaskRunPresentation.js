@@ -50,8 +50,8 @@ const METRIC_LABELS = Object.freeze({
 })
 
 const TASK_METRIC_ORDER = Object.freeze({
-  manual_scrape: ['posts_seen', 'posts_created', 'posts_updated', 'processed_records', 'posts_total'],
-  scheduled_scrape: ['processed_records', 'posts_seen', 'posts_created', 'posts_updated', 'posts_total'],
+  manual_scrape: ['posts_seen', 'posts_created', 'posts_updated', 'failures', 'processed_records', 'posts_total'],
+  scheduled_scrape: ['processed_records', 'posts_seen', 'posts_created', 'posts_updated', 'failures', 'posts_total'],
   attachment_backfill: ['posts_scanned', 'posts_updated', 'attachments_discovered', 'attachments_downloaded', 'attachments_parsed', 'fields_added', 'failures'],
   duplicate_backfill: ['selected', 'candidate_posts', 'processed_groups', 'total_groups', 'groups', 'duplicates', 'remaining_unchecked', 'compared_pairs', 'total_comparisons', 'processed_records'],
   base_analysis_backfill: ['posts_scanned', 'posts_updated', 'analysis_created', 'analysis_refreshed', 'insight_created', 'insight_refreshed'],
@@ -59,6 +59,7 @@ const TASK_METRIC_ORDER = Object.freeze({
   job_extraction: ['posts_scanned', 'posts_updated', 'jobs_saved', 'ai_posts', 'attachment_posts', 'dedicated_posts', 'contains_posts', 'failures'],
   ai_job_extraction: ['posts_scanned', 'posts_updated', 'jobs_saved', 'ai_posts', 'attachment_posts', 'dedicated_posts', 'contains_posts', 'failures']
 })
+const ZERO_VALUE_FAILURE_METRICS = new Set(['failures', 'failure_count', 'insight_failed_count'])
 
 const toNumber = (value) => {
   const numeric = Number(value)
@@ -271,6 +272,7 @@ export function buildTaskMetricItems(run = {}) {
   const items = orderedKeys
     .map((key) => {
       if (!(key in metrics)) return null
+      if (ZERO_VALUE_FAILURE_METRICS.has(key) && toNumber(metrics[key]) === 0) return null
       const value = toDisplayValue(metrics[key])
       if (!value) return null
       return {

@@ -130,11 +130,15 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
             "src.services.attachment_service.get_attachment_storage_path",
             side_effect=self.build_attachment_storage_path
         ):
-            count = await scrape_and_save(self.db, source_id=1, max_pages=3)
+            result = await scrape_and_save(self.db, source_id=1, max_pages=3)
 
         saved_posts = self.db.query(Post).order_by(Post.id).all()
 
-        self.assertEqual(count, 2)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["processed_records"], 2)
+        self.assertEqual(result["posts_created"], 2)
+        self.assertEqual(result["posts_updated"], 0)
+        self.assertEqual(result["failures"], 1)
         self.assertEqual(len(saved_posts), 2)
         self.assertEqual(saved_posts[0].title, "第一条专职辅导员公告")
         self.assertEqual(saved_posts[1].title, "第三条专职辅导员公告")
@@ -161,6 +165,18 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_post_jobs[0].job_name, "专职辅导员")
         self.assertEqual(saved_posts[0].counselor_scope, "dedicated")
 
+    async def test_scrape_and_save_should_report_record_level_failures(self):
+        with patch("src.services.scraper_service.create_scraper", return_value=FakeScraper()), patch(
+            "src.services.attachment_service.get_attachment_storage_path",
+            side_effect=self.build_attachment_storage_path
+        ):
+            result = await scrape_and_save(self.db, source_id=1, max_pages=3)
+
+        self.assertEqual(result["processed_records"], 2)
+        self.assertEqual(result["posts_created"], 2)
+        self.assertEqual(result["posts_updated"], 0)
+        self.assertEqual(result["failures"], 1)
+
     async def test_scrape_and_save_should_trigger_analysis_bundle_for_new_posts(self):
         with patch("src.services.scraper_service.create_scraper", return_value=FakeScraper()), patch(
             "src.services.attachment_service.get_attachment_storage_path",
@@ -168,11 +184,11 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "src.services.scraper_service.ensure_rule_analysis_bundle",
         ) as mocked_bundle:
-            count = await scrape_and_save(self.db, source_id=1, max_pages=3)
+            result = await scrape_and_save(self.db, source_id=1, max_pages=3)
 
         called_post_ids = [call.args[1].id for call in mocked_bundle.call_args_list]
 
-        self.assertEqual(count, 2)
+        self.assertEqual(result["processed_records"], 2)
         self.assertEqual(mocked_bundle.call_count, 2)
         self.assertCountEqual(called_post_ids, [1, 2])
 
@@ -184,9 +200,9 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
             "src.services.scraper_service.refresh_duplicate_posts",
             return_value={"scanned": 2, "groups": 1, "duplicates": 1},
         ) as mocked_refresh:
-            saved = await scrape_and_save(self.db, source_id=1, max_pages=3)
+            result = await scrape_and_save(self.db, source_id=1, max_pages=3)
 
-        self.assertGreaterEqual(saved, 1)
+        self.assertGreaterEqual(result["processed_records"], 1)
         mocked_refresh.assert_called_once()
         called_post_ids = mocked_refresh.call_args.args[1]
         self.assertIsInstance(called_post_ids, list)
@@ -217,8 +233,9 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
             [1, 1, 2],
         )
         self.assertEqual(updates[-1]["metrics"]["posts_total"], 3)
-        self.assertEqual(updates[-1]["metrics"]["posts_created"], result)
+        self.assertEqual(updates[-1]["metrics"]["posts_created"], result["posts_created"])
         self.assertEqual(updates[-1]["metrics"]["posts_updated"], 0)
+        self.assertEqual(updates[-1]["metrics"]["failures"], 1)
 
     async def test_scrape_and_save_should_raise_when_scraper_creation_fails(self):
         with patch(
@@ -304,7 +321,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
             "src.services.attachment_service.get_attachment_storage_path",
             side_effect=self.build_attachment_storage_path
         ):
-            count = await scrape_and_save(self.db, source_id=1, max_pages=1)
+            result = await scrape_and_save(self.db, source_id=1, max_pages=1)
 
         attachments = self.db.query(Attachment).filter(Attachment.post_id == existing_post.id).all()
         fields = {
@@ -312,7 +329,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
             for field in self.db.query(PostField).filter(PostField.post_id == existing_post.id).all()
         }
 
-        self.assertEqual(count, 1)
+        self.assertEqual(result["processed_records"], 1)
         self.assertEqual(len(attachments), 1)
         self.assertEqual(attachments[0].filename, "附件一.xlsx")
         self.assertTrue(attachments[0].is_downloaded)
@@ -395,11 +412,11 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
             "src.services.scraper_service.ensure_rule_analysis_bundle",
             wraps=ensure_rule_analysis_bundle,
         ) as mocked_bundle:
-            count = await scrape_and_save(self.db, source_id=1, max_pages=1)
+            result = await scrape_and_save(self.db, source_id=1, max_pages=1)
 
         saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == existing_post.id).first()
 
-        self.assertEqual(count, 1)
+        self.assertEqual(result["processed_records"], 1)
         self.assertEqual(mocked_bundle.call_count, 1)
         self.assertEqual(mocked_bundle.call_args.args[1].id, existing_post.id)
         self.assertEqual(saved_insight.insight_provider, "openai")
@@ -458,11 +475,11 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
             "src.services.attachment_service.get_attachment_storage_path",
             side_effect=self.build_attachment_storage_path
         ):
-            count = await scrape_and_save(self.db, source_id=1, max_pages=1)
+            result = await scrape_and_save(self.db, source_id=1, max_pages=1)
 
         attachment = self.db.query(Attachment).filter(Attachment.post_id == existing_post.id).first()
 
-        self.assertEqual(count, 1)
+        self.assertEqual(result["processed_records"], 1)
         self.assertEqual(attachment.filename, "岗位表.xlsx")
         self.assertEqual(attachment.file_type, "xlsx")
         self.assertTrue(attachment.is_downloaded)
@@ -677,7 +694,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
             "src.services.attachment_service.pdfplumber",
             fake_pdf_module
         ):
-            count = await scrape_and_save(self.db, source_id=1, max_pages=1)
+            result = await scrape_and_save(self.db, source_id=1, max_pages=1)
 
         saved_post = self.db.query(Post).filter(Post.canonical_url == "https://example.com/pdf-post").first()
         fields = {
@@ -686,7 +703,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         }
         attachment = self.db.query(Attachment).filter(Attachment.post_id == saved_post.id).first()
 
-        self.assertEqual(count, 1)
+        self.assertEqual(result["processed_records"], 1)
         self.assertIsNotNone(attachment)
         self.assertTrue(attachment.is_downloaded)
         self.assertEqual(fields["学历要求"], "硕士")

@@ -520,7 +520,7 @@ async def _run_scrape_task_in_background(
             progress=None,
             details=build_progress_details("stage_only"),
         )
-        processed_records = await _run_with_heartbeat(
+        result = await _run_with_heartbeat(
             task_id=task_id,
             phase="正在抓取源站并写入数据库",
             details=build_progress_details("stage_only"),
@@ -531,23 +531,28 @@ async def _run_scrape_task_in_background(
                 progress_callback=build_admin_progress_callback(task_id),
             ),
         )
+        processed_records = result["processed_records"]
+        failed = _has_result_failures(result, "failures")
         details = {
             **params,
-            "processed_records": processed_records
+            **result,
         }
         outcome = _build_task_outcome(
             success_summary=f"手动抓取完成，新增或更新 {processed_records} 条记录",
-            failure_summary="手动抓取失败",
+            failure_summary=(
+                f"手动抓取失败，新增或更新 {processed_records} 条记录，"
+                f"另有 {result['failures']} 条未完成"
+            ),
             phase_success="抓取完成",
             phase_failed="抓取失败",
             details={
                 **details,
                 **build_progress_details(
                     "stage_only",
-                    metrics={"processed_records": processed_records},
+                    metrics=result,
                 ),
             },
-            failed=False,
+            failed=failed,
         )
         update_task_run(
             task_id=task_id,

@@ -976,6 +976,40 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertFalse(args[2]["only_unindexed"])
 
 class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_run_scrape_task_in_background_should_record_failed_when_result_contains_failures(self):
+        params = {"source_id": 1, "max_pages": 20}
+        fake_db = MagicMock()
+        result = {
+            "processed_records": 2,
+            "posts_created": 2,
+            "posts_updated": 0,
+            "failures": 1,
+        }
+
+        async def fake_run_with_heartbeat(*, awaitable, **_kwargs):
+            return await awaitable
+
+        with patch("src.api.admin.SessionLocal", return_value=fake_db), patch(
+            "src.api.admin._run_with_heartbeat",
+            side_effect=fake_run_with_heartbeat,
+        ), patch(
+            "src.api.admin.scrape_and_save",
+            new_callable=AsyncMock,
+            return_value=result,
+        ), patch("src.api.admin.update_task_run"), patch(
+            "src.api.admin.record_task_run",
+        ) as mocked_record:
+            await admin_api._run_scrape_task_in_background(
+                "task-scrape-1",
+                "2026-03-24T09:00:00+00:00",
+                params,
+            )
+
+        self.assertEqual(mocked_record.call_args.kwargs["status"], "failed")
+        self.assertIn("失败", mocked_record.call_args.kwargs["summary"])
+        self.assertEqual(mocked_record.call_args.kwargs["details"]["failures"], 1)
+        fake_db.close.assert_called_once()
+
     async def test_run_attachment_backfill_in_background_should_record_failed_when_result_contains_failures(self):
         params = {"source_id": 1, "limit": 20}
         fake_db = MagicMock()

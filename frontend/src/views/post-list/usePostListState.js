@@ -6,6 +6,7 @@ import {
   buildPostParams as buildPostRequestParams,
   buildStatsParams as buildStatsRequestParams
 } from '../../utils/postFilters.js'
+import { normalizeLatestSuccessTask } from '../../utils/taskFreshness.js'
 
 const FETCH_DEBOUNCE_MS = 400
 const FILTER_DEBOUNCE_FIELDS = new Set(['search', 'location'])
@@ -45,32 +46,6 @@ const hasAdvancedFilterSelection = (nextFilters) => {
     nextFilters.eventType ||
     nextFilters.hasContent
   )
-}
-
-const normalizeTaskRun = (run) => {
-  if (!run) return null
-
-  const finishedAt = run.finished_at || run.finishedAt || run.last_success_at || run.lastSuccessAt
-  if (!finishedAt) return null
-
-  return {
-    taskType: run.task_type || run.taskType || '',
-    taskLabel: run.task_label || run.taskLabel || '',
-    finishedAt
-  }
-}
-
-const normalizeSummaryResponse = (data) => {
-  if (!data) return null
-
-  const candidate =
-    data.latest_success_run ||
-    data.latest_success_task ||
-    data.latest_success ||
-    data.last_success ||
-    data
-
-  return normalizeTaskRun(candidate)
 }
 
 const getErrorMessage = (error, fallback) => {
@@ -292,10 +267,7 @@ export function usePostListState(route, router) {
 
     try {
       const response = await postsApi.getFreshnessSummary()
-      latestSuccessTask.value = normalizeSummaryResponse({
-        latest_success_run: response?.data?.latest_success_run || null,
-        latest_success_at: response?.data?.latest_success_at || null
-      })
+      latestSuccessTask.value = normalizeLatestSuccessTask(response?.data || null)
     } catch (requestError) {
       freshnessUnavailable.value = true
       if (requestError?.response?.status && requestError.response.status !== 404) {

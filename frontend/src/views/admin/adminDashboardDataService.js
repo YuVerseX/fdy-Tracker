@@ -19,6 +19,21 @@ const TASK_ACTION_FEEDBACK = Object.freeze({
   }
 })
 
+const resolveTaskType = (run = {}) => run?.task_type || run?.taskType || ''
+
+const resolveTaskParams = (run = {}) => {
+  const sources = [
+    run?.params,
+    run?.details?.params,
+    run?.details?.request_params,
+    run?.details?.requestParams
+  ]
+  for (const source of sources) {
+    if (source && typeof source === 'object') return source
+  }
+  return {}
+}
+
 export function createAdminDashboardDataService({
   adminApi, adminAuthorized, adminAuthChecking, adminAuthError, adminAuthForm, feedback, sourceOptions, state, loading, loaded, requests, forms
 } = {}) {
@@ -218,11 +233,12 @@ export function createAdminDashboardDataService({
     }
   }
   const retryTaskRun = async (run, actionKey = 'retry') => {
-    const taskType = run?.task_type
+    const taskType = resolveTaskType(run)
+    const taskParams = resolveTaskParams(run)
     const actionDefinition = getTaskActionDefinitions(run).find((item) => item.key === actionKey)
     const config = buildTaskRequestConfig(taskType, {
       actionKey,
-      params: run?.params || {},
+      params: taskParams,
       forms,
       rerunOfTaskId: run?.id || ''
     })

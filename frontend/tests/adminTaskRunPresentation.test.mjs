@@ -131,17 +131,40 @@ test('buildTaskMetricItems should expose user-facing metric labels in stable ord
     metrics: {
       posts_updated: 4,
       posts_seen: 18,
-      posts_created: 8
+      posts_created: 8,
+      failures: 1
     }
   })
 
   assert.deepEqual(
     items.map((item) => item.label),
-    ['发现公告', '新增公告', '更新公告']
+    ['发现公告', '新增公告', '更新公告', '失败']
   )
   assert.deepEqual(
     items.map((item) => item.value),
-    ['18', '8', '4']
+    ['18', '8', '4', '1']
+  )
+})
+
+test('buildTaskMetricItems should omit zero-value failure metrics from successful runs', () => {
+  const items = buildTaskMetricItems({
+    task_type: 'manual_scrape',
+    metrics: {
+      posts_seen: 18,
+      posts_created: 8,
+      posts_updated: 4,
+      failures: 0,
+      processed_records: 12
+    }
+  })
+
+  assert.deepEqual(
+    items.map((item) => item.label),
+    ['发现公告', '新增公告', '更新公告', '处理记录']
+  )
+  assert.deepEqual(
+    items.map((item) => item.value),
+    ['18', '8', '4', '12']
   )
 })
 
