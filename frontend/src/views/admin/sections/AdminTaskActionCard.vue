@@ -1,7 +1,7 @@
 <template>
-  <article class="rounded-[24px] border p-5 shadow-sm" :class="toneClass.panel">
-    <div class="flex flex-col gap-3">
-      <div class="flex flex-wrap items-center gap-3">
+  <article class="app-surface px-4 py-4 sm:p-5" :class="toneClass.panel">
+    <div class="flex flex-col gap-2.5 sm:gap-3">
+      <div class="flex flex-wrap items-center gap-2.5 sm:gap-3">
         <span v-if="card.badge" class="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium" :class="toneClass.badge">
           {{ card.badge }}
         </span>
@@ -10,11 +10,11 @@
 
       <p class="text-sm leading-6 text-slate-600">{{ card.description }}</p>
 
-      <div v-if="card.summary" class="rounded-2xl border bg-white/90 px-4 py-3 text-sm font-medium text-slate-900" :class="toneClass.summary">
+      <div v-if="card.summary" class="rounded-[16px] border bg-white/90 px-3.5 py-2.5 text-sm font-medium leading-6 text-slate-900" :class="toneClass.summary">
         {{ card.summary }}
       </div>
 
-      <div v-if="card.chips?.length" class="flex flex-wrap gap-2">
+      <div v-if="card.chips?.length" class="flex flex-wrap gap-1.5 sm:gap-2">
         <AppMetricPill
           v-for="chip in card.chips"
           :key="chip"
@@ -28,7 +28,7 @@
         :description="card.notice.description"
       />
 
-      <div class="flex flex-wrap gap-3">
+      <div class="flex flex-wrap gap-2.5 sm:gap-3">
         <AppActionButton
           :label="card.primaryAction?.label || ''"
           :busy-label="card.primaryAction?.busyLabel || ''"
@@ -48,20 +48,24 @@
         />
       </div>
 
-      <p v-if="card.footer" class="text-xs text-slate-500">{{ card.footer }}</p>
+      <p v-if="card.footer" class="text-xs leading-5 text-slate-500">{{ card.footer }}</p>
 
-      <AppDisclosure v-if="card.disclosure?.fields?.length" :summary="card.disclosure.summary">
-        <p v-if="card.disclosure.hint" class="mb-4 text-xs leading-6 text-slate-500">{{ card.disclosure.hint }}</p>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <AppDisclosure
+        v-if="card.disclosure?.fields?.length"
+        class="px-3.5 py-3 sm:px-4 sm:py-4"
+        :summary="card.disclosure.summary"
+      >
+        <p v-if="card.disclosure.hint" class="mb-3 text-xs leading-5 text-slate-500">{{ card.disclosure.hint }}</p>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div v-for="field in card.disclosure.fields" :key="field.id" :class="field.type === 'checkbox' ? 'sm:col-span-2' : ''">
-            <label v-if="field.type !== 'checkbox'" class="mb-2 block text-sm font-medium text-slate-700">
+            <label v-if="field.type !== 'checkbox'" class="mb-1.5 block text-xs font-medium uppercase tracking-[0.08em] text-slate-500">
               {{ field.label }}
             </label>
 
             <select
               v-if="field.type === 'select'"
               :value="field.model?.[field.modelKey]"
-              class="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-200"
+              class="app-select app-select--compact"
               @change="updateSelectField(field, $event)"
             >
               <option
@@ -80,15 +84,15 @@
               :min="field.min"
               :max="field.max"
               type="number"
-              class="w-full rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-200"
+              class="app-input app-input--compact"
               @input="updateNumberField(field, $event)"
             >
 
-            <label v-else class="inline-flex cursor-pointer items-center text-sm text-slate-700">
+            <label v-else class="inline-flex cursor-pointer items-start text-sm leading-5 text-slate-700">
               <input
                 :checked="Boolean(field.model?.[field.modelKey])"
                 type="checkbox"
-                class="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                class="app-checkbox"
                 @change="updateCheckboxField(field, $event)"
               >
               <span class="ml-2">{{ field.label }}</span>
@@ -114,31 +118,31 @@ const props = defineProps({
 
 const toneMap = {
   sky: {
-    panel: 'border-sky-200 bg-sky-50/70',
+    panel: 'app-surface--info',
     badge: 'bg-sky-100 text-sky-800',
     summary: 'border-sky-100',
     primaryButtonVariant: 'sky'
   },
   amber: {
-    panel: 'border-amber-200 bg-amber-50/70',
+    panel: 'app-surface--warning',
     badge: 'bg-amber-100 text-amber-800',
     summary: 'border-amber-100',
     primaryButtonVariant: 'amber'
   },
   slate: {
-    panel: 'border-slate-200 bg-slate-50/80',
+    panel: 'app-surface--muted',
     badge: 'bg-slate-200 text-slate-700',
     summary: 'border-slate-200',
     primaryButtonVariant: 'slate'
   },
   cyan: {
-    panel: 'border-cyan-200 bg-cyan-50/70',
+    panel: 'app-surface--info',
     badge: 'bg-cyan-100 text-cyan-800',
     summary: 'border-cyan-100',
     primaryButtonVariant: 'cyan'
   },
   emerald: {
-    panel: 'border-emerald-200 bg-emerald-50/70',
+    panel: 'app-surface--success',
     badge: 'bg-emerald-100 text-emerald-800',
     summary: 'border-emerald-100',
     primaryButtonVariant: 'emerald'

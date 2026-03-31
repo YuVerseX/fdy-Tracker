@@ -255,32 +255,57 @@ export function buildTaskRunsPresentation({
   taskRuns = [],
   nowTs = Date.now(),
   heartbeatStaleMs = DEFAULT_HEARTBEAT_STALE_MS,
-  maxAttentionRuns = 4,
-  maxRecentSuccessRuns = 3
+  maxCurrentRuns = 4,
+  maxRecentResultRuns = 4
 } = {}) {
-  const attentionRunsAll = taskRuns.filter((run) => run?.status === 'failed' || isRunningTaskStatus(run?.status))
-  const recentSuccessRunsAll = taskRuns.filter((run) => run?.status === 'success')
-  const attentionRuns = attentionRunsAll.slice(0, maxAttentionRuns)
-  const recentSuccessRuns = recentSuccessRunsAll.slice(0, maxRecentSuccessRuns)
-  const featuredRunKeys = new Set([...attentionRuns, ...recentSuccessRuns].map((run) => getTaskRunKey(run)))
+  const currentRunsAll = taskRuns.filter((run) => isRunningTaskStatus(run?.status))
+  const failedRunsAll = taskRuns.filter((run) => run?.status === 'failed')
+  const successRunsAll = taskRuns.filter((run) => run?.status === 'success')
+  const resultRunsAll = taskRuns.filter((run) => ['failed', 'success'].includes(run?.status))
+  const currentRuns = currentRunsAll.slice(0, maxCurrentRuns)
+  const recentResultRuns = resultRunsAll.slice(0, maxRecentResultRuns)
+  const featuredRunKeys = new Set([...currentRuns, ...recentResultRuns].map((run) => getTaskRunKey(run)))
   const historyRuns = taskRuns.filter((run) => !featuredRunKeys.has(getTaskRunKey(run)))
-  const stuckCount = attentionRunsAll.filter((run) => isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)).length
-  const runningCount = taskRuns.filter((run) => isRunningTaskStatus(run?.status)).length
+  const stuckCount = currentRunsAll.filter((run) => isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)).length
+  const queuedCount = taskRuns.filter((run) => ['queued', 'pending'].includes(run?.status)).length
+  const processingCount = taskRuns.filter((run) => ['running', 'processing'].includes(run?.status)).length
 
   return {
     summaryCards: [
-      buildStat('需关注', formatCount(attentionRunsAll.length, ' 条'), 'rose'),
-      buildStat('运行中', formatCount(runningCount, ' 条'), 'amber'),
-      buildStat('最近完成', formatCount(recentSuccessRunsAll.length, ' 条'), 'emerald'),
-      buildStat('历史记录', formatCount(historyRuns.length, ' 条'), 'slate')
+      buildStat('当前任务', formatCount(currentRunsAll.length, ' 条'), 'amber', {
+        description: currentRunsAll.length > 0 ? '正在排队或处理中的任务' : '当前没有进行中的任务',
+        meta: [
+          processingCount > 0 ? `${processingCount} 条正在处理` : '',
+          queuedCount > 0 ? `${queuedCount} 条等待开始` : '',
+          stuckCount > 0 ? `${stuckCount} 条进度停滞` : ''
+        ]
+      }),
+      buildStat('未完成', formatCount(failedRunsAll.length, ' 条'), 'rose', {
+        description: failedRunsAll.length > 0 ? '最近未完成的任务需要重新处理' : '最近没有未完成记录',
+        meta: failedRunsAll.length > 0 ? `${failedRunsAll.length} 条未完成` : ''
+      }),
+      buildStat('已完成', formatCount(successRunsAll.length, ' 条'), 'emerald', {
+        description: successRunsAll.length > 0 ? '可以在最近结果里查看刚完成的处理' : '当前还没有完成记录',
+        meta: recentResultRuns.length > 0 ? `最近结果展示 ${recentResultRuns.length} 条` : ''
+      }),
+      buildStat('历史记录', formatCount(historyRuns.length, ' 条'), 'slate', {
+        description: historyRuns.length > 0 ? '保留更早的结果，方便回看和核对。' : '当前没有更早的历史记录'
+      })
     ],
-    attentionRuns,
-    recentSuccessRuns,
+    attentionRuns: [...failedRunsAll, ...currentRunsAll].slice(0, maxCurrentRuns),
+    currentRuns,
+    recentResultRuns,
+    recentSuccessRuns: successRunsAll.slice(0, 3),
     historyRuns,
     counts: {
-      attention: attentionRunsAll.length,
-      running: runningCount,
-      success: recentSuccessRunsAll.length,
+      attention: failedRunsAll.length + currentRunsAll.length,
+      current: currentRunsAll.length,
+      failed: failedRunsAll.length,
+      processing: processingCount,
+      queued: queuedCount,
+      results: resultRunsAll.length,
+      running: currentRunsAll.length,
+      success: successRunsAll.length,
       history: historyRuns.length,
       stuck: stuckCount
     }

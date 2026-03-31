@@ -1,5 +1,5 @@
 <template>
-  <article class="rounded-2xl border border-slate-200 bg-white px-4 py-4" :class="wrapperClass">
+  <article class="app-stat-card" :class="wrapperClass">
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">
         <div :class="labelClass">{{ label }}</div>
@@ -43,13 +43,13 @@ const props = defineProps({
 
 const sizeMap = {
   sm: {
-    label: 'text-xs text-slate-500',
+    label: 'text-xs app-meta',
     value: 'mt-1 text-lg',
     description: 'mt-2',
     meta: 'mt-1'
   },
   md: {
-    label: 'text-xs text-slate-500',
+    label: 'text-xs app-meta',
     value: 'mt-2 text-lg',
     description: 'mt-2',
     meta: 'mt-1'
@@ -70,7 +70,7 @@ const valueToneMap = {
 }
 
 const sizeClass = computed(() => sizeMap[props.size] || sizeMap.md)
-const wrapperClass = computed(() => (props.size === 'lg' ? 'shadow-sm' : ''))
+const wrapperClass = computed(() => (props.size === 'lg' ? 'app-stat-card--lg' : ''))
 const labelClass = computed(() => sizeClass.value.label)
 const valueClass = computed(() => valueToneMap[props.valueTone] || valueToneMap.default)
 

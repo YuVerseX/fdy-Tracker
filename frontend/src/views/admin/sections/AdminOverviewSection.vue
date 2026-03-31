@@ -1,6 +1,6 @@
 <template>
-  <div class="space-y-6">
-    <section class="rounded-[28px] border p-6 shadow-sm" :class="health.panelClass">
+  <div class="space-y-5">
+    <AppSurface padding="lg" :class="health.panelClass">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <AppSectionHeader title="当前概况" description="查看最近任务、自动抓取状态和关键结果。">
@@ -18,36 +18,40 @@
         />
       </div>
 
-      <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <AppStatCard
+      <div class="mt-5 flex flex-wrap gap-2">
+        <AppMetricPill
           v-for="card in cards"
           :key="card.id"
           :label="card.label"
           :value="card.value"
-          :meta="card.meta"
-          value-tone="info"
-          class="border-0 bg-white/88 shadow-sm ring-1 ring-black/5"
+          :tone="getOverviewMetricTone(card.id)"
         />
       </div>
 
-      <div class="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <article v-for="item in focusItems" :key="item.id" class="rounded-2xl border border-white/70 bg-white/80 px-4 py-4 shadow-sm">
-          <div class="text-xs font-medium tracking-[0.12em] text-slate-500 uppercase">{{ item.title }}</div>
-          <p class="mt-2 text-sm leading-6 text-slate-700">{{ item.description }}</p>
-        </article>
-      </div>
+      <div class="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <AppNotice
+          :tone="health.alerts.length > 0 ? 'warning' : 'info'"
+          :title="health.alerts.length > 0 ? '当前需要注意' : '当前状态说明'"
+          :description="health.alerts[0] || health.summary"
+        />
 
-      <div v-if="health.alerts.length > 0" class="mt-4 rounded-lg border border-amber-200 bg-white/80 px-4 py-4 text-sm text-amber-900">
-        <div class="font-medium">当前需要注意</div>
-        <div class="mt-3 space-y-2">
-          <div v-for="item in health.alerts" :key="item" class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            {{ item }}
-          </div>
+        <div class="rounded-[18px] border border-[rgba(148,163,184,0.18)] bg-white/76 px-4 py-4">
+          <div class="text-xs font-medium tracking-[0.12em] text-slate-500 uppercase">接下来建议</div>
+          <AppFactList class="mt-3" :items="focusFactItems" :columns="1" compact tone="muted" />
         </div>
       </div>
-    </section>
 
-    <section class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
+      <div v-if="health.alerts.length > 1" class="mt-4 flex flex-wrap gap-2">
+        <AppMetricPill
+          v-for="item in health.alerts.slice(1)"
+          :key="item"
+          :label="item"
+          tone="warning"
+        />
+      </div>
+    </AppSurface>
+
+    <AppSurface padding="lg">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <AppSectionHeader title="整理结果" :description="runtimeCopy.description">
@@ -65,26 +69,30 @@
         />
       </div>
 
-      <div class="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <AppStatCard
-          v-for="card in structuredFieldCards"
-          :key="card.label"
-          :label="card.label"
-          :value="card.value"
-          size="sm"
-        />
-      </div>
-    </section>
+      <AppNotice
+        class="mt-5"
+        tone="info"
+        title="当前整理能力"
+        :description="runtimeCopy.emphasis"
+      />
+
+      <AppFactList class="mt-5" :items="structuredFieldItems" compact />
+    </AppSurface>
   </div>
 </template>
 
 <script setup>
-import AppActionButton from '../../../components/ui/AppActionButton.vue'
-import AppSectionHeader from '../../../components/ui/AppSectionHeader.vue'
-import AppStatCard from '../../../components/ui/AppStatCard.vue'
-import AppStatusBadge from '../../../components/ui/AppStatusBadge.vue'
+import { computed } from 'vue'
 
-defineProps({
+import AppActionButton from '../../../components/ui/AppActionButton.vue'
+import AppFactList from '../../../components/ui/AppFactList.vue'
+import AppMetricPill from '../../../components/ui/AppMetricPill.vue'
+import AppNotice from '../../../components/ui/AppNotice.vue'
+import AppSectionHeader from '../../../components/ui/AppSectionHeader.vue'
+import AppStatusBadge from '../../../components/ui/AppStatusBadge.vue'
+import AppSurface from '../../../components/ui/AppSurface.vue'
+
+const props = defineProps({
   health: { type: Object, required: true },
   refreshing: { type: Boolean, required: true },
   focusItems: { type: Array, required: true },
@@ -96,10 +104,27 @@ defineProps({
   refreshStructuredSummary: { type: Function, required: true }
 })
 
+const focusFactItems = computed(() => props.focusItems.map((item) => ({
+  label: item.title,
+  value: item.description
+})))
+
+const structuredFieldItems = computed(() => props.structuredFieldCards.map((card) => ({
+  label: card.label,
+  value: card.value
+})))
+
 const getHealthTone = (level) => {
   if (level === 'healthy') return 'success'
   if (level === 'warning') return 'danger'
   if (level === 'attention') return 'warning'
   return 'neutral'
+}
+
+const getOverviewMetricTone = (cardId) => {
+  if (cardId === 'scheduler') return props.health.level === 'warning' ? 'warning' : 'success'
+  if (cardId === 'runtime') return 'info'
+  if (cardId === 'jobs') return 'info'
+  return 'muted'
 }
 </script>

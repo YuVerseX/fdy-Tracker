@@ -1,6 +1,6 @@
 <template>
   <div class="min-h-screen">
-    <main class="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+    <main class="app-shell max-w-7xl">
       <AppPageHeader
         eyebrow="后台控制台"
         title="管理台"
@@ -22,7 +22,7 @@
         :description="`${dashboard.activeTaskHints.join('、')}。你可以先继续查看页面，稍后刷新任务中心获取最新结果。`"
       />
 
-      <section v-if="!dashboard.adminAuthorized" class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm backdrop-blur lg:p-8">
+      <section v-if="!dashboard.adminAuthorized" class="app-surface app-surface--padding-lg">
         <div class="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-between">
           <div class="max-w-2xl">
             <AppSectionHeader
@@ -46,7 +46,7 @@
                 v-model.trim="dashboard.adminAuthForm.username"
                 type="text"
                 autocomplete="username"
-                class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-200"
+                class="app-input"
                 placeholder="输入账号"
               >
             </div>
@@ -56,14 +56,14 @@
                 v-model="dashboard.adminAuthForm.password"
                 type="password"
                 autocomplete="current-password"
-                class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-200"
+                class="app-input"
                 placeholder="输入密码"
               >
             </div>
             <button
               type="submit"
               :disabled="dashboard.adminAuthChecking"
-              class="inline-flex items-center justify-center rounded-full bg-sky-700 px-5 py-2.5 text-sm font-medium text-white transition-colors duration-200 hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+              class="app-button app-button--md app-button--primary disabled:cursor-not-allowed disabled:opacity-60"
             >
               {{ dashboard.adminAuthChecking ? '登录验证中...' : '进入管理台' }}
             </button>
@@ -72,7 +72,7 @@
       </section>
 
       <template v-else>
-        <section class="rounded-[28px] border border-slate-200 bg-white/88 p-4 shadow-sm backdrop-blur">
+        <section class="app-surface app-surface--padding-sm">
           <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <AppTabNav
               :model-value="dashboard.activeAdminSection"
@@ -84,7 +84,7 @@
               <span v-if="dashboard.adminSavedUsername">当前账号：{{ dashboard.adminSavedUsername }}</span>
               <button
                 type="button"
-                class="inline-flex items-center rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors duration-200 hover:border-sky-300 hover:text-sky-700"
+                class="app-button app-button--sm app-button--secondary"
                 @click="dashboard.logoutAdmin"
               >
                 退出登录

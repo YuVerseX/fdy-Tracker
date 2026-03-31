@@ -1,6 +1,6 @@
 <template>
   <div class="min-h-screen">
-    <main class="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+    <main class="app-shell max-w-6xl">
       <AppPageHeader
         eyebrow="招聘列表"
         title="辅导员招聘公告"
@@ -17,20 +17,20 @@
         :description="freshnessNotice.description"
       />
 
-      <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <article
-          v-for="card in metricCards"
-          :key="card.key"
-          class="rounded-[24px] border border-slate-200 bg-white/92 p-5 shadow-sm"
-        >
-          <p class="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">{{ card.label }}</p>
-          <p class="mt-3 text-3xl font-semibold text-slate-950">{{ card.value }}</p>
-          <p class="mt-2 text-sm text-slate-600">{{ card.description }}</p>
-        </article>
+      <section class="app-surface app-surface--padding-md">
+        <div class="flex flex-wrap gap-2">
+          <AppMetricPill
+            v-for="card in metricCards"
+            :key="card.key"
+            :label="card.label"
+            :value="card.value"
+            :tone="getMetricTone(card.tone)"
+          />
+        </div>
       </section>
 
-      <section class="rounded-[28px] border border-slate-200 bg-white/92 p-6 shadow-sm">
-        <div class="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_220px_auto]">
+      <section class="app-surface app-surface--padding-md">
+        <div class="grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_220px_280px]">
           <div>
             <label for="post-search" class="mb-2 block text-sm font-medium text-slate-700">按关键词查找公告</label>
             <input
@@ -39,11 +39,11 @@
               type="text"
               aria-describedby="post-search-hint"
               placeholder="学校、岗位、地区或公告标题"
-              class="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 transition-colors duration-200 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+              class="app-input"
               @input="handleSearchInput"
             />
             <p id="post-search-hint" class="mt-2 text-xs text-slate-500">
-              输入后会自动更新结果，也可以调整条件后再手动筛选。
+              输入后会自动更新，也可以配合更多条件一起收口结果。
             </p>
           </div>
 
@@ -52,7 +52,7 @@
             <select
               id="scope-filter"
               v-model="filters.counselorScope"
-              class="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 transition-colors duration-200 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+              class="app-select"
               @change="handleFilter"
             >
               <option
@@ -65,18 +65,19 @@
             </select>
           </div>
 
-          <div class="flex flex-col gap-3 xl:justify-end">
+          <div class="flex flex-wrap gap-3 lg:justify-end lg:self-end">
             <button
               type="button"
-              class="inline-flex items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition-colors duration-200 hover:border-sky-300 hover:text-sky-700"
+              class="app-button app-button--md app-button--secondary"
               :aria-expanded="showAdvancedFilters"
+              aria-controls="post-advanced-filters"
               @click="toggleAdvancedFilters"
             >
               {{ showAdvancedFilters ? '收起更多条件' : '更多条件' }}
             </button>
             <button
               type="button"
-              class="inline-flex items-center justify-center rounded-full bg-sky-700 px-4 py-3 text-sm font-medium text-white transition-colors duration-200 hover:bg-sky-800"
+              class="app-button app-button--md app-button--primary"
               @click="handleManualSearch"
             >
               立即筛选
@@ -84,14 +85,14 @@
           </div>
         </div>
 
-        <div v-if="showAdvancedFilters" class="mt-5 border-t border-slate-200 pt-5">
+        <div id="post-advanced-filters" v-if="showAdvancedFilters" class="mt-5 border-t border-slate-200 pt-5">
           <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <div>
               <label for="gender-filter" class="mb-2 block text-sm font-medium text-slate-700">性别要求</label>
               <select
                 id="gender-filter"
                 v-model="filters.gender"
-                class="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 transition-colors duration-200 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+                class="app-select"
                 @change="handleFilter"
               >
                 <option value="">全部</option>
@@ -106,7 +107,7 @@
               <select
                 id="education-filter"
                 v-model="filters.education"
-                class="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 transition-colors duration-200 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+                class="app-select"
                 @change="handleFilter"
               >
                 <option value="">全部</option>
@@ -124,7 +125,7 @@
                 v-model="filters.location"
                 type="text"
                 placeholder="城市或地区"
-                class="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 transition-colors duration-200 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+                class="app-input"
                 @input="handleLocationInput"
               />
             </div>
@@ -134,7 +135,7 @@
               <select
                 id="event-type-filter"
                 v-model="filters.eventType"
-                class="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 transition-colors duration-200 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
+                class="app-select"
                 @change="handleFilter"
               >
                 <option value="">全部</option>
@@ -152,7 +153,7 @@
               <input
                 v-model="filters.hasContent"
                 type="checkbox"
-                class="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                class="app-checkbox"
                 @change="handleFilter"
               />
               仅看已收录正文的公告
@@ -169,16 +170,16 @@
             v-for="chip in filterChips"
             :key="chip.key"
             type="button"
-            class="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors duration-200 hover:bg-slate-200"
+            class="inline-flex max-w-full items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors duration-200 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 focus-visible:ring-offset-2"
             :aria-label="`移除${chip.label}`"
             @click="clearFilterChip(chip.key)"
           >
-            <span>{{ chip.label }}：{{ chip.value }}</span>
+            <span class="app-break">{{ chip.label }}：{{ chip.value }}</span>
             <span aria-hidden="true">×</span>
           </button>
           <button
             type="button"
-            class="ml-auto inline-flex items-center justify-center rounded-full border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition-colors duration-200 hover:border-slate-400 hover:text-slate-950"
+            class="ml-auto app-button app-button--sm app-button--secondary"
             @click="clearFilters"
           >
             清空条件
@@ -186,7 +187,7 @@
         </div>
       </section>
 
-      <div v-if="loading" class="rounded-[28px] border border-slate-200 bg-white/92 px-6 py-14 text-center shadow-sm">
+      <div v-if="loading" class="app-surface app-surface--padding-lg text-center">
         <div class="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-sky-700"></div>
         <p class="mt-4 text-sm text-slate-600">正在整理当前结果...</p>
       </div>
@@ -200,7 +201,7 @@
         <template #actions>
           <button
             type="button"
-            class="inline-flex items-center justify-center rounded-full bg-rose-600 px-4 py-2 text-sm font-medium text-white transition-colors duration-200 hover:bg-rose-700"
+            class="app-button app-button--sm app-button--warning"
             @click="fetchPosts"
           >
             重新加载
@@ -221,13 +222,13 @@
             v-for="card in postCards"
             :key="card.id"
             :to="{ name: 'PostDetail', params: { id: card.id }, query: { ...route.query } }"
-            class="group block rounded-[28px] border border-slate-200 bg-white/94 p-6 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-sky-200 hover:shadow-[0_24px_60px_-36px_rgba(14,116,144,0.3)] focus:outline-none focus:ring-2 focus:ring-sky-500"
+            class="group block app-surface app-surface--padding-md transition-all duration-200 hover:-translate-y-0.5 hover:border-sky-200 hover:shadow-[0_24px_60px_-36px_rgba(14,116,144,0.22)] focus:outline-none focus:ring-2 focus:ring-sky-500"
             :aria-label="`查看公告：${card.title}`"
           >
-            <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div class="min-w-0 flex-1">
                 <p v-if="card.highlight" class="text-sm font-medium text-sky-700">{{ card.highlight }}</p>
-                <h2 class="mt-2 text-xl font-semibold leading-8 text-slate-950 group-hover:text-sky-800">
+                <h2 class="mt-2 text-lg font-semibold leading-8 text-slate-950 group-hover:text-sky-800">
                   {{ card.title }}
                 </h2>
 
@@ -267,10 +268,10 @@
         :description="emptyState.description"
       />
 
-      <nav v-if="totalPages > 1" class="flex items-center justify-center gap-3">
+      <nav v-if="totalPages > 1" class="flex items-center justify-center gap-3" aria-label="结果分页">
         <button
           type="button"
-          class="inline-flex items-center justify-center rounded-full border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition-colors duration-200 hover:border-slate-400 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
+          class="app-button app-button--sm app-button--secondary disabled:cursor-not-allowed disabled:opacity-45"
           :disabled="currentPage === 1"
           @click="goToPage(currentPage - 1)"
         >
@@ -279,7 +280,7 @@
         <span class="text-sm text-slate-600">第 {{ currentPage }} / {{ totalPages }} 页</span>
         <button
           type="button"
-          class="inline-flex items-center justify-center rounded-full border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition-colors duration-200 hover:border-slate-400 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
+          class="app-button app-button--sm app-button--secondary disabled:cursor-not-allowed disabled:opacity-45"
           :disabled="currentPage === totalPages"
           @click="goToPage(currentPage + 1)"
         >
@@ -295,6 +296,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AppEmptyState from '../components/ui/AppEmptyState.vue'
+import AppMetricPill from '../components/ui/AppMetricPill.vue'
 import AppNotice from '../components/ui/AppNotice.vue'
 import AppPageHeader from '../components/ui/AppPageHeader.vue'
 import AppStatusBadge from '../components/ui/AppStatusBadge.vue'
@@ -348,6 +350,13 @@ const metricCards = computed(() => buildPostListMetricCards({
   scopeTotals: scopeTotals.value,
   currentScopeLabel: currentScopeLabel.value
 }))
+const getMetricTone = (tone) => {
+  if (tone === 'success') return 'success'
+  if (tone === 'info') return 'info'
+  if (tone === 'warning') return 'warning'
+  if (tone === 'danger') return 'danger'
+  return 'muted'
+}
 const postCards = computed(() => posts.value.map((post) => buildPostCardView(post)))
 const filterChips = computed(() => buildActiveFilterChips({
   searchQuery: searchQuery.value,

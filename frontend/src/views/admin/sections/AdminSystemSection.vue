@@ -1,27 +1,29 @@
 <template>
-  <section class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
-    <div class="flex items-start justify-between gap-4">
-      <div>
-        <AppSectionHeader
-          title="系统设置"
-          description="设置自动抓取频率和默认抓取范围。"
-          aside="自动抓取和手动处理互不影响；这里只控制系统默认行为。"
-        />
-      </div>
-      <AppStatusBadge :label="statusBadgeLabel" :tone="schedulerForm.enabled ? 'success' : 'warning'" />
+  <AppSurface padding="lg">
+    <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+      <AppSectionHeader
+        title="系统设置"
+        description="设置自动抓取频率和默认抓取范围。"
+        aside="自动抓取和手动处理互不影响；这里只控制系统默认行为。"
+      />
+      <AppStatusBadge
+        class="md:shrink-0"
+        :label="statusBadgeLabel"
+        :tone="schedulerForm.enabled ? 'success' : 'warning'"
+      />
     </div>
 
-    <div class="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
-      <AppStatCard
+    <div class="mt-4 flex flex-wrap gap-2">
+      <AppMetricPill
         v-for="card in summaryCards"
         :key="card.label"
         :label="card.label"
         :value="card.value"
-        :meta="card.meta"
-        size="sm"
-        class="bg-slate-50"
+        :tone="card.label === '当前状态' ? (schedulerForm.enabled ? 'success' : 'warning') : 'muted'"
       />
     </div>
+
+    <AppFactList class="mt-4" :items="scheduleFacts" compact />
 
     <div class="mt-4 rounded-lg border px-4 py-3 text-sm" :class="noticeClass">
       <p>{{ statusLine }}</p>
@@ -31,13 +33,14 @@
     <AppNotice
       class="mt-4"
       :tone="helperNotice.tone"
+      title="生效说明"
       :description="helperNotice.description"
     />
 
-    <div class="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-4">
-      <div>
+    <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div class="md:col-span-2 xl:col-span-2">
         <label class="mb-2 block text-sm font-medium text-gray-700">默认数据源</label>
-        <select v-model.number="schedulerForm.defaultSourceId" class="w-full rounded-2xl border border-gray-300 px-3 py-2 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-sky-600">
+        <select v-model.number="schedulerForm.defaultSourceId" class="app-select">
           <option v-for="source in sourceOptions" :key="`scheduler-${source.value}`" :value="source.value">
             {{ source.label }}
           </option>
@@ -45,15 +48,15 @@
       </div>
       <div>
         <label class="mb-2 block text-sm font-medium text-gray-700">抓取间隔（秒）</label>
-        <input v-model.number="schedulerForm.intervalSeconds" type="number" min="60" max="86400" class="w-full rounded-2xl border border-gray-300 px-3 py-2 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-sky-600">
+        <input v-model.number="schedulerForm.intervalSeconds" type="number" min="60" max="86400" class="app-input">
       </div>
       <div>
         <label class="mb-2 block text-sm font-medium text-gray-700">默认抓取页数</label>
-        <input v-model.number="schedulerForm.defaultMaxPages" type="number" min="1" max="50" class="w-full rounded-2xl border border-gray-300 px-3 py-2 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-sky-600">
+        <input v-model.number="schedulerForm.defaultMaxPages" type="number" min="1" max="50" class="app-input">
       </div>
-      <div class="flex items-end">
+      <div class="flex items-center md:col-span-2 xl:col-span-4">
         <label class="inline-flex cursor-pointer items-center text-sm text-gray-700">
-          <input v-model="schedulerForm.enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-sky-600 focus:ring-sky-500">
+          <input v-model="schedulerForm.enabled" type="checkbox" class="app-checkbox">
           <span class="ml-2">启用定时抓取</span>
         </label>
       </div>
@@ -74,17 +77,21 @@
         @click="refreshSchedulerConfig"
       />
     </div>
-  </section>
+  </AppSurface>
 </template>
 
 <script setup>
+import { computed } from 'vue'
+
 import AppActionButton from '../../../components/ui/AppActionButton.vue'
+import AppFactList from '../../../components/ui/AppFactList.vue'
+import AppMetricPill from '../../../components/ui/AppMetricPill.vue'
 import AppNotice from '../../../components/ui/AppNotice.vue'
 import AppSectionHeader from '../../../components/ui/AppSectionHeader.vue'
-import AppStatCard from '../../../components/ui/AppStatCard.vue'
 import AppStatusBadge from '../../../components/ui/AppStatusBadge.vue'
+import AppSurface from '../../../components/ui/AppSurface.vue'
 
-defineProps({
+const props = defineProps({
   schedulerForm: { type: Object, required: true },
   schedulerLoaded: { type: Boolean, required: true },
   schedulerLoading: { type: Boolean, required: true },
@@ -99,4 +106,27 @@ defineProps({
   saveSchedulerConfig: { type: Function, required: true },
   refreshSchedulerConfig: { type: Function, required: true }
 })
+
+const getSummaryCardValue = (label, fallback = '未获取') => (
+  props.summaryCards.find((card) => card.label === label)?.value || fallback
+)
+
+const scheduleFacts = computed(() => [
+  {
+    label: '默认数据源',
+    value: props.sourceOptions.find((source) => Number(source.value) === Number(props.schedulerForm.defaultSourceId))?.label || '默认数据源'
+  },
+  {
+    label: '抓取间隔',
+    value: props.schedulerLoaded ? `${props.schedulerForm.intervalSeconds || '--'} 秒` : '加载中'
+  },
+  {
+    label: '默认抓取页数',
+    value: props.schedulerLoaded ? `${props.schedulerForm.defaultMaxPages || '--'} 页` : '加载中'
+  },
+  {
+    label: '下次预计运行',
+    value: props.schedulerLoaded ? getSummaryCardValue('下次运行') : '加载中'
+  }
+])
 </script>

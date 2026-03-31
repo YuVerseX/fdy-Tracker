@@ -1,5 +1,5 @@
-const FACT_ORDER = ['岗位名称', '招聘人数', '学历要求', '专业要求', '工作地点', '政治面貌', '年龄要求', '报名时间']
-const PRIMARY_FIELD_NAMES = ['岗位名称', '性别要求', '学历要求', '专业要求', '工作地点', '招聘人数', '政治面貌', '年龄要求']
+const FACT_ORDER = ['岗位数量', '岗位名称', '招聘人数', '学历要求', '专业要求', '工作地点', '政治面貌', '年龄要求', '报名时间']
+const PRIMARY_FIELD_NAMES = ['性别要求', '学历要求', '专业要求', '工作地点', '招聘人数', '政治面貌', '年龄要求']
 const HIDDEN_FIRST_SCREEN_KEYS = new Set(['confidence_score', 'analysis_provider', 'field_source', 'job_source'])
 const JOB_TABLE_COLUMNS = ['岗位名称', '人数', '学历', '专业', '地点']
 
@@ -43,17 +43,98 @@ const normalizeCounselorScope = (scope, isCounselor) => {
   return isCounselor ? 'related' : ''
 }
 
-export const buildFieldMap = (fields = []) => {
-  if (!Array.isArray(fields)) return {}
+const collectUniqueText = (values = []) => Array.from(new Set(values.map((value) => normalizeText(value)).filter(Boolean)))
 
-  return fields.reduce((accumulator, field) => {
-    const fieldName = normalizeText(field?.field_name)
-    if (!fieldName || accumulator[fieldName]) {
+const parseHeadcountNumber = (value) => {
+  const text = normalizeText(value)
+  if (!text || /-|至|以上|不少于/.test(text)) return null
+  const matches = text.match(/\d+/g)
+  if (!matches || matches.length !== 1) return null
+  const numeric = Number(matches[0])
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+const buildHeadcountSummary = (fields = {}, jobItems = []) => {
+  const parsedCounts = jobItems.map((job) => parseHeadcountNumber(job?.headcount))
+
+  if (jobItems.length > 1 && parsedCounts.length === jobItems.length && parsedCounts.every((value) => value !== null)) {
+    return `${parsedCounts.reduce((sum, value) => sum + value, 0)}人`
+  }
+
+  return normalizeText(fields['招聘人数'])
+}
+
+const buildEducationSummary = (fields = {}, jobItems = []) => {
+  const values = collectUniqueText(jobItems.map((job) => job?.education))
+  if (values.length === 1) return values[0]
+  if (values.length > 1) return values.slice(0, 2).join(' / ')
+  return normalizeText(fields['学历要求'])
+}
+
+const buildMajorSummary = (fields = {}, jobItems = []) => {
+  const values = collectUniqueText(jobItems.map((job) => job?.major))
+  if (values.length === 1) return values[0]
+  if (values.length > 1 && values.includes('不限')) {
+    return '部分岗位不限，部分岗位要求相关专业'
+  }
+  if (values.length > 1) return values.slice(0, 2).join(' / ')
+  return normalizeText(fields['专业要求'])
+}
+
+const buildLocationSummary = (fields = {}, jobItems = []) => {
+  const values = collectUniqueText(jobItems.map((job) => job?.location))
+  if (values.length === 1) return values[0]
+  if (values.length > 1) return values.join(' / ')
+  return normalizeText(fields['工作地点'])
+}
+
+const buildRoleSummary = (postData = {}, jobItems = []) => {
+  if (jobItems.length === 0) return ''
+
+  const counselorJobsCount = jobItems.filter((job) => job?.is_counselor_job).length
+  if (jobItems.length === 1) {
+    const jobName = normalizeText(jobItems[0]?.job_name)
+    return jobName ? `岗位为${jobName}` : ''
+  }
+
+  const counselorScope = normalizeCounselorScope(
+    postData?.counselor_scope || postData?.analysis?.counselor_scope,
+    Boolean(postData?.is_counselor)
+  )
+
+  if (counselorScope === 'dedicated' || counselorJobsCount === jobItems.length) {
+    return '均为辅导员岗位'
+  }
+  if (counselorJobsCount > 0) {
+    return `包含 ${counselorJobsCount} 个辅导员岗位`
+  }
+  return ''
+}
+
+export const buildFieldMap = (fields = []) => {
+  if (Array.isArray(fields)) {
+    return fields.reduce((accumulator, field) => {
+      const fieldName = normalizeText(field?.field_name)
+      if (!fieldName || accumulator[fieldName]) {
+        return accumulator
+      }
+      accumulator[fieldName] = normalizeText(field?.field_value)
       return accumulator
-    }
-    accumulator[fieldName] = normalizeText(field?.field_value)
-    return accumulator
-  }, {})
+    }, {})
+  }
+
+  if (fields && typeof fields === 'object') {
+    return Object.entries(fields).reduce((accumulator, [fieldName, fieldValue]) => {
+      const normalizedName = normalizeText(fieldName)
+      if (!normalizedName || accumulator[normalizedName]) {
+        return accumulator
+      }
+      accumulator[normalizedName] = normalizeText(fieldValue)
+      return accumulator
+    }, {})
+  }
+
+  return {}
 }
 
 export function normalizeJobItems(postData = {}) {
@@ -130,28 +211,76 @@ export function normalizeJobItems(postData = {}) {
 
 export function buildResolvedPostFields(postData = {}, jobItems = []) {
   const fieldMap = buildFieldMap(postData?.fields || [])
-  const primaryJob = jobItems[0] || {}
+  const primaryJob = jobItems.length === 1 ? (jobItems[0] || {}) : {}
   const inferredGender = inferGenderFromJobs(jobItems)
+  const fallbackLocation = collectUniqueText(jobItems.map((job) => job?.location))[0] || ''
 
   return {
     ...fieldMap,
-    岗位名称: primaryJob.job_name || fieldMap.岗位名称 || '',
+    岗位名称: fieldMap.岗位名称 || primaryJob.job_name || '',
     性别要求: inferredGender || fieldMap.性别要求 || '',
-    学历要求: primaryJob.education || fieldMap.学历要求 || '',
-    专业要求: primaryJob.major || fieldMap.专业要求 || '',
-    工作地点: primaryJob.location || fieldMap.工作地点 || '',
-    招聘人数: primaryJob.headcount || fieldMap.招聘人数 || ''
+    学历要求: fieldMap.学历要求 || primaryJob.education || '',
+    专业要求: fieldMap.专业要求 || primaryJob.major || '',
+    工作地点: fieldMap.工作地点 || primaryJob.location || fallbackLocation || '',
+    招聘人数: fieldMap.招聘人数 || primaryJob.headcount || ''
   }
 }
 
-export function buildPostFacts({ fields = {} } = {}) {
+export function buildPostFacts({ postData = {}, fields = {}, jobItems = [] } = {}) {
+  const factMap = {
+    岗位数量: jobItems.length > 1 ? `${jobItems.length} 个岗位` : '',
+    岗位名称: jobItems.length === 1 ? (normalizeText(jobItems[0]?.job_name) || normalizeText(fields['岗位名称'])) : '',
+    招聘人数: buildHeadcountSummary(fields, jobItems),
+    学历要求: buildEducationSummary(fields, jobItems),
+    专业要求: buildMajorSummary(fields, jobItems),
+    工作地点: buildLocationSummary(fields, jobItems),
+    政治面貌: normalizeText(fields['政治面貌']),
+    年龄要求: normalizeText(fields['年龄要求']),
+    报名时间: normalizeText(fields['报名时间'])
+  }
+
   return FACT_ORDER
-    .filter((label) => normalizeText(fields[label]))
-    .map((label) => ({ label, value: normalizeText(fields[label]) }))
+    .filter((label) => normalizeText(factMap[label]))
+    .map((label) => ({ label, value: normalizeText(factMap[label]) }))
 }
 
-export function buildSupplementalFields(postData = {}, preferredFacts = []) {
+export function buildHeroSummary({ postData = {}, fields = {}, jobItems = [] } = {}) {
+  const parts = []
+  const jobCount = jobItems.length
+  const headcount = buildHeadcountSummary(fields, jobItems)
+  const roleSummary = buildRoleSummary(postData, jobItems)
+  const location = buildLocationSummary(fields, jobItems)
+  const education = buildEducationSummary(fields, jobItems)
+
+  if (jobCount > 1) {
+    parts.push(`本次公告共整理出 ${jobCount} 个岗位`)
+  } else if (jobCount === 1) {
+    const singleRole = buildRoleSummary(postData, jobItems)
+    parts.push(singleRole ? `本次公告整理出 1 个岗位，${singleRole}` : '本次公告整理出 1 个岗位')
+  }
+
+  if (headcount) parts.push(`预计招聘 ${headcount}`)
+  if (jobCount > 1 && roleSummary) parts.push(roleSummary)
+  if (location) parts.push(`工作地点在 ${location}`)
+  if (jobCount > 1 && education) parts.push(`学历要求覆盖 ${education}`)
+
+  if (parts.length > 0) {
+    return `${parts.join('，')}。`
+  }
+
+  return '当前公告已收录正文和结构化信息，可以先看首屏判断信息，再决定是否继续阅读原文。'
+}
+
+export function buildSupplementalFields(postData = {}, preferredFacts = [], jobItems = []) {
   const existingLabels = new Set(preferredFacts.map((item) => item.label))
+  const hasStructuredJobs = Array.isArray(jobItems) && jobItems.some((job) => (
+    normalizeText(job?.job_name) ||
+    normalizeText(job?.headcount) ||
+    normalizeText(job?.education) ||
+    normalizeText(job?.major) ||
+    normalizeText(job?.location)
+  ))
+
   return (postData?.fields || [])
     .filter((field) => {
       const fieldName = normalizeText(field?.field_name)
@@ -159,6 +288,7 @@ export function buildSupplementalFields(postData = {}, preferredFacts = []) {
       if (!fieldName || !fieldValue) return false
       if (existingLabels.has(fieldName)) return false
       if (PRIMARY_FIELD_NAMES.includes(fieldName)) return false
+      if (hasStructuredJobs && fieldName === '岗位名称') return false
       return true
     })
     .map((field) => ({

@@ -1,4 +1,4 @@
-import { buildResolvedPostFields, normalizeJobItems } from './postDetailPresentation.js'
+import { buildHeroSummary, buildPostFacts, buildResolvedPostFields, normalizeJobItems } from './postDetailPresentation.js'
 
 const normalizeText = (value) => String(value ?? '').trim()
 
@@ -32,6 +32,45 @@ const clampText = (value, maxLength = 120) => {
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}…`
 }
 
+const splitFieldValues = (value) => normalizeText(value)
+  .split(/[；;]\s*/)
+  .map((item) => normalizeText(item))
+  .filter(Boolean)
+
+const parseHeadcountNumber = (value) => {
+  const text = normalizeText(value)
+  if (!text || /-|至|以上|不少于/.test(text)) return null
+  const matches = text.match(/\d+/g)
+  if (!matches || matches.length !== 1) return null
+  const numeric = Number(matches[0])
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+const getCardJobCount = (post = {}, fields = {}) => {
+  const explicitCount = Number(post?.jobs_count ?? post?.jobsCount)
+  if (Number.isFinite(explicitCount) && explicitCount > 0) {
+    return explicitCount
+  }
+
+  const segmentedJobs = splitFieldValues(fields.岗位名称)
+  return segmentedJobs.length > 1 ? segmentedJobs.length : 0
+}
+
+const buildAggregateHeadcountFromFields = (fields = {}, jobCount = 0) => {
+  const rawValue = normalizeText(fields.招聘人数)
+  if (jobCount <= 1) return rawValue
+
+  const segments = splitFieldValues(rawValue)
+  if (segments.length <= 1) return rawValue
+
+  const parsed = segments.map((item) => parseHeadcountNumber(item))
+  if (parsed.length === segments.length && parsed.every((value) => value !== null)) {
+    return `${parsed.reduce((sum, value) => sum + value, 0)}人`
+  }
+
+  return rawValue
+}
+
 const normalizeCounselorScope = (scope, isCounselor) => {
   const normalizedScope = normalizeText(scope)
   if (normalizedScope && normalizedScope !== 'none') {
@@ -49,9 +88,32 @@ const formatListDate = (value) => {
   })
 }
 
-const buildSummary = (post = {}) => {
+const buildSummary = (post = {}, fields = {}, jobItems = []) => {
   const title = normalizeText(post?.title)
+  const jobCount = getCardJobCount(post, fields)
+  const aggregateHeadcount = buildAggregateHeadcountFromFields(fields, jobCount)
+  const location = normalizeText(fields.工作地点)
+  const derivedSummary = buildHeroSummary({
+    postData: post,
+    fields,
+    jobItems
+  })
   const summary = normalizeText(post?.analysis?.summary || post?.summary)
+
+  if (jobCount > 1) {
+    return clampText(
+      [
+        `本次公告共整理出 ${jobCount} 个岗位`,
+        aggregateHeadcount ? `预计招聘 ${aggregateHeadcount}` : '',
+        location ? `工作地点在 ${location}` : ''
+      ].filter(Boolean).join('，') + '。',
+      110
+    )
+  }
+
+  if (jobItems.length > 0 || normalizeText(fields.招聘人数) || normalizeText(fields.工作地点)) {
+    return clampText(derivedSummary, 110)
+  }
 
   if (!summary || summary === title) {
     return ''
@@ -64,13 +126,49 @@ const buildSummary = (post = {}) => {
   return clampText(summary, 120)
 }
 
-const buildCardFacts = (fields = {}) => {
-  return [
-    { label: '性别', value: normalizeText(fields.性别要求) },
-    { label: '学历', value: normalizeText(fields.学历要求) },
-    { label: '地点', value: normalizeText(fields.工作地点) },
-    { label: '人数', value: normalizeText(fields.招聘人数) }
-  ].filter((item) => item.value)
+const buildCardFacts = (post = {}, fields = {}, jobItems = []) => {
+  const jobCount = getCardJobCount(post, fields)
+  const aggregateHeadcount = buildAggregateHeadcountFromFields(fields, jobCount)
+  const location = normalizeText(fields.工作地点)
+
+  if (jobCount > 1) {
+    return [
+      { label: '岗位', value: `${jobCount} 个岗位` },
+      aggregateHeadcount ? { label: '人数', value: aggregateHeadcount } : null,
+      location ? { label: '地点', value: location } : null
+    ].filter(Boolean)
+  }
+
+  const labelMap = {
+    岗位数量: '岗位',
+    招聘人数: '人数',
+    学历要求: '学历',
+    工作地点: '地点'
+  }
+  const preferredLabels = jobItems.length > 1
+    ? ['岗位数量', '招聘人数', '学历要求']
+    : ['招聘人数', '学历要求', '工作地点']
+
+  return buildPostFacts({ postData: post, fields, jobItems })
+    .filter((item) => preferredLabels.includes(item.label))
+    .map((item) => ({
+      label: labelMap[item.label] || item.label,
+      value: item.value
+    }))
+    .slice(0, 3)
+}
+
+const buildCardHighlight = (post = {}, fields = {}, jobItems = []) => {
+  const jobCount = getCardJobCount(post, fields)
+  const headcount = buildAggregateHeadcountFromFields(fields, jobCount)
+  const location = normalizeText(fields.工作地点)
+  const primaryJobName = normalizeText(jobItems[0]?.job_name)
+
+  if (jobCount > 1) {
+    return [`${jobCount} 个岗位`, headcount ? `招聘 ${headcount}` : '', location].filter(Boolean).join(' · ')
+  }
+
+  return primaryJobName || normalizeText(fields.岗位名称)
 }
 
 const buildCardBadges = (post = {}, jobItems = []) => {
@@ -245,21 +343,15 @@ export function buildPostListMetricCards({
 export function buildPostListCard(post = {}, { formatDate = formatListDate } = {}) {
   const jobItems = normalizeJobItems(post)
   const fields = buildResolvedPostFields(post, jobItems)
-  const primaryJob = jobItems[0] || {}
-  const jobOverview = [
-    normalizeText(primaryJob.job_name || fields.岗位名称),
-    normalizeText(fields.招聘人数) ? `人数 ${normalizeText(fields.招聘人数)}` : '',
-    normalizeText(fields.学历要求) ? `学历 ${normalizeText(fields.学历要求)}` : '',
-    normalizeText(fields.工作地点) ? `地点 ${normalizeText(fields.工作地点)}` : ''
-  ].filter(Boolean).join(' · ')
+  const jobOverview = buildCardHighlight(post, fields, jobItems)
   const title = normalizeText(post?.title) || '未命名公告'
 
   return {
     id: post?.id || post?._id || title,
     title,
-    summary: buildSummary(post),
+    summary: buildSummary(post, fields, jobItems),
     jobOverview: jobOverview && jobOverview !== title ? jobOverview : '',
-    factItems: buildCardFacts(fields),
+    factItems: buildCardFacts(post, fields, jobItems),
     badges: buildCardBadges(post, jobItems),
     metaItems: buildMetaItems(post, formatDate)
   }
@@ -267,20 +359,12 @@ export function buildPostListCard(post = {}, { formatDate = formatListDate } = {
 
 export function buildPostCardView(post = {}, options = {}) {
   const card = buildPostListCard(post, options)
-  const jobItems = normalizeJobItems(post)
-  const primaryJobName = normalizeText(jobItems[0]?.job_name)
-  const preferredFacts = [
-    card.factItems.find((item) => item.label === '人数'),
-    card.factItems.find((item) => item.label === '学历'),
-    card.factItems.find((item) => item.label === '地点'),
-    card.factItems.find((item) => item.label === '性别')
-  ].filter(Boolean)
 
   return {
     id: card.id,
     title: card.title,
-    highlight: primaryJobName || card.jobOverview,
-    facts: preferredFacts,
+    highlight: card.jobOverview,
+    facts: card.factItems,
     badges: card.badges,
     meta: card.metaItems.filter((item) => item.label !== '正文')
   }

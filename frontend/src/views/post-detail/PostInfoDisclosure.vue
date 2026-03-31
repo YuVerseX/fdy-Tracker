@@ -3,7 +3,7 @@
     <dl class="space-y-4">
       <div v-for="item in items" :key="item.key">
         <dt class="text-sm font-medium text-slate-900">{{ item.label }}</dt>
-        <dd class="mt-1 text-sm leading-6 text-slate-600">{{ item.value }}</dd>
+        <dd class="app-break mt-1 text-sm leading-6 app-copy">{{ item.value }}</dd>
       </div>
     </dl>
   </AppDisclosure>

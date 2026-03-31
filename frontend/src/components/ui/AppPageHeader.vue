@@ -1,14 +1,14 @@
 <template>
-  <section class="overflow-hidden rounded-[28px] border border-sky-200/70 bg-white/90 shadow-[0_24px_60px_-36px_rgba(30,64,175,0.45)] backdrop-blur">
-    <div class="flex flex-col gap-6 px-6 py-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+  <AppSurface tone="hero" padding="lg" class="overflow-hidden">
+    <div class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
       <div class="max-w-3xl">
-        <p v-if="eyebrow" class="text-xs font-semibold uppercase tracking-[0.24em] text-sky-700">
+        <p v-if="eyebrow" class="app-eyebrow">
           {{ eyebrow }}
         </p>
-        <h1 class="mt-2 text-3xl font-semibold text-slate-950 lg:text-[2.2rem]">
+        <h1 class="mt-3 app-title-hero">
           {{ title }}
         </h1>
-        <p v-if="description" class="mt-3 max-w-2xl text-sm leading-7 text-slate-600">
+        <p v-if="description" class="mt-3 max-w-2xl text-sm app-copy">
           {{ description }}
         </p>
       </div>
@@ -18,16 +18,18 @@
         <router-link
           v-if="actionLabel && actionTo"
           :to="actionTo"
-          class="inline-flex items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors duration-200 hover:border-sky-300 hover:text-sky-700"
+          class="app-button app-button--sm app-button--secondary"
         >
           {{ actionLabel }}
         </router-link>
       </div>
     </div>
-  </section>
+  </AppSurface>
 </template>
 
 <script setup>
+import AppSurface from './AppSurface.vue'
+
 defineProps({
   eyebrow: { type: String, default: '' },
   title: { type: String, required: true },

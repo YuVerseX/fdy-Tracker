@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildTaskRunCardPresentation,
   buildTaskDetailSections,
   buildTaskMetricItems,
   buildTaskProgressView
@@ -232,5 +233,72 @@ test('buildTaskDetailSections should group task facts ahead of result metrics', 
   assert.deepEqual(
     sections[1].items.map((item) => item.label),
     ['预计公告']
+  )
+})
+
+test('buildTaskRunCardPresentation should prioritize current phase and live result counts for running tasks', () => {
+  const card = buildTaskRunCardPresentation({
+    id: 'run-manual-1',
+    task_type: 'manual_scrape',
+    status: 'running',
+    stage_label: '正在抓取源站并写入数据库',
+    started_at: '2026-03-31T09:00:00Z',
+    heartbeat_at: '2026-03-31T09:04:00Z',
+    summary: '本轮正在更新最新公告。',
+    progress_mode: 'stage_only',
+    metrics: {
+      posts_seen: 18,
+      posts_total: 20,
+      posts_created: 8,
+      posts_updated: 4
+    }
+  }, {
+    nowTs: Date.parse('2026-03-31T09:05:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000
+  })
+
+  assert.equal(card.stageTitle, '当前阶段')
+  assert.equal(card.resultTitle, '当前结果')
+  assert.equal(card.resultHint, '数量会继续变化，任务结束后再看最终结果。')
+  assert.deepEqual(
+    card.stageFacts.map((item) => item.label),
+    ['当前阶段', '进度说明', '最近更新', '已运行']
+  )
+  assert.deepEqual(
+    card.resultItems.map((item) => item.label),
+    ['发现公告', '新增公告', '更新公告']
+  )
+  assert.equal(card.failureNotice, null)
+})
+
+test('buildTaskRunCardPresentation should expose failure reason and action summary for failed tasks', () => {
+  const card = buildTaskRunCardPresentation({
+    id: 'run-ai-1',
+    task_type: 'ai_analysis',
+    status: 'failed',
+    stage_label: '正在补充智能摘要',
+    started_at: '2026-03-31T09:00:00Z',
+    finished_at: '2026-03-31T09:02:00Z',
+    failure_reason: '智能服务暂时不可用，请稍后再试。',
+    metrics: {
+      posts_scanned: 8,
+      success_count: 5,
+      failure_count: 3
+    }
+  }, {
+    nowTs: Date.parse('2026-03-31T09:05:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000
+  })
+
+  assert.equal(card.stageTitle, '未完成位置')
+  assert.equal(card.resultTitle, '本次结果')
+  assert.equal(card.resultHint, '可以先查看失败原因，再决定是否重新处理当前范围。')
+  assert.equal(card.failureNotice.title, '这次处理未完成')
+  assert.match(card.failureNotice.description, /智能服务暂时不可用/)
+  assert.equal(card.actionSummary.title, '可执行操作')
+  assert.match(card.actionSummary.description, /按当前范围继续补充/)
+  assert.deepEqual(
+    card.resultItems.map((item) => item.label),
+    ['完成分析', '成功完成', '失败']
   )
 })

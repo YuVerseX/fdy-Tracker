@@ -1,17 +1,17 @@
 <template>
-  <div class="space-y-6">
+  <div class="space-y-4 lg:space-y-5">
     <AppNotice
       tone="info"
       title="建议顺序"
       description="先抓取最新公告，再按需要补附件、关键信息和岗位；只有在需要缩小范围时再展开更多设置。"
     />
 
-    <section
+    <AppSurface
       v-for="group in groups"
       :key="group.id"
-      class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm"
+      padding="lg"
     >
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <AppSectionHeader
           :title="group.panel.title"
           :description="group.panel.description"
@@ -19,6 +19,7 @@
         />
         <AppActionButton
           v-if="group.refreshAction"
+          class="md:shrink-0"
           :label="group.refreshAction.label"
           :busy-label="group.refreshAction.busyLabel"
           :busy="group.refreshAction.busy"
@@ -27,27 +28,34 @@
         />
       </div>
 
-      <div class="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <AppStatCard
+      <div class="mt-4 flex flex-wrap gap-2">
+        <AppMetricPill
           v-for="item in group.panel.stats"
-          :key="item.label"
+          :key="`${group.id}-${item.label}`"
           :label="item.label"
           :value="item.value"
-          :description="item.description"
-          :meta="item.meta"
-          size="sm"
-          class="border-0 bg-slate-50"
+          :tone="getMetricTone(item.tone)"
         />
       </div>
 
-      <div class="mt-6 grid grid-cols-1 gap-5 xl:grid-cols-2">
+      <div v-if="buildGroupContext(group).length > 0" class="mt-3 grid gap-2 md:grid-cols-2">
+        <div
+          v-for="line in buildGroupContext(group)"
+          :key="`${group.id}-${line}`"
+          class="rounded-[14px] border border-[rgba(148,163,184,0.16)] bg-white/72 px-3 py-2 text-[12px] leading-5 text-slate-500"
+        >
+          {{ line }}
+        </div>
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <AdminTaskActionCard
           v-for="card in group.cards"
           :key="card.id"
           :card="card"
         />
       </div>
-    </section>
+    </AppSurface>
   </div>
 </template>
 
@@ -55,9 +63,10 @@
 import { computed } from 'vue'
 
 import AppActionButton from '../../../components/ui/AppActionButton.vue'
+import AppMetricPill from '../../../components/ui/AppMetricPill.vue'
 import AppNotice from '../../../components/ui/AppNotice.vue'
 import AppSectionHeader from '../../../components/ui/AppSectionHeader.vue'
-import AppStatCard from '../../../components/ui/AppStatCard.vue'
+import AppSurface from '../../../components/ui/AppSurface.vue'
 import { buildBaseProcessingGroups } from '../adminProcessingActionCards.js'
 import AdminTaskActionCard from './AdminTaskActionCard.vue'
 
@@ -92,4 +101,39 @@ const props = defineProps({
 })
 
 const groups = computed(() => buildBaseProcessingGroups(props))
+
+const toneMap = {
+  sky: 'info',
+  amber: 'warning',
+  slate: 'muted',
+  cyan: 'info',
+  emerald: 'success'
+}
+
+const getMetricTone = (tone) => toneMap[tone] || 'muted'
+
+const normalizeMetaLines = (meta) => {
+  if (Array.isArray(meta)) return meta.filter(Boolean)
+  return meta ? [meta] : []
+}
+
+const buildGroupContext = (group) => {
+  const lines = []
+
+  if (group.panel.note) {
+    lines.push(group.panel.note)
+  }
+
+  group.panel.stats.forEach((item) => {
+    const detail = [item.description, ...normalizeMetaLines(item.meta).slice(0, 1)]
+      .filter(Boolean)
+      .join(' · ')
+
+    if (detail) {
+      lines.push(`${item.label}：${detail}`)
+    }
+  })
+
+  return lines
+}
 </script>

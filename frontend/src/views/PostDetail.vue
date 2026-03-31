@@ -1,16 +1,16 @@
 <template>
   <div class="min-h-screen">
-    <main class="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-      <div v-if="loading" class="rounded-[28px] border border-slate-200 bg-white/90 px-6 py-14 text-center shadow-sm">
+    <main class="app-shell max-w-5xl">
+      <div v-if="loading" class="app-surface app-surface--padding-lg text-center">
         <div class="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-sky-700"></div>
         <p class="mt-4 text-sm text-slate-600">正在加载招聘详情...</p>
       </div>
 
-      <div v-else-if="error" class="rounded-[28px] border border-rose-200 bg-rose-50/90 px-6 py-10 text-center shadow-sm">
+      <div v-else-if="error" class="app-surface app-surface--danger app-surface--padding-lg text-center">
         <p class="text-sm text-rose-700">{{ error }}</p>
         <button
           type="button"
-          class="mt-4 inline-flex items-center justify-center rounded-full bg-rose-600 px-5 py-2.5 text-sm font-medium text-white transition-colors duration-200 hover:bg-rose-700"
+          class="mt-4 app-button app-button--md app-button--warning"
           @click="fetchPostDetail"
         >
           重新加载
@@ -23,20 +23,27 @@
           :publish-date-label="publishDateLabel"
           :source-name="sourceLabel"
           :tags="heroTags"
+          :summary="heroSummary"
+          :headline-facts="heroFacts"
           :freshness-note="freshnessNote"
           :original-url="post.canonical_url || ''"
           @back="goBack"
         />
 
-        <PostFactsSection :facts="facts" :supplemental-facts="supplementalFacts" />
-        <PostJobsSection :job-view="jobView" />
-        <PostAttachmentsSection :attachments="attachmentCards" />
+        <AppSectionNav
+          v-if="sectionLinks.length > 1"
+          :items="sectionLinks"
+        />
 
-        <section class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
+        <PostJobsSection id="post-jobs" class="scroll-mt-6" :job-view="jobView" />
+        <PostFactsSection id="post-facts" class="scroll-mt-6" :facts="[]" :supplemental-facts="supplementalFacts" />
+        <PostAttachmentsSection id="post-attachments" class="scroll-mt-6" :attachments="attachmentCards" />
+
+        <section id="post-content" class="app-surface app-surface--padding-lg scroll-mt-6">
           <h2 class="text-lg font-semibold text-slate-950">公告正文</h2>
           <div
             v-if="post.content"
-            class="prose prose-slate mt-5 max-w-none text-slate-700"
+            class="prose prose-slate app-break mt-5 max-w-none text-slate-700"
             v-html="formattedContent"
           ></div>
           <AppEmptyState
@@ -46,7 +53,7 @@
           />
         </section>
 
-        <PostInfoDisclosure :items="infoDisclosureItems" />
+        <PostInfoDisclosure id="post-disclosure" class="scroll-mt-6" :items="infoDisclosureItems" />
       </template>
     </main>
   </div>
@@ -57,10 +64,12 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AppEmptyState from '../components/ui/AppEmptyState.vue'
+import AppSectionNav from '../components/ui/AppSectionNav.vue'
 import { getPublicFreshnessHeadline } from '../utils/publicFreshness.js'
 import { getPublicTaskTypeLabel } from '../utils/taskTypeLabels.js'
 import {
   buildAttachmentCards,
+  buildHeroSummary,
   buildHeroTags,
   buildInfoDisclosureItems,
   buildJobPresentation,
@@ -91,14 +100,34 @@ const {
 
 const jobItems = computed(() => normalizeJobItems(post.value || {}))
 const resolvedFields = computed(() => buildResolvedPostFields(post.value || {}, jobItems.value))
-const facts = computed(() => buildPostFacts({ fields: resolvedFields.value }))
-const supplementalFacts = computed(() => buildSupplementalFields(post.value || {}, facts.value))
+const heroFacts = computed(() => buildPostFacts({
+  postData: post.value || {},
+  fields: resolvedFields.value,
+  jobItems: jobItems.value
+}))
+const heroSummary = computed(() => buildHeroSummary({
+  postData: post.value || {},
+  fields: resolvedFields.value,
+  jobItems: jobItems.value
+}))
+const supplementalFacts = computed(() => buildSupplementalFields(post.value || {}, heroFacts.value, jobItems.value))
 const jobView = computed(() => buildJobPresentation(jobItems.value))
 const attachmentCards = computed(() => buildAttachmentCards(post.value?.attachments || []))
 const heroTags = computed(() => buildHeroTags(post.value || {}, jobItems.value))
 const publishDateLabel = computed(() => post.value?.publish_date ? `发布日期：${formatDate(post.value.publish_date)}` : '')
 const sourceLabel = computed(() => post.value?.source?.name ? `来源：${post.value.source.name}` : '')
 const formattedContent = computed(() => formatContent(post.value?.content || ''))
+const sectionLinks = computed(() => (
+  [
+    { label: '岗位明细', href: '#post-jobs', visible: jobView.value.rows.length > 0 },
+    { label: '补充信息', href: '#post-facts', visible: supplementalFacts.value.length > 0 },
+    { label: '附件', href: '#post-attachments', visible: attachmentCards.value.length > 0 },
+    { label: '公告正文', href: '#post-content', visible: Boolean(post.value?.content) },
+    { label: '信息说明', href: '#post-disclosure', visible: infoDisclosureItems.value.length > 0 }
+  ]
+    .filter((item) => item.visible)
+    .map(({ label, href }) => ({ label, href }))
+))
 
 const freshnessHeadline = computed(() => {
   if (!latestSuccessTask.value) return ''

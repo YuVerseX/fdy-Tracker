@@ -1,15 +1,15 @@
 <template>
-  <section class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
+  <section class="app-surface app-surface--padding-lg">
     <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
       <div>
         <AppSectionHeader
           title="任务中心"
-          description="查看正在执行、刚完成和历史任务记录。"
+          description="按当前任务、最近结果和历史记录查看处理状态。"
         >
           <template #badge>
             <AppStatusBadge
-              :label="presentation.counts.attention > 0 ? `${presentation.counts.attention} 项待处理` : '状态稳定'"
-              :tone="presentation.counts.attention > 0 ? 'warning' : 'success'"
+              :label="headerBadge.label"
+              :tone="headerBadge.tone"
             />
           </template>
         </AppSectionHeader>
@@ -29,31 +29,46 @@
       description="先运行一次任务，这里会显示最新进度和结果。"
     />
 
-    <div v-else class="mt-6 space-y-6">
+    <div v-else class="mt-5 space-y-5 lg:space-y-6">
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <AppStatCard
           v-for="card in presentation.summaryCards"
           :key="card.label"
           :label="card.label"
           :value="card.value"
+          :value-tone="getSummaryCardValueTone(card.tone)"
+          :description="card.description"
+          :meta="card.meta"
           size="sm"
-          class="border-0 bg-slate-50"
+          :class="getSummaryCardClass(card.tone)"
         />
       </div>
 
-      <section v-if="presentation.attentionRuns.length > 0" class="space-y-3">
-        <div class="flex flex-wrap items-center gap-3">
-          <h3 class="text-base font-semibold text-slate-900">需要关注</h3>
-          <span class="rounded-full bg-rose-50 px-3 py-1 text-xs font-medium text-rose-700">
-            {{ presentation.counts.attention }} 条任务需要处理
-          </span>
-          <span v-if="presentation.counts.stuck > 0" class="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
-            {{ presentation.counts.stuck }} 条可能卡住
-          </span>
+      <section class="space-y-3">
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 class="text-base font-semibold text-slate-900">当前任务</h3>
+            <p class="text-sm leading-6 text-slate-500">
+              这里显示正在排队或处理中的任务，数量会随着处理推进继续变化。
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <AppMetricPill label="当前任务" :value="`${presentation.counts.current} 条`" tone="muted" />
+            <AppMetricPill v-if="presentation.counts.processing > 0" label="正在处理" :value="`${presentation.counts.processing} 条`" tone="muted" />
+            <AppMetricPill v-if="presentation.counts.queued > 0" label="等待开始" :value="`${presentation.counts.queued} 条`" tone="muted" />
+            <AppMetricPill v-if="presentation.counts.stuck > 0" label="进度停滞" :value="`${presentation.counts.stuck} 条`" tone="muted" />
+          </div>
         </div>
-        <div class="space-y-4">
+
+        <AppNotice
+          v-if="presentation.currentRuns.length === 0"
+          title="当前没有进行中的任务"
+          tone="info"
+          description="发起新的处理后，这里会显示排队状态、当前阶段和实时结果。"
+        />
+        <div v-else class="space-y-4">
           <AdminTaskRunCard
-            v-for="run in presentation.attentionRuns"
+            v-for="run in presentation.currentRuns"
             :key="run.id"
             :run="run"
             :retrying-task-id="retryingTaskId"
@@ -70,18 +85,29 @@
       </section>
 
       <section class="space-y-3">
-        <div class="flex flex-wrap items-center gap-3">
-          <h3 class="text-base font-semibold text-slate-900">最近完成</h3>
-          <span class="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
-            {{ presentation.counts.success }} 条完成记录
-          </span>
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 class="text-base font-semibold text-slate-900">最近结果</h3>
+            <p class="text-sm leading-6 text-slate-500">
+              先在这里核对刚完成或未完成的任务结果，再决定是否重新处理当前范围。
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <AppMetricPill label="最近结果" :value="`${presentation.counts.results} 条`" tone="muted" />
+            <AppMetricPill v-if="presentation.counts.failed > 0" label="未完成" :value="`${presentation.counts.failed} 条`" tone="muted" />
+            <AppMetricPill v-if="presentation.counts.success > 0" label="已完成" :value="`${presentation.counts.success} 条`" tone="muted" />
+          </div>
         </div>
-        <div v-if="presentation.recentSuccessRuns.length === 0" class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-gray-500">
-          当前还没有最近完成记录，先运行一次任务。
-        </div>
+
+        <AppNotice
+          v-if="presentation.recentResultRuns.length === 0"
+          title="最近还没有结果记录"
+          tone="info"
+          description="任务结束后，这里会显示最终结果、失败原因和下一步操作。"
+        />
         <div v-else class="space-y-4">
           <AdminTaskRunCard
-            v-for="run in presentation.recentSuccessRuns"
+            v-for="run in presentation.recentResultRuns"
             :key="run.id"
             :run="run"
             :retrying-task-id="retryingTaskId"
@@ -99,8 +125,11 @@
 
       <AppDisclosure
         v-if="presentation.historyRuns.length > 0"
-        :summary="`查看其余历史记录（${presentation.historyRuns.length} 条）`"
+        :summary="`查看历史记录（${presentation.historyRuns.length} 条）`"
       >
+        <div class="mb-4 text-sm leading-6 text-slate-500">
+          更早的完成和未完成记录会保留在这里，方便回看处理范围与结果。
+        </div>
         <div class="space-y-4">
           <AdminTaskRunCard
             v-for="run in presentation.historyRuns"
@@ -128,6 +157,8 @@ import { computed } from 'vue'
 import AppActionButton from '../../../components/ui/AppActionButton.vue'
 import AppDisclosure from '../../../components/ui/AppDisclosure.vue'
 import AppEmptyState from '../../../components/ui/AppEmptyState.vue'
+import AppMetricPill from '../../../components/ui/AppMetricPill.vue'
+import AppNotice from '../../../components/ui/AppNotice.vue'
 import AppSectionHeader from '../../../components/ui/AppSectionHeader.vue'
 import AppStatCard from '../../../components/ui/AppStatCard.vue'
 import AppStatusBadge from '../../../components/ui/AppStatusBadge.vue'
@@ -155,4 +186,31 @@ const presentation = computed(() => buildTaskRunsPresentation({
   nowTs: props.nowTs,
   heartbeatStaleMs: props.heartbeatStaleMs
 }))
+
+const headerBadge = computed(() => {
+  if (presentation.value.counts.current > 0) {
+    return { label: `${presentation.value.counts.current} 项进行中`, tone: 'warning' }
+  }
+  if (presentation.value.counts.failed > 0) {
+    return { label: `${presentation.value.counts.failed} 项未完成`, tone: 'danger' }
+  }
+  return { label: '状态稳定', tone: 'success' }
+})
+
+const summaryCardClassMap = {
+  amber: 'border-amber-100 bg-amber-50/80 shadow-none',
+  emerald: 'border-emerald-100 bg-emerald-50/80 shadow-none',
+  rose: 'border-rose-100 bg-rose-50/80 shadow-none',
+  slate: 'border-slate-200 bg-slate-50 shadow-none'
+}
+
+const summaryCardValueToneMap = {
+  amber: 'warning',
+  emerald: 'success',
+  rose: 'warning',
+  slate: 'default'
+}
+
+const getSummaryCardClass = (tone) => summaryCardClassMap[tone] || summaryCardClassMap.slate
+const getSummaryCardValueTone = (tone) => summaryCardValueToneMap[tone] || summaryCardValueToneMap.slate
 </script>

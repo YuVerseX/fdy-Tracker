@@ -1,5 +1,5 @@
 <template>
-  <section class="rounded-2xl border px-4 py-4 shadow-sm" :class="panelClass">
+  <section class="app-notice" :class="panelClass">
     <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
       <div>
         <div v-if="title" class="text-sm font-semibold">
@@ -27,20 +27,20 @@ const props = defineProps({
 
 const toneMap = {
   info: {
-    panel: 'border-sky-200 bg-sky-50/90 text-sky-900',
-    body: 'text-sky-800'
+    panel: 'app-notice--info',
+    body: ''
   },
   success: {
-    panel: 'border-emerald-200 bg-emerald-50/90 text-emerald-900',
-    body: 'text-emerald-800'
+    panel: 'app-notice--success',
+    body: ''
   },
   warning: {
-    panel: 'border-amber-200 bg-amber-50/95 text-amber-900',
-    body: 'text-amber-800'
+    panel: 'app-notice--warning',
+    body: ''
   },
   danger: {
-    panel: 'border-rose-200 bg-rose-50/95 text-rose-900',
-    body: 'text-rose-800'
+    panel: 'app-notice--danger',
+    body: ''
   }
 }
 

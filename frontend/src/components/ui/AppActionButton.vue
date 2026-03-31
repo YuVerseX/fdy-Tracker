@@ -3,7 +3,7 @@
     :type="type"
     :disabled="isDisabled"
     :aria-busy="busy ? 'true' : 'false'"
-    class="inline-flex cursor-pointer items-center justify-center rounded-full font-medium transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+    class="app-button"
     :class="[sizeClass, variantClass, fullWidth ? 'w-full' : '']"
   >
     {{ currentLabel }}
@@ -25,20 +25,20 @@ const props = defineProps({
 })
 
 const variantMap = {
-  primary: 'bg-sky-700 text-white hover:bg-sky-800 focus:ring-sky-200',
-  secondary: 'border border-slate-300 bg-white text-slate-700 hover:border-sky-300 hover:text-sky-700 focus:ring-sky-200',
-  neutral: 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 focus:ring-slate-200',
-  sky: 'bg-sky-700 text-white hover:bg-sky-800 focus:ring-sky-200',
-  amber: 'bg-amber-600 text-white hover:bg-amber-700 focus:ring-amber-200',
-  slate: 'bg-slate-800 text-white hover:bg-slate-900 focus:ring-slate-200',
-  cyan: 'bg-cyan-600 text-white hover:bg-cyan-700 focus:ring-cyan-200',
-  emerald: 'bg-emerald-600 text-white hover:bg-emerald-700 focus:ring-emerald-200',
-  'sky-soft': 'border border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100 focus:ring-sky-200'
+  primary: 'app-button--primary',
+  secondary: 'app-button--secondary',
+  neutral: 'app-button--neutral',
+  sky: 'app-button--primary',
+  amber: 'app-button--warning',
+  slate: 'app-button--secondary',
+  cyan: 'app-button--info-soft',
+  emerald: 'app-button--success',
+  'sky-soft': 'app-button--info-soft'
 }
 
 const sizeMap = {
-  sm: 'px-4 py-2 text-sm',
-  md: 'px-4 py-2.5 text-sm'
+  sm: 'app-button--sm',
+  md: 'app-button--md'
 }
 
 const currentLabel = computed(() => {

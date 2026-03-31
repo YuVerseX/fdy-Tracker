@@ -1,14 +1,14 @@
 <template>
   <TabsRoot :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)">
     <TabsList
-      class="flex flex-wrap gap-2 rounded-[22px] border border-slate-200 bg-slate-100/90 p-1.5"
+      class="flex gap-1.5 overflow-x-auto rounded-full border border-[rgba(148,163,184,0.26)] bg-[rgba(239,243,247,0.82)] p-1.5 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden sm:gap-2 sm:flex-wrap sm:overflow-visible"
       :aria-label="ariaLabel"
     >
       <TabsTrigger
         v-for="item in items"
         :key="item.value"
         :value="item.value"
-        class="rounded-full px-4 py-2 text-sm font-medium text-slate-600 transition-colors duration-200 hover:text-slate-900 data-[state=active]:bg-sky-700 data-[state=active]:text-white"
+        class="shrink-0 whitespace-nowrap rounded-full px-3 py-2 text-[13px] font-medium text-slate-600 transition-colors duration-200 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 sm:px-4 sm:text-sm data-[state=active]:bg-[var(--color-accent)] data-[state=active]:text-white"
       >
         {{ item.label }}
       </TabsTrigger>

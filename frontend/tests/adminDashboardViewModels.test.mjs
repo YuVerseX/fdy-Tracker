@@ -244,7 +244,7 @@ test('buildAiEnhancementPanels should avoid exposing provider and base url detai
   assert.doesNotMatch(panels[1].meta, /接口|https?:\/\//)
 })
 
-test('buildTaskRunsPresentation should prioritize attention runs and fold the rest into history', () => {
+test('buildTaskRunsPresentation should separate current tasks, recent results, and history', () => {
   const presentation = buildTaskRunsPresentation({
     nowTs: Date.parse('2026-03-30T10:20:00Z'),
     heartbeatStaleMs: 10 * 60 * 1000,
@@ -260,21 +260,24 @@ test('buildTaskRunsPresentation should prioritize attention runs and fold the re
 
   assert.deepEqual(
     presentation.summaryCards.map((card) => card.label),
-    ['需关注', '运行中', '最近完成', '历史记录']
+    ['当前任务', '未完成', '已完成', '历史记录']
   )
   assert.deepEqual(
-    presentation.attentionRuns.map((run) => run.id),
-    ['failed-1', 'running-1']
+    presentation.currentRuns.map((run) => run.id),
+    ['running-1']
   )
   assert.deepEqual(
-    presentation.recentSuccessRuns.map((run) => run.id),
-    ['success-1', 'success-2', 'success-3']
+    presentation.recentResultRuns.map((run) => run.id),
+    ['failed-1', 'success-1', 'success-2', 'success-3']
   )
   assert.deepEqual(
     presentation.historyRuns.map((run) => run.id),
     ['success-4']
   )
-  assert.equal(presentation.counts.attention, 2)
-  assert.equal(presentation.counts.running, 1)
+  assert.equal(presentation.counts.current, 1)
+  assert.equal(presentation.counts.failed, 1)
   assert.equal(presentation.counts.success, 4)
+  assert.equal(presentation.counts.results, 5)
+  assert.match(presentation.summaryCards[0].description, /排队|处理/)
+  assert.match(String(presentation.summaryCards[1].meta), /1 条未完成/)
 })

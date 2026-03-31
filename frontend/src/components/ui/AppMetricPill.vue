@@ -1,5 +1,5 @@
 <template>
-  <span class="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs" :class="toneClass">
+  <span class="app-pill" :class="toneClass">
     <span>{{ label }}</span>
     <span v-if="hasValue" class="font-semibold" :class="valueClass">{{ value }}</span>
   </span>
@@ -16,12 +16,28 @@ const props = defineProps({
 
 const toneMap = {
   default: {
-    pill: 'bg-white/90 text-slate-700',
+    pill: 'app-pill--default',
     value: 'text-slate-900'
   },
   muted: {
-    pill: 'bg-slate-100 text-slate-600',
+    pill: 'app-pill--muted',
     value: 'text-slate-900'
+  },
+  info: {
+    pill: 'app-pill--info',
+    value: 'text-sky-900'
+  },
+  success: {
+    pill: 'app-pill--success',
+    value: 'text-emerald-900'
+  },
+  warning: {
+    pill: 'app-pill--warning',
+    value: 'text-amber-900'
+  },
+  danger: {
+    pill: 'app-pill--danger',
+    value: 'text-rose-900'
   }
 }
 

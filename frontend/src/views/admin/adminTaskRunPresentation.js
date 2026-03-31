@@ -2,9 +2,12 @@ import {
   formatAdminDateTime,
   formatAdminDurationMs,
   getTaskHeartbeatAt,
+  getTaskTypeLabel,
   isRunningTaskStatus,
   isTaskRunPossiblyStuck
 } from '../../utils/adminDashboardViewModels.js'
+import { normalizeAdminUiMessage, normalizeAdminUiText } from '../../utils/adminCopySanitizers.js'
+import { buildTaskActionGuide } from './adminDashboardTaskActions.js'
 
 const EMPTY_LABEL = '--'
 
@@ -60,6 +63,14 @@ const TASK_METRIC_ORDER = Object.freeze({
   ai_job_extraction: ['posts_scanned', 'posts_updated', 'jobs_saved', 'ai_posts', 'attachment_posts', 'dedicated_posts', 'contains_posts', 'failures']
 })
 const ZERO_VALUE_FAILURE_METRICS = new Set(['failures', 'failure_count', 'insight_failed_count'])
+const TASK_HEADLINE_LABEL_OVERRIDES = Object.freeze({
+  attachment_backfill: { posts_scanned: '检查公告' },
+  base_analysis_backfill: { posts_scanned: '完成整理' },
+  ai_analysis: { posts_scanned: '完成分析' },
+  job_extraction: { posts_scanned: '检查公告' },
+  ai_job_extraction: { posts_scanned: '检查公告' }
+})
+const RUNNING_HEADLINE_HIDDEN_KEYS = new Set(['posts_total', 'total_groups', 'total_comparisons', 'total'])
 
 const toNumber = (value) => {
   const numeric = Number(value)
@@ -138,6 +149,95 @@ const getTaskElapsedMs = (run = {}, nowTs = Date.now()) => {
   if (Number.isNaN(startedMs)) return null
   const finishedMs = Date.parse(run?.finished_at || run?.finishedAt || '')
   return Math.max((Number.isNaN(finishedMs) ? nowTs : finishedMs) - startedMs, 0)
+}
+
+const getTaskFailureReason = (run = {}) => [run?.failure_reason, run?.error, run?.details?.failure_reason, run?.details?.error].find(Boolean) || ''
+
+const getTaskStatusLabel = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) => {
+  if (isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)) return '进度停滞'
+  const statusLabel = String(run?.status_label || '').trim()
+  if (statusLabel) return statusLabel
+  if (run?.status === 'success') return '完成'
+  if (run?.status === 'failed') return '失败'
+  if (run?.status === 'queued' || run?.status === 'pending') return '排队中'
+  if (isRunningTaskStatus(run?.status)) return '运行中'
+  return EMPTY_LABEL
+}
+
+const getTaskStatusTone = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) => {
+  if (run?.status === 'success') return 'success'
+  if (run?.status === 'failed' || isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)) return 'danger'
+  if (run?.status === 'queued' || run?.status === 'pending') return 'neutral'
+  if (isRunningTaskStatus(run?.status)) return 'warning'
+  return 'neutral'
+}
+
+const getTaskSurfaceTone = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) => {
+  if (run?.status === 'success') return 'success'
+  if (run?.status === 'failed' || isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)) return 'danger'
+  if (isRunningTaskStatus(run?.status)) return 'info'
+  return 'muted'
+}
+
+const getTaskStageTitle = (run = {}) => {
+  if (run?.status === 'failed') return '未完成位置'
+  if (run?.status === 'success') return '完成情况'
+  return '当前阶段'
+}
+
+const getTaskResultTitle = (run = {}) => (
+  isRunningTaskStatus(run?.status) ? '当前结果' : '本次结果'
+)
+
+const getTaskResultHint = (run = {}) => {
+  if (run?.status === 'failed') return '可以先查看失败原因，再决定是否重新处理当前范围。'
+  if (run?.status === 'success') return '这是本次任务的最终结果，可以据此决定是否继续处理当前范围。'
+  if (run?.status === 'queued' || run?.status === 'pending') return '任务开始后，这里的数量会按实际处理结果更新。'
+  return '数量会继续变化，任务结束后再看最终结果。'
+}
+
+const getTaskTimelineText = (run = {}) => {
+  const timestamp = run?.finished_at || run?.finishedAt || run?.started_at || run?.startedAt || getTaskHeartbeatAt(run)
+  const label = formatAdminDateTime(timestamp)
+  if (run?.finished_at || run?.finishedAt) return `完成于 ${label}`
+  if (run?.started_at || run?.startedAt) return `开始于 ${label}`
+  return label
+}
+
+const buildTaskStageFacts = (run = {}, progressView = {}, { nowTs = Date.now() } = {}) => {
+  const timeLabel = run?.finished_at || run?.finishedAt ? '完成时间' : '最近更新'
+  const durationLabel = isRunningTaskStatus(run?.status) ? '已运行' : '耗时'
+
+  return [
+    { label: getTaskStageTitle(run), value: progressView.stageLabel },
+    { label: '进度说明', value: progressView.progressLabel },
+    { label: timeLabel, value: formatAdminDateTime(run?.finished_at || run?.finishedAt || getTaskHeartbeatAt(run)) },
+    { label: durationLabel, value: formatAdminDurationMs(getTaskElapsedMs(run, nowTs)) }
+  ].filter((item) => item.value && item.value !== EMPTY_LABEL)
+}
+
+const buildTaskHeadlineResultItems = (run = {}) => {
+  const taskType = run?.task_type || run?.taskType
+  const labelOverrides = TASK_HEADLINE_LABEL_OVERRIDES[taskType] || {}
+
+  return buildTaskMetricItems(run)
+    .filter((item) => !isRunningTaskStatus(run?.status) || !RUNNING_HEADLINE_HIDDEN_KEYS.has(item.key))
+    .slice(0, 4)
+    .map((item) => ({
+      ...item,
+      label: labelOverrides[item.key] || item.label
+    }))
+}
+
+const buildTaskActionSummary = (actionGuide) => {
+  if (!actionGuide?.actions?.length) return null
+
+  return {
+    title: '可执行操作',
+    description: actionGuide.actions
+      .map((action) => `${action.label}${action.scopeLabel ? `：${action.scopeLabel}` : ''}`)
+      .join('；')
+  }
 }
 
 const formatSourceParam = (run = {}, sourceOptions = []) => {
@@ -332,4 +432,47 @@ export function buildTaskDetailSections(run = {}, { sourceOptions = [], nowTs = 
   }
 
   return sections
+}
+
+export function buildTaskRunCardPresentation(run = {}, {
+  sourceOptions = [],
+  nowTs = Date.now(),
+  heartbeatStaleMs = 10 * 60 * 1000
+} = {}) {
+  const progressView = buildTaskProgressView(run, { nowTs, heartbeatStaleMs })
+  const actionGuide = buildTaskActionGuide(run)
+  const failureReason = normalizeAdminUiMessage(
+    getTaskFailureReason(run),
+    '这次处理没有完成，请稍后再试。'
+  )
+
+  return {
+    title: run?.display_name || getTaskTypeLabel(run?.task_type || run?.taskType),
+    summaryText: normalizeAdminUiText(run?.summary || ''),
+    timelineText: getTaskTimelineText(run),
+    statusLabel: getTaskStatusLabel(run, { nowTs, heartbeatStaleMs }),
+    statusTone: getTaskStatusTone(run, { nowTs, heartbeatStaleMs }),
+    surfaceTone: getTaskSurfaceTone(run, { nowTs, heartbeatStaleMs }),
+    progressView,
+    stageTitle: getTaskStageTitle(run),
+    stageFacts: buildTaskStageFacts(run, progressView, { nowTs }),
+    resultTitle: getTaskResultTitle(run),
+    resultHint: getTaskResultHint(run),
+    resultItems: buildTaskHeadlineResultItems(run),
+    detailSections: buildTaskDetailSections(run, { sourceOptions, nowTs }),
+    failureNotice: run?.status === 'failed'
+      ? {
+          title: '这次处理未完成',
+          description: failureReason
+        }
+      : null,
+    stuckNotice: progressView.isStuck
+      ? {
+          title: '进度长时间未更新',
+          description: '这个任务超过 10 分钟没有新的阶段更新。先刷新状态；如果仍然没有变化，再决定是否重新提交。'
+        }
+      : null,
+    actionSummary: buildTaskActionSummary(actionGuide),
+    actionItems: actionGuide?.actions || []
+  }
 }

@@ -1,67 +1,86 @@
 <template>
-  <section v-if="jobView.rows.length > 0" class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
+  <AppSurface v-if="jobView.rows.length > 0" padding="lg">
     <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
       <div>
         <h2 class="text-lg font-semibold text-slate-950">岗位明细</h2>
         <p class="mt-1 text-sm text-slate-600">
-          {{ jobView.mode === 'table' ? `共整理 ${jobView.rows.length} 个岗位。` : '当前公告整理出 1 个岗位。' }}
+          {{ jobView.mode === 'table' ? `共整理 ${jobView.rows.length} 个岗位，建议先看岗位表再对照补充信息。` : '当前公告整理出 1 个岗位，可直接查看岗位要求。' }}
         </p>
       </div>
     </div>
 
-    <div v-if="jobView.mode === 'table'" class="mt-5 overflow-x-auto">
-      <table class="min-w-full border-separate border-spacing-0 text-sm">
+    <div v-if="jobView.mode === 'table'" class="mt-5 space-y-3 md:hidden">
+      <article
+        v-for="row in jobView.rows"
+        :key="row.id"
+        class="rounded-[18px] border border-[rgba(148,163,184,0.18)] bg-[rgba(244,247,250,0.78)] px-4 py-4"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <h3 class="min-w-0 text-base font-semibold leading-7 text-slate-950">
+            {{ row.job_name }}
+          </h3>
+          <AppMetricPill label="人数" :value="row.headcount" tone="info" />
+        </div>
+
+        <AppFactList
+          class="mt-3"
+          :items="[
+            { label: '学历', value: row.education },
+            { label: '专业', value: row.major },
+            { label: '地点', value: row.location }
+          ]"
+          :columns="1"
+          compact
+          tone="muted"
+        />
+      </article>
+    </div>
+
+    <div v-if="jobView.mode === 'table'" class="mt-5 hidden md:block overflow-x-auto">
+      <table class="app-table">
+        <caption class="sr-only">岗位名称、人数、学历、专业和地点列表</caption>
         <thead>
-          <tr class="text-left text-slate-500">
+          <tr>
             <th
               v-for="column in jobView.columns"
               :key="column"
-              class="border-b border-slate-200 px-4 py-3 font-medium"
             >
               {{ column }}
             </th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in jobView.rows" :key="row.id" class="text-slate-800">
-            <td class="border-b border-slate-100 px-4 py-4 font-medium text-slate-900">{{ row.job_name }}</td>
-            <td class="border-b border-slate-100 px-4 py-4">{{ row.headcount }}</td>
-            <td class="border-b border-slate-100 px-4 py-4">{{ row.education }}</td>
-            <td class="border-b border-slate-100 px-4 py-4">{{ row.major }}</td>
-            <td class="border-b border-slate-100 px-4 py-4">{{ row.location }}</td>
+          <tr v-for="row in jobView.rows" :key="row.id">
+            <td>{{ row.job_name }}</td>
+            <td>{{ row.headcount }}</td>
+            <td>{{ row.education }}</td>
+            <td>{{ row.major }}</td>
+            <td>{{ row.location }}</td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <div v-else class="mt-5 rounded-2xl border border-slate-100 bg-slate-50/70 px-5 py-5">
-      <dl class="grid grid-cols-1 gap-y-3 md:grid-cols-2 md:gap-x-6">
-        <div>
-          <dt class="text-sm text-slate-500">岗位名称</dt>
-          <dd class="mt-1 text-base font-medium text-slate-900">{{ jobView.rows[0].job_name }}</dd>
-        </div>
-        <div>
-          <dt class="text-sm text-slate-500">人数</dt>
-          <dd class="mt-1 text-base font-medium text-slate-900">{{ jobView.rows[0].headcount }}</dd>
-        </div>
-        <div>
-          <dt class="text-sm text-slate-500">学历</dt>
-          <dd class="mt-1 text-base font-medium text-slate-900">{{ jobView.rows[0].education }}</dd>
-        </div>
-        <div>
-          <dt class="text-sm text-slate-500">专业</dt>
-          <dd class="mt-1 text-base font-medium text-slate-900">{{ jobView.rows[0].major }}</dd>
-        </div>
-        <div>
-          <dt class="text-sm text-slate-500">地点</dt>
-          <dd class="mt-1 text-base font-medium text-slate-900">{{ jobView.rows[0].location }}</dd>
-        </div>
-      </dl>
-    </div>
-  </section>
+    <AppFactList
+      v-else
+      class="mt-5"
+      :items="[
+        { label: '岗位名称', value: jobView.rows[0].job_name },
+        { label: '人数', value: jobView.rows[0].headcount },
+        { label: '学历', value: jobView.rows[0].education },
+        { label: '专业', value: jobView.rows[0].major },
+        { label: '地点', value: jobView.rows[0].location }
+      ]"
+      compact
+    />
+  </AppSurface>
 </template>
 
 <script setup>
+import AppFactList from '../../components/ui/AppFactList.vue'
+import AppMetricPill from '../../components/ui/AppMetricPill.vue'
+import AppSurface from '../../components/ui/AppSurface.vue'
+
 defineProps({
   jobView: { type: Object, required: true }
 })

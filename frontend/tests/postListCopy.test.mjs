@@ -19,6 +19,14 @@ test('public post list should avoid implementation-heavy copy in the first scree
   const source = readSource('views/PostList.vue')
 
   assert.match(source, /postListPresentation/)
+  assert.match(source, /AppMetricPill/)
+  assert.match(source, /app-surface app-surface--padding-md/)
+  assert.match(source, /aria-controls="post-advanced-filters"/)
+  assert.match(source, /aria-label="结果分页"/)
+  assert.match(source, /focus-visible:ring-2/)
+  assert.match(source, /lg:grid-cols-\[minmax\(0,1\.5fr\)_220px_280px\]/)
+  assert.match(source, /lg:justify-end lg:self-end/)
+  assert.doesNotMatch(source, /AppStatCard/)
   assert.doesNotMatch(source, /post\.analysis\?\.summary/)
   assert.doesNotMatch(source, /school_name/)
 })
@@ -26,6 +34,7 @@ test('public post list should avoid implementation-heavy copy in the first scree
 test('not found page should guide users back to browsing instead of exposing route checks', () => {
   const source = readSource('views/NotFoundView.vue')
 
+  assert.match(source, /AppPageHeader/)
   assert.doesNotMatch(source, /检查路由配置/)
   assert.doesNotMatch(source, /进入管理台/)
 })

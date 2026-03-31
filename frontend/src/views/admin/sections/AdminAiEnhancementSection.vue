@@ -1,7 +1,7 @@
 <template>
-  <div class="space-y-6">
-    <section class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+  <div class="space-y-4 lg:space-y-5">
+    <AppSurface padding="lg">
+      <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <AppSectionHeader
           title="智能整理"
           description="在已有基础结果上继续补充摘要和岗位识别。"
@@ -16,7 +16,7 @@
         </AppSectionHeader>
       </div>
 
-      <div class="mt-5">
+      <div class="mt-4">
         <AppNotice
           :tone="openaiReady ? 'success' : 'warning'"
           :title="openaiReady ? '智能服务已就绪' : '智能服务还未就绪'"
@@ -24,54 +24,53 @@
         />
       </div>
 
-      <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <AppStatCard
+      <div class="mt-4 flex flex-wrap gap-2">
+        <AppMetricPill
           v-for="panel in panels"
           :key="panel.id"
           :label="panel.title"
           :value="panel.value"
-          :description="panel.helper"
-          :meta="panel.meta"
-          size="lg"
-          :class="panel.disabled ? 'border-slate-200 bg-slate-50' : 'border-emerald-200 bg-emerald-50/60'"
-        >
-          <template #badge>
-            <span class="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium" :class="panel.disabled ? 'bg-slate-200 text-slate-700' : 'bg-emerald-100 text-emerald-700'">
-              {{ panel.disabled ? '未开启' : '可用' }}
-            </span>
-          </template>
-          <template #footer>
-            <p v-if="panel.disabledReason" class="text-xs text-amber-700">{{ panel.disabledReason }}</p>
-          </template>
-        </AppStatCard>
+          :tone="getPanelTone(panel)"
+        />
       </div>
-    </section>
 
-    <section class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
+      <div class="mt-3 grid gap-2 md:grid-cols-2">
+        <div
+          v-for="line in panelContextLines"
+          :key="line"
+          class="rounded-[14px] border border-[rgba(148,163,184,0.16)] bg-white/72 px-3 py-2 text-[12px] leading-5 text-slate-500"
+        >
+          {{ line }}
+        </div>
+      </div>
+    </AppSurface>
+
+    <AppSurface padding="lg">
       <AppSectionHeader
         title="可选智能任务"
         description="基础结果准备好后，再决定是否继续补充智能整理。"
         aside="默认范围已经覆盖最常见场景；只有在需要缩小或放宽范围时再展开高级设置。"
       />
 
-      <div class="mt-6 grid grid-cols-1 gap-5 xl:grid-cols-2">
+      <div class="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <AdminTaskActionCard
           v-for="card in cards"
           :key="card.id"
           :card="card"
         />
       </div>
-    </section>
+    </AppSurface>
   </div>
 </template>
 
 <script setup>
 import { computed } from 'vue'
 
+import AppMetricPill from '../../../components/ui/AppMetricPill.vue'
 import AppNotice from '../../../components/ui/AppNotice.vue'
 import AppSectionHeader from '../../../components/ui/AppSectionHeader.vue'
-import AppStatCard from '../../../components/ui/AppStatCard.vue'
 import AppStatusBadge from '../../../components/ui/AppStatusBadge.vue'
+import AppSurface from '../../../components/ui/AppSurface.vue'
 import { buildAiProcessingCards } from '../adminProcessingActionCards.js'
 import AdminTaskActionCard from './AdminTaskActionCard.vue'
 
@@ -97,4 +96,34 @@ const props = defineProps({
 })
 
 const cards = computed(() => buildAiProcessingCards(props))
+
+const normalizeMetaLines = (meta) => {
+  if (Array.isArray(meta)) return meta.filter(Boolean)
+  return meta ? [meta] : []
+}
+
+const getPanelTone = (panel) => {
+  if (panel.disabled) return 'warning'
+  if (panel.id === 'ai-models') return 'info'
+  if (panel.id === 'ai-runtime-status') return 'success'
+  return 'info'
+}
+
+const panelContextLines = computed(() => {
+  const uniqueLines = new Set()
+
+  props.panels.forEach((panel) => {
+    const lines = [panel.helper, ...normalizeMetaLines(panel.meta).slice(0, 1)]
+      .filter(Boolean)
+      .map((line) => `${panel.title}：${line}`)
+
+    if (panel.disabledReason) {
+      lines.push(`${panel.title}：${panel.disabledReason}`)
+    }
+
+    lines.forEach((line) => uniqueLines.add(line))
+  })
+
+  return [...uniqueLines]
+})
 </script>

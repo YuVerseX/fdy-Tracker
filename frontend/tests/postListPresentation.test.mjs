@@ -53,6 +53,36 @@ test('buildPostCardView should turn snapshot data into readable facts and badges
   assert.ok(view.meta.some((item) => item.label === '来源'))
 })
 
+test('buildPostCardView should summarize multi-job posts with announcement-level facts instead of the first job only', () => {
+  const view = buildPostCardView({
+    title: '南京师范大学2026年公开招聘专职辅导员公告',
+    publish_date: '2026-03-20',
+    source: { name: '江苏省人力资源和社会保障厅' },
+    is_counselor: true,
+    counselor_scope: 'dedicated',
+    has_content: true,
+    fields: [
+      { field_name: '岗位名称', field_value: '专职辅导员；专职辅导员（男）；专职辅导员（女）；心理健康教育专职辅导员' },
+      { field_name: '招聘人数', field_value: '8人；4人；3人；1人' },
+      { field_name: '工作地点', field_value: '南京市' }
+    ],
+    job_items: [
+      { job_name: '专职辅导员', recruitment_count: '8人', education_requirement: '博士研究生', location: '南京市' },
+      { job_name: '心理健康教育专职辅导员', recruitment_count: '1人', education_requirement: '硕士研究生及以上' },
+      { job_name: '专职辅导员（男）', recruitment_count: '4人', education_requirement: '硕士研究生及以上' },
+      { job_name: '专职辅导员（女）', recruitment_count: '3人', education_requirement: '硕士研究生及以上' }
+    ]
+  })
+
+  assert.match(view.highlight, /4 个岗位/)
+  assert.match(view.highlight, /16人/)
+  assert.deepEqual(
+    view.facts.map((item) => item.value),
+    ['4 个岗位', '16人', '南京市']
+  )
+  assert.doesNotMatch(view.highlight, /^专职辅导员$/)
+})
+
 test('buildPostListEmptyState should distinguish filtered results from first-load empty state', () => {
   assert.deepEqual(
     buildPostListEmptyState({ hasFilters: true }),
