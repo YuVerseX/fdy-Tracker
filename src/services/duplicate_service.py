@@ -5,17 +5,20 @@ import hashlib
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from src.database.models import Post
 from src.scrapers.jiangsu_hrss import normalize_content_text
+from src.services.task_progress import ProgressCallback, emit_progress
 
 DUPLICATE_STATUS_NONE = "none"
 DUPLICATE_STATUS_PRIMARY = "primary"
 DUPLICATE_STATUS_DUPLICATE = "duplicate"
+DUPLICATE_BACKFILL_SCOPE_UNCHECKED = "unchecked"
+DUPLICATE_BACKFILL_SCOPE_RECHECK_RECENT = "recheck_recent"
 
 _DUPLICATE_REASON_PRIORITY = {
     "canonical_url": 0,
@@ -25,16 +28,37 @@ _DUPLICATE_REASON_PRIORITY = {
 }
 
 
+def _build_progress_metrics(progress: int, metrics: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {
+        "completed": progress,
+        "total": 100,
+        "unit": "percent",
+    }
+    for key, value in (metrics or {}).items():
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
 def _emit_progress(
-    progress_callback: Callable[[str, int], None] | None,
-    phase: str,
+    progress_callback: ProgressCallback | None,
+    *,
+    stage_key: str,
+    stage_label: str,
     progress: int,
+    metrics: dict[str, Any] | None = None,
 ) -> None:
-    """安全触发进度回调，不让回调异常影响主流程。"""
+    """安全触发标准进度回调，不让回调异常影响主流程。"""
     if progress_callback is None:
         return
     try:
-        progress_callback(phase, progress)
+        emit_progress(
+            progress_callback,
+            stage_key=stage_key,
+            stage_label=stage_label,
+            progress_mode="stage_only",
+            metrics=_build_progress_metrics(progress, metrics),
+        )
     except Exception:
         return
 
@@ -184,7 +208,7 @@ def detect_duplicate_reason(left: Any, right: Any) -> str:
 
 def group_duplicate_posts(
     posts: list[Any],
-    progress_callback: Callable[[str, int], None] | None = None,
+    progress_callback: ProgressCallback | None = None,
     progress_range: tuple[int, int] = (0, 0),
 ) -> list[dict[str, Any]]:
     """把帖子按重复关系分组。"""
@@ -231,8 +255,14 @@ def group_duplicate_posts(
     if total_comparisons > 0:
         _emit_progress(
             progress_callback,
-            "正在比对重复候选",
-            _calculate_progress_in_range(range_start, range_end, 0, total_comparisons),
+            stage_key="compare-candidates",
+            stage_label="正在比对重复候选",
+            progress=_calculate_progress_in_range(range_start, range_end, 0, total_comparisons),
+            metrics={
+                "candidate_posts": len(ordered_posts),
+                "compared_pairs": 0,
+                "total_comparisons": total_comparisons,
+            },
         )
 
     for index, left in enumerate(ordered_posts):
@@ -244,15 +274,27 @@ def group_duplicate_posts(
             if compared % compare_tick == 0 or compared >= total_comparisons:
                 _emit_progress(
                     progress_callback,
-                    "正在比对重复候选",
-                    _calculate_progress_in_range(range_start, range_end, compared, total_comparisons),
+                    stage_key="compare-candidates",
+                    stage_label="正在比对重复候选",
+                    progress=_calculate_progress_in_range(range_start, range_end, compared, total_comparisons),
+                    metrics={
+                        "candidate_posts": len(ordered_posts),
+                        "compared_pairs": compared,
+                        "total_comparisons": total_comparisons,
+                    },
                 )
 
     if total_comparisons <= 0:
         _emit_progress(
             progress_callback,
-            "候选量较小，跳过候选比对",
-            _calculate_progress_in_range(range_start, range_end, 1, 1),
+            stage_key="compare-candidates",
+            stage_label="候选量较小，跳过候选比对",
+            progress=_calculate_progress_in_range(range_start, range_end, 1, 1),
+            metrics={
+                "candidate_posts": len(ordered_posts),
+                "compared_pairs": 0,
+                "total_comparisons": 0,
+            },
         )
 
     grouped: dict[int, list[Any]] = {}
@@ -326,17 +368,39 @@ def _load_posts_with_duplicate_context(db: Session, post_ids: list[int]) -> list
     )
 
 
+def _count_remaining_unchecked_posts(db: Session) -> int:
+    return (
+        db.query(func.count(Post.id))
+        .filter(Post.duplicate_checked_at.is_(None))
+        .scalar()
+        or 0
+    )
+
+
+def _load_recent_post_ids(db: Session, limit: int | None = None) -> list[int]:
+    query = db.query(Post.id).order_by(Post.publish_date.desc(), Post.id.desc())
+    if limit and limit > 0:
+        query = query.limit(limit)
+    return [post_id for (post_id,) in query.all() if post_id]
+
+
 def refresh_duplicate_posts(
     db: Session,
     post_ids: list[int],
-    progress_callback: Callable[[str, int], None] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, int]:
     """增量刷新重复分组。"""
     unique_ids = sorted({post_id for post_id in post_ids if post_id})
     if not unique_ids:
         return {"scanned": 0, "groups": 0, "duplicates": 0}
 
-    _emit_progress(progress_callback, "正在加载重复候选帖子", 20)
+    _emit_progress(
+        progress_callback,
+        stage_key="load-candidates",
+        stage_label="正在加载重复候选帖子",
+        progress=20,
+        metrics={"selected": len(unique_ids)},
+    )
     touched_posts = _load_posts_with_duplicate_context(db, unique_ids)
     if not touched_posts:
         return {"scanned": 0, "groups": 0, "duplicates": 0}
@@ -377,7 +441,16 @@ def refresh_duplicate_posts(
         candidate_query = candidate_query.filter(Post.id.in_(unique_ids))
 
     candidate_posts = candidate_query.all()
-    _emit_progress(progress_callback, "正在识别重复分组", 45)
+    _emit_progress(
+        progress_callback,
+        stage_key="group-candidates",
+        stage_label="正在识别重复分组",
+        progress=45,
+        metrics={
+            "selected": len(unique_ids),
+            "candidate_posts": len(candidate_posts),
+        },
+    )
 
     all_groups = group_duplicate_posts(
         candidate_posts,
@@ -400,7 +473,17 @@ def refresh_duplicate_posts(
         reset_ids.update(post.id for post in stale_posts)
 
     reset_posts = db.query(Post).filter(Post.id.in_(sorted(reset_ids))).all()
-    _emit_progress(progress_callback, "正在重置旧重复标记", 65)
+    _emit_progress(
+        progress_callback,
+        stage_key="reset-marks",
+        stage_label="正在重置旧重复标记",
+        progress=65,
+        metrics={
+            "selected": len(unique_ids),
+            "candidate_posts": len(candidate_posts),
+            "groups": len(selected_groups),
+        },
+    )
     _reset_duplicate_marks(reset_posts, checked_at)
 
     duplicate_count = 0
@@ -415,10 +498,36 @@ def refresh_duplicate_posts(
         duplicate_count += sum(1 for post in group["posts"] if post.id != primary.id)
         if total_groups > 0:
             dynamic_progress = 70 + int((index / total_groups) * 20)
-            _emit_progress(progress_callback, "正在写入重复分组", dynamic_progress)
+            _emit_progress(
+                progress_callback,
+                stage_key="write-groups",
+                stage_label="正在写入重复分组",
+                progress=dynamic_progress,
+                metrics={
+                    "selected": len(unique_ids),
+                    "candidate_posts": len(candidate_posts),
+                    "processed_groups": index,
+                    "total_groups": total_groups,
+                    "groups": total_groups,
+                    "duplicates": duplicate_count,
+                },
+            )
 
     db.flush()
-    _emit_progress(progress_callback, "重复分组写入完成", 92)
+    _emit_progress(
+        progress_callback,
+        stage_key="write-complete",
+        stage_label="重复分组写入完成",
+        progress=92,
+        metrics={
+            "selected": len(unique_ids),
+            "candidate_posts": len(candidate_posts),
+            "processed_groups": total_groups,
+            "total_groups": total_groups,
+            "groups": total_groups,
+            "duplicates": duplicate_count,
+        },
+    )
     return {
         "scanned": len(candidate_posts),
         "groups": len(selected_groups),
@@ -472,10 +581,15 @@ def backfill_duplicate_posts(db: Session, limit: int | None = None) -> dict[str,
 def backfill_unchecked_duplicate_posts(
     db: Session,
     limit: int | None = None,
-    progress_callback: Callable[[str, int], None] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, int]:
     """批量补齐还没做过去重检查的帖子。"""
-    _emit_progress(progress_callback, "正在筛选未检查帖子", 8)
+    _emit_progress(
+        progress_callback,
+        stage_key="select-unchecked",
+        stage_label="正在筛选未检查帖子",
+        progress=8,
+    )
     query = (
         db.query(Post.id)
         .filter(Post.duplicate_checked_at.is_(None))
@@ -486,7 +600,16 @@ def backfill_unchecked_duplicate_posts(
 
     post_ids = [post_id for (post_id,) in query.all() if post_id]
     if not post_ids:
-        _emit_progress(progress_callback, "没有待补齐的帖子", 100)
+        _emit_progress(
+            progress_callback,
+            stage_key="no-pending-posts",
+            stage_label="没有待补齐的帖子",
+            progress=100,
+            metrics={
+                "selected": 0,
+                "remaining_unchecked": 0,
+            },
+        )
         return {
             "selected": 0,
             "scanned": 0,
@@ -495,7 +618,13 @@ def backfill_unchecked_duplicate_posts(
             "remaining_unchecked": 0,
         }
 
-    _emit_progress(progress_callback, "开始执行重复补齐", 12)
+    _emit_progress(
+        progress_callback,
+        stage_key="start-backfill",
+        stage_label="开始执行重复补齐",
+        progress=12,
+        metrics={"selected": len(post_ids)},
+    )
     result = refresh_duplicate_posts(
         db,
         post_ids,
@@ -503,15 +632,127 @@ def backfill_unchecked_duplicate_posts(
     )
     db.commit()
 
-    _emit_progress(progress_callback, "正在统计剩余未检查数量", 95)
-    remaining_unchecked = (
-        db.query(func.count(Post.id))
-        .filter(Post.duplicate_checked_at.is_(None))
-        .scalar()
-        or 0
+    _emit_progress(
+        progress_callback,
+        stage_key="count-remaining",
+        stage_label="正在统计剩余未检查数量",
+        progress=95,
+        metrics={
+            "selected": len(post_ids),
+            "candidate_posts": result["scanned"],
+            "groups": result["groups"],
+            "duplicates": result["duplicates"],
+        },
     )
-    _emit_progress(progress_callback, "重复补齐统计完成", 99)
+    remaining_unchecked = _count_remaining_unchecked_posts(db)
+    _emit_progress(
+        progress_callback,
+        stage_key="backfill-ready",
+        stage_label="重复补齐统计完成",
+        progress=99,
+        metrics={
+            "selected": len(post_ids),
+            "candidate_posts": result["scanned"],
+            "groups": result["groups"],
+            "duplicates": result["duplicates"],
+            "remaining_unchecked": remaining_unchecked,
+        },
+    )
 
+    return {
+        "selected": len(post_ids),
+        "scanned": result["scanned"],
+        "groups": result["groups"],
+        "duplicates": result["duplicates"],
+        "remaining_unchecked": remaining_unchecked,
+    }
+
+
+def run_duplicate_backfill(
+    db: Session,
+    limit: int | None = None,
+    scope_mode: str = DUPLICATE_BACKFILL_SCOPE_UNCHECKED,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, int]:
+    """按指定范围执行去重检查。"""
+    normalized_scope_mode = (scope_mode or DUPLICATE_BACKFILL_SCOPE_UNCHECKED).strip()
+    if normalized_scope_mode == DUPLICATE_BACKFILL_SCOPE_UNCHECKED:
+        return backfill_unchecked_duplicate_posts(
+            db,
+            limit=limit,
+            progress_callback=progress_callback,
+        )
+
+    if normalized_scope_mode != DUPLICATE_BACKFILL_SCOPE_RECHECK_RECENT:
+        raise ValueError(f"不支持的去重检查范围: {scope_mode}")
+
+    _emit_progress(
+        progress_callback,
+        stage_key="select-recheck-range",
+        stage_label="正在选择需要重新检查的帖子",
+        progress=8,
+    )
+    post_ids = _load_recent_post_ids(db, limit)
+    if not post_ids:
+        remaining_unchecked = _count_remaining_unchecked_posts(db)
+        _emit_progress(
+            progress_callback,
+            stage_key="no-posts-in-range",
+            stage_label="当前范围内没有可重新检查的帖子",
+            progress=100,
+            metrics={
+                "selected": 0,
+                "remaining_unchecked": remaining_unchecked,
+            },
+        )
+        return {
+            "selected": 0,
+            "scanned": 0,
+            "groups": 0,
+            "duplicates": 0,
+            "remaining_unchecked": remaining_unchecked,
+        }
+
+    _emit_progress(
+        progress_callback,
+        stage_key="start-recheck-range",
+        stage_label="开始重新检查当前范围",
+        progress=12,
+        metrics={"selected": len(post_ids)},
+    )
+    result = refresh_duplicate_posts(
+        db,
+        post_ids,
+        progress_callback=progress_callback,
+    )
+    db.commit()
+
+    _emit_progress(
+        progress_callback,
+        stage_key="count-remaining",
+        stage_label="正在统计剩余未检查数量",
+        progress=95,
+        metrics={
+            "selected": len(post_ids),
+            "candidate_posts": result["scanned"],
+            "groups": result["groups"],
+            "duplicates": result["duplicates"],
+        },
+    )
+    remaining_unchecked = _count_remaining_unchecked_posts(db)
+    _emit_progress(
+        progress_callback,
+        stage_key="backfill-ready",
+        stage_label="重复检查统计完成",
+        progress=99,
+        metrics={
+            "selected": len(post_ids),
+            "candidate_posts": result["scanned"],
+            "groups": result["groups"],
+            "duplicates": result["duplicates"],
+            "remaining_unchecked": remaining_unchecked,
+        },
+    )
     return {
         "selected": len(post_ids),
         "scanned": result["scanned"],

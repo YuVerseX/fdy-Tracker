@@ -35,6 +35,7 @@ from src.services.attachment_service import (
 )
 from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
 from src.services.filter_service import ROLE_EXCLUDE_PATTERNS, _matches_any_pattern
+from src.services.task_progress import ProgressCallback, emit_progress
 
 try:
     from openai import OpenAI
@@ -788,6 +789,7 @@ async def backfill_post_jobs(
     limit: int = 100,
     only_unindexed: bool = True,
     use_ai: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """批量重建岗位级结果"""
     query = db.query(Post).options(
@@ -810,8 +812,9 @@ async def backfill_post_jobs(
     if limit > 0:
         selected_posts = selected_posts[:limit]
 
+    total_posts = len(selected_posts)
     result = {
-        "posts_scanned": len(selected_posts),
+        "posts_scanned": total_posts,
         "posts_updated": 0,
         "jobs_saved": 0,
         "ai_posts": 0,
@@ -821,7 +824,7 @@ async def backfill_post_jobs(
         "failures": 0,
     }
 
-    for post in selected_posts:
+    for index, post in enumerate(selected_posts, start=1):
         try:
             with db.begin_nested():
                 sync_result = await sync_post_jobs(db, post, use_ai=use_ai)
@@ -839,6 +842,24 @@ async def backfill_post_jobs(
         except Exception as exc:
             logger.error(f"岗位级重建失败: post_id={post.id} - {exc}")
             result["failures"] += 1
+        finally:
+            emit_progress(
+                progress_callback,
+                stage_key="extract-post-jobs",
+                stage_label="正在抽取岗位数据",
+                progress_mode="stage_only",
+                metrics={
+                    "posts_scanned": index,
+                    "posts_total": total_posts,
+                    "posts_updated": result["posts_updated"],
+                    "jobs_saved": result["jobs_saved"],
+                    "ai_posts": result["ai_posts"],
+                    "attachment_posts": result["attachment_posts"],
+                    "dedicated_posts": result["dedicated_posts"],
+                    "contains_posts": result["contains_posts"],
+                    "failures": result["failures"],
+                },
+            )
 
     db.commit()
     return result

@@ -626,6 +626,178 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["overview"]["pending_posts"], 0)
         self.assertEqual(summary["insight_overview"]["insight_posts"], 1)
 
+    async def test_run_ai_analysis_should_emit_progress_metrics(self):
+        updates = []
+
+        with patch(
+            "src.services.ai_analysis_service.is_openai_ready",
+            return_value=True,
+        ), patch(
+            "src.services.ai_analysis_service.analyze_post",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIAnalysisResult(
+                    event_type="招聘公告",
+                    recruitment_stage="招聘启动",
+                    school_name="苏州高校",
+                    city="苏州",
+                    should_track=True,
+                    tracking_priority="high",
+                    summary="OpenAI 分析结果",
+                    tags=["辅导员招聘"],
+                    entities=["苏州高校"],
+                ),
+                error_message="",
+                raw_result={"source": "openai"},
+            ),
+        ), patch(
+            "src.services.ai_analysis_service.analyze_post_insight",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIInsightResult(
+                    recruitment_count_total=2,
+                    counselor_recruitment_count=2,
+                    degree_floor="硕士",
+                    city_list=["南京", "苏州"],
+                    gender_restriction="不限",
+                    political_status_required="中共党员",
+                    deadline_text="2026年4月1日",
+                    deadline_date="2026-04-01",
+                    deadline_status="报名中",
+                    has_written_exam=True,
+                    has_interview=True,
+                    has_attachment_job_table=False,
+                    evidence_summary="测试进度上报。",
+                ),
+                error_message="",
+                raw_result={"source": "openai-insight"},
+            ),
+        ):
+            result = await run_ai_analysis(
+                self.db,
+                source_id=None,
+                limit=3,
+                only_unanalyzed=True,
+                progress_callback=updates.append,
+            )
+
+        self.assertEqual(len(updates), result["posts_scanned"])
+        self.assertEqual([update["stage_key"] for update in updates], ["analyze-posts"] * 2)
+        self.assertEqual(
+            [update["metrics"]["posts_scanned"] for update in updates],
+            [1, 2],
+        )
+        self.assertEqual(
+            [update["metrics"]["posts_analyzed"] for update in updates],
+            [1, 2],
+        )
+        self.assertEqual(
+            [update["metrics"]["analysis_reused_count"] for update in updates],
+            [0, 1],
+        )
+        self.assertEqual(updates[-1]["metrics"]["posts_total"], result["posts_scanned"])
+        self.assertEqual(updates[-1]["metrics"]["posts_analyzed"], result["posts_analyzed"])
+        self.assertEqual(updates[-1]["metrics"]["success_count"], result["success_count"])
+        self.assertEqual(
+            updates[-1]["metrics"]["analysis_reused_count"],
+            result["analysis_reused_count"],
+        )
+        self.assertEqual(
+            updates[-1]["metrics"]["insight_success_count"],
+            result["insight_success_count"],
+        )
+
+    async def test_run_ai_analysis_should_isolate_failed_post_transaction_and_continue(self):
+        from src.services import ai_analysis_service as ai_analysis_service_module
+
+        self.db.query(PostAnalysis).delete()
+        self.db.query(PostInsight).delete()
+        self.db.commit()
+
+        original_upsert_post_analysis = ai_analysis_service_module.upsert_post_analysis
+        failed_once = {"value": False}
+
+        def flaky_upsert_post_analysis(db, post, outcome):
+            if not failed_once["value"]:
+                failed_once["value"] = True
+                db.add(PostAnalysis(post_id=post.id, analysis_status="success"))
+                db.flush()
+                db.add(PostAnalysis(post_id=post.id, analysis_status="success"))
+                db.flush()
+            return original_upsert_post_analysis(db, post, outcome)
+
+        with patch(
+            "src.services.ai_analysis_service.is_openai_ready",
+            return_value=True,
+        ), patch(
+            "src.services.ai_analysis_service.analyze_post",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIAnalysisResult(
+                    event_type="招聘公告",
+                    recruitment_stage="招聘启动",
+                    school_name="南京高校",
+                    city="南京",
+                    should_track=True,
+                    tracking_priority="high",
+                    summary="事务隔离测试",
+                    tags=["辅导员招聘"],
+                    entities=["南京高校"],
+                ),
+                error_message="",
+                raw_result={"source": "openai"},
+            ),
+        ), patch(
+            "src.services.ai_analysis_service.analyze_post_insight",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIInsightResult(
+                    recruitment_count_total=1,
+                    counselor_recruitment_count=1,
+                    degree_floor="硕士",
+                    city_list=["南京"],
+                    gender_restriction="不限",
+                    political_status_required="",
+                    deadline_text="2026年4月1日",
+                    deadline_date="2026-04-01",
+                    deadline_status="报名中",
+                    has_written_exam=True,
+                    has_interview=True,
+                    has_attachment_job_table=False,
+                    evidence_summary="事务隔离测试",
+                ),
+                error_message="",
+                raw_result={"source": "openai-insight"},
+            ),
+        ), patch(
+            "src.services.ai_analysis_service.upsert_post_analysis",
+            side_effect=flaky_upsert_post_analysis,
+        ):
+            result = await run_ai_analysis(
+                self.db,
+                source_id=None,
+                limit=2,
+                only_unanalyzed=True,
+            )
+
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(result["posts_analyzed"], 1)
+        self.assertEqual(result["insight_success_count"], 1)
+        self.assertEqual(self.db.query(PostAnalysis).count(), 1)
+        self.assertEqual(self.db.query(PostInsight).count(), 1)
+
     def test_backfill_base_analysis_should_fill_analysis_and_insight_for_pending_primary_posts(self):
         duplicate_post = self.db.query(Post).filter(Post.id == 2).first()
         duplicate_post.duplicate_status = "duplicate"

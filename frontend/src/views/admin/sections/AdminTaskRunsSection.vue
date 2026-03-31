@@ -1,24 +1,44 @@
 <template>
-  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+  <section class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
     <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
       <div>
-        <h2 class="text-lg font-semibold text-sky-900">任务记录</h2>
-        <p class="mt-1 text-sm text-gray-500">默认先看当前异常和最近结果，历史明细收进下方折叠区，减少旧失败记录的干扰。</p>
+        <AppSectionHeader
+          title="任务中心"
+          description="查看正在执行、刚完成和历史任务记录。"
+        >
+          <template #badge>
+            <AppStatusBadge
+              :label="presentation.counts.attention > 0 ? `${presentation.counts.attention} 项待处理` : '状态稳定'"
+              :tone="presentation.counts.attention > 0 ? 'warning' : 'success'"
+            />
+          </template>
+        </AppSectionHeader>
       </div>
-      <button type="button" :disabled="loadingRuns" class="inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors duration-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60" @click="refreshTaskStatus">
-        {{ loadingRuns ? '刷新中...' : '刷新状态' }}
-      </button>
+      <AppActionButton
+        label="刷新状态"
+        busy-label="刷新中..."
+        :busy="loadingRuns"
+        @click="refreshTaskStatus"
+      />
     </div>
 
     <div v-if="loadingRuns || !taskRunsLoaded" class="py-10 text-center text-sm text-gray-500">正在加载任务记录...</div>
-    <div v-else-if="taskRuns.length === 0" class="py-10 text-center text-sm text-gray-500">还没有管理任务记录，先手动跑一次任务。</div>
+    <AppEmptyState
+      v-else-if="taskRuns.length === 0"
+      title="还没有任务记录"
+      description="先运行一次任务，这里会显示最新进度和结果。"
+    />
 
     <div v-else class="mt-6 space-y-6">
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <div v-for="card in presentation.summaryCards" :key="card.label" class="rounded-lg bg-slate-50 px-4 py-3">
-          <div class="text-xs text-gray-500">{{ card.label }}</div>
-          <div class="mt-1 text-lg font-semibold text-slate-900">{{ card.value }}</div>
-        </div>
+        <AppStatCard
+          v-for="card in presentation.summaryCards"
+          :key="card.label"
+          :label="card.label"
+          :value="card.value"
+          size="sm"
+          class="border-0 bg-slate-50"
+        />
       </div>
 
       <section v-if="presentation.attentionRuns.length > 0" class="space-y-3">
@@ -37,6 +57,7 @@
             :key="run.id"
             :run="run"
             :retrying-task-id="retryingTaskId"
+            :retrying-task-action-key="retryingTaskActionKey"
             :expanded-task-ids="expandedTaskIds"
             :now-ts="nowTs"
             :source-options="sourceOptions"
@@ -56,7 +77,7 @@
           </span>
         </div>
         <div v-if="presentation.recentSuccessRuns.length === 0" class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-sm text-gray-500">
-          当前还没有最近完成记录，先运行一次治理任务。
+          当前还没有最近完成记录，先运行一次任务。
         </div>
         <div v-else class="space-y-4">
           <AdminTaskRunCard
@@ -64,6 +85,7 @@
             :key="run.id"
             :run="run"
             :retrying-task-id="retryingTaskId"
+            :retrying-task-action-key="retryingTaskActionKey"
             :expanded-task-ids="expandedTaskIds"
             :now-ts="nowTs"
             :source-options="sourceOptions"
@@ -75,16 +97,17 @@
         </div>
       </section>
 
-      <details v-if="presentation.historyRuns.length > 0" class="rounded-lg border border-slate-200 bg-slate-50 p-4">
-        <summary class="cursor-pointer list-none text-sm font-medium text-slate-700">
-          查看其余历史记录（{{ presentation.historyRuns.length }} 条）
-        </summary>
-        <div class="mt-4 space-y-4">
+      <AppDisclosure
+        v-if="presentation.historyRuns.length > 0"
+        :summary="`查看其余历史记录（${presentation.historyRuns.length} 条）`"
+      >
+        <div class="space-y-4">
           <AdminTaskRunCard
             v-for="run in presentation.historyRuns"
             :key="run.id"
             :run="run"
             :retrying-task-id="retryingTaskId"
+            :retrying-task-action-key="retryingTaskActionKey"
             :expanded-task-ids="expandedTaskIds"
             :now-ts="nowTs"
             :source-options="sourceOptions"
@@ -94,7 +117,7 @@
             :can-retry-task="canRetryTask"
           />
         </div>
-      </details>
+      </AppDisclosure>
     </div>
   </section>
 </template>
@@ -102,6 +125,12 @@
 <script setup>
 import { computed } from 'vue'
 
+import AppActionButton from '../../../components/ui/AppActionButton.vue'
+import AppDisclosure from '../../../components/ui/AppDisclosure.vue'
+import AppEmptyState from '../../../components/ui/AppEmptyState.vue'
+import AppSectionHeader from '../../../components/ui/AppSectionHeader.vue'
+import AppStatCard from '../../../components/ui/AppStatCard.vue'
+import AppStatusBadge from '../../../components/ui/AppStatusBadge.vue'
 import { buildTaskRunsPresentation } from '../../../utils/adminDashboardViewModels.js'
 import AdminTaskRunCard from './AdminTaskRunCard.vue'
 
@@ -110,6 +139,7 @@ const props = defineProps({
   taskRunsLoaded: { type: Boolean, required: true },
   loadingRuns: { type: Boolean, required: true },
   retryingTaskId: { type: String, required: true },
+  retryingTaskActionKey: { type: String, required: true },
   expandedTaskIds: { type: Array, required: true },
   nowTs: { type: Number, required: true },
   sourceOptions: { type: Array, required: true },

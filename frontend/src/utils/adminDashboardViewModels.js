@@ -2,7 +2,7 @@ import { getAdminRuntimeCopy } from './adminDashboardMeta.js'
 
 const EMPTY_LABEL = '--'
 const NOT_FETCHED_LABEL = '未获取'
-const DEFAULT_AI_DISABLED_REASON = 'AI 增强当前不可用，基础模式仍可继续补齐。'
+const DEFAULT_AI_DISABLED_REASON = '智能整理暂时不可用，基础处理仍可继续。'
 const DEFAULT_HEARTBEAT_STALE_MS = 10 * 60 * 1000
 const RUNNING_TASK_STATUSES = ['queued', 'pending', 'running', 'processing']
 
@@ -10,11 +10,11 @@ const TASK_TYPE_LABELS = {
   manual_scrape: '手动抓取最新数据',
   scheduled_scrape: '定时抓取',
   attachment_backfill: '补处理历史附件',
-  duplicate_backfill: '补齐去重检查',
-  base_analysis_backfill: '补齐基础分析',
-  ai_analysis: '启动 AI 增强分析',
-  job_extraction: '补齐岗位索引',
-  ai_job_extraction: '启动 AI 岗位补抽'
+  duplicate_backfill: '检查重复记录',
+  base_analysis_backfill: '补齐关键信息整理',
+  ai_analysis: '补充智能摘要整理',
+  job_extraction: '补齐岗位整理',
+  ai_job_extraction: '补充智能岗位识别'
 }
 
 const countItems = (items = []) => items.filter(Boolean).length
@@ -24,10 +24,26 @@ const normalizeNumber = (value) => {
   return Number.isFinite(numeric) ? numeric : null
 }
 
+const getMetricNumber = (metrics = {}, ...keys) => {
+  for (const key of keys) {
+    const numeric = normalizeNumber(metrics?.[key])
+    if (numeric !== null) return numeric
+  }
+  return null
+}
+
 const formatCount = (value, suffix = '') => {
   const numeric = normalizeNumber(value)
   return numeric === null ? EMPTY_LABEL : `${numeric}${suffix}`
 }
+
+const buildStat = (label, value, tone = 'slate', options = {}) => ({
+  label,
+  value,
+  tone,
+  description: options.description || '',
+  meta: Array.isArray(options.meta) ? options.meta.filter(Boolean) : (options.meta ? [options.meta] : [])
+})
 
 export const formatAdminPercent = (part, total) => {
   const numerator = normalizeNumber(part)
@@ -102,6 +118,139 @@ export const isTaskRunPossiblyStuck = (run, nowTs = Date.now(), heartbeatStaleMs
   return heartbeatMs !== null && nowTs - heartbeatMs >= heartbeatStaleMs
 }
 
+const getRunMetricSource = (run = {}) => {
+  for (const source of [run?.details?.metrics, run?.metrics, run?.details, run]) {
+    if (source && typeof source === 'object') return source
+  }
+  return {}
+}
+
+const findLatestTaskByMatcher = (taskRuns = [], matcher) => (
+  taskRuns.find((run) => matcher(run))
+)
+
+const buildLiveProgressMeta = (summary, detailParts = []) => {
+  if (!summary) return []
+  const parts = [summary, ...detailParts.filter(Boolean)]
+  return [`进行中：${parts.join('，')}`]
+}
+
+const buildProgressCountLabel = (prefix, completed, total, suffix = '条') => {
+  if (completed === null) return ''
+  if (suffix === '%') return `${prefix} ${completed}%`
+  if (total !== null && total > 0) return `${prefix} ${completed}/${total} ${suffix}`
+  return `${prefix} ${completed} ${suffix}`
+}
+
+const buildScrapeLiveMeta = (taskRuns = []) => {
+  const run = findLatestTaskByMatcher(taskRuns, (item) => ['manual_scrape', 'scheduled_scrape'].includes(item?.task_type || item?.taskType) && isRunningTaskStatus(item?.status))
+  if (!run) return []
+  const metrics = getRunMetricSource(run)
+  const seen = getMetricNumber(metrics, 'posts_seen', 'posts_scanned')
+  const total = getMetricNumber(metrics, 'posts_total')
+  const created = getMetricNumber(metrics, 'posts_created')
+  const updated = getMetricNumber(metrics, 'posts_updated')
+  return buildLiveProgressMeta(
+    buildProgressCountLabel('本轮已处理', seen, total),
+    [
+      created !== null ? `新增 ${created} 条` : '',
+      updated !== null ? `更新 ${updated} 条` : ''
+    ]
+  )
+}
+
+const buildAttachmentLiveMeta = (taskRuns = []) => {
+  const run = findLatestTaskByMatcher(taskRuns, (item) => (item?.task_type || item?.taskType) === 'attachment_backfill' && isRunningTaskStatus(item?.status))
+  if (!run) return []
+  const metrics = getRunMetricSource(run)
+  const scanned = getMetricNumber(metrics, 'posts_scanned')
+  const total = getMetricNumber(metrics, 'posts_total')
+  const updated = getMetricNumber(metrics, 'posts_updated')
+  const downloaded = getMetricNumber(metrics, 'attachments_downloaded')
+  return buildLiveProgressMeta(
+    buildProgressCountLabel('本轮已检查', scanned, total),
+    [
+      updated !== null ? `更新 ${updated} 条` : '',
+      downloaded !== null ? `下载 ${downloaded} 个附件` : ''
+    ]
+  )
+}
+
+const buildDuplicateLiveMeta = (taskRuns = []) => {
+  const run = findLatestTaskByMatcher(taskRuns, (item) => (item?.task_type || item?.taskType) === 'duplicate_backfill' && isRunningTaskStatus(item?.status))
+  if (!run) return []
+  const metrics = getRunMetricSource(run)
+  const processedGroups = getMetricNumber(metrics, 'processed_groups')
+  const totalGroups = getMetricNumber(metrics, 'total_groups')
+  const comparedPairs = getMetricNumber(metrics, 'compared_pairs')
+  const totalComparisons = getMetricNumber(metrics, 'total_comparisons')
+  const groups = getMetricNumber(metrics, 'groups')
+  const duplicates = getMetricNumber(metrics, 'duplicates')
+  const completed = getMetricNumber(metrics, 'completed')
+  const total = getMetricNumber(metrics, 'total')
+  const candidatePosts = getMetricNumber(metrics, 'candidate_posts')
+  let summary = ''
+
+  if (processedGroups !== null && totalGroups !== null && totalGroups > 0) {
+    summary = buildProgressCountLabel('本轮已写入', processedGroups, totalGroups, '个重复组')
+  } else if (comparedPairs !== null && totalComparisons !== null && totalComparisons > 0) {
+    summary = buildProgressCountLabel('本轮已比对', comparedPairs, totalComparisons, '组候选')
+  } else {
+    summary = buildProgressCountLabel('本轮已完成', completed, total, '%')
+  }
+
+  return buildLiveProgressMeta(
+    summary,
+    [
+      candidatePosts !== null ? `候选 ${candidatePosts} 条` : '',
+      groups !== null ? `发现 ${groups} 个重复组` : '',
+      duplicates !== null ? `折叠 ${duplicates} 条` : ''
+    ]
+  )
+}
+
+const buildJobExtractionLiveMeta = (taskRuns = [], { useAi = false } = {}) => {
+  const run = findLatestTaskByMatcher(taskRuns, (item) => {
+    const taskType = item?.task_type || item?.taskType
+    const runUsesAi = Boolean(item?.params?.use_ai ?? item?.params?.useAi)
+    if (!isRunningTaskStatus(item?.status)) return false
+    if (useAi) return taskType === 'ai_job_extraction' || (taskType === 'job_extraction' && runUsesAi)
+    return taskType === 'job_extraction' && !runUsesAi
+  })
+  if (!run) return []
+  const metrics = getRunMetricSource(run)
+  const scanned = getMetricNumber(metrics, 'posts_scanned')
+  const total = getMetricNumber(metrics, 'posts_total')
+  const updated = getMetricNumber(metrics, 'posts_updated')
+  const jobsSaved = getMetricNumber(metrics, 'jobs_saved')
+  const aiPosts = getMetricNumber(metrics, 'ai_posts')
+  return buildLiveProgressMeta(
+    buildProgressCountLabel('本轮已检查', scanned, total),
+    [
+      updated !== null ? `更新 ${updated} 条帖子` : '',
+      jobsSaved !== null ? `写入 ${jobsSaved} 个岗位` : '',
+      useAi && aiPosts !== null ? `AI 参与 ${aiPosts} 条` : ''
+    ]
+  )
+}
+
+const buildAiAnalysisLiveMeta = (taskRuns = []) => {
+  const run = findLatestTaskByMatcher(taskRuns, (item) => (item?.task_type || item?.taskType) === 'ai_analysis' && isRunningTaskStatus(item?.status))
+  if (!run) return []
+  const metrics = getRunMetricSource(run)
+  const scanned = getMetricNumber(metrics, 'posts_scanned')
+  const total = getMetricNumber(metrics, 'posts_total')
+  const success = getMetricNumber(metrics, 'success_count')
+  const insightSuccess = getMetricNumber(metrics, 'insight_success_count')
+  return buildLiveProgressMeta(
+    buildProgressCountLabel('本轮已处理', scanned, total),
+    [
+      success !== null ? `AI 成功 ${success} 条` : '',
+      insightSuccess !== null ? `关键信息字段完成 ${insightSuccess} 条` : ''
+    ]
+  )
+}
+
 export function buildTaskRunsPresentation({
   taskRuns = [],
   nowTs = Date.now(),
@@ -156,12 +305,9 @@ const getSourceScopeLabel = (sourceOptions = []) => {
   }
   return `${activeSources.length} 个数据源`
 }
-
-const buildStat = (label, value, tone = 'slate') => ({ label, value, tone })
-
 const getOpenAiReadinessLabel = ({ openaiReady, analysisRuntime }) => {
   if (openaiReady) {
-    return '已就绪'
+    return '可用'
   }
 
   if (analysisRuntime?.analysis_enabled === false) {
@@ -198,27 +344,31 @@ export function buildDataProcessingPanels({
 } = {}) {
   const scrapeTask = findLatestTask(taskRuns, ['manual_scrape', 'scheduled_scrape'])
   const attachmentBackfillTask = findLatestTask(taskRuns, ['attachment_backfill'])
+  const scrapeLiveMeta = buildScrapeLiveMeta(taskRuns)
+  const attachmentLiveMeta = buildAttachmentLiveMeta(taskRuns)
+  const duplicateLiveMeta = buildDuplicateLiveMeta(taskRuns)
+  const jobLiveMeta = buildJobExtractionLiveMeta(taskRuns)
 
   return [
     {
       id: 'collect-and-backfill',
       title: '采集与补处理',
-      description: '负责把新帖子拉进来，并把历史附件补到可用。',
-      note: '抓取负责新数据进入；补处理负责给旧数据补质量。',
+      description: '抓取新公告，并补齐历史附件。',
+      note: '常规更新可以直接使用当前设置。',
       stats: [
-        buildStat('最近抓取成功', formatAdminDateTime(scrapeTask?.finished_at || scrapeTask?.finishedAt), 'sky'),
-        buildStat('最近补处理成功', formatAdminDateTime(attachmentBackfillTask?.finished_at || attachmentBackfillTask?.finishedAt), 'amber'),
+        buildStat('最近抓取成功', formatAdminDateTime(scrapeTask?.finished_at || scrapeTask?.finishedAt), 'sky', { meta: scrapeLiveMeta }),
+        buildStat('最近补处理成功', formatAdminDateTime(attachmentBackfillTask?.finished_at || attachmentBackfillTask?.finishedAt), 'amber', { meta: attachmentLiveMeta }),
         buildStat('待补处理', formatCount(analysisOverview?.base_pending_posts ?? insightOverview?.pending_insight_posts, ' 条'), 'slate'),
         buildStat('数据源范围', getSourceScopeLabel(sourceOptions), 'slate')
       ]
     },
     {
       id: 'duplicate-governance',
-      title: '重复治理',
-      description: '负责重复识别和主记录折叠，不和别的动作混在一起。',
-      note: '这个入口只回答前台当前是不是主记录集合。',
+      title: '重复记录整理',
+      description: '检查重复帖子并整理列表展示。',
+      note: '运行后会保留更稳定的主要记录。',
       stats: [
-        buildStat('重复组数', formatCount(duplicateOverview?.duplicate_groups), 'rose'),
+        buildStat('重复组数', formatCount(duplicateOverview?.duplicate_groups), 'rose', { meta: duplicateLiveMeta }),
         buildStat('折叠帖子', formatCount(duplicateOverview?.duplicate_posts), 'amber'),
         buildStat('未检查', formatCount(duplicateOverview?.unchecked_posts), 'slate'),
         buildStat('最近检查', formatAdminDateTime(duplicateLatestCheckedAt), 'slate')
@@ -226,23 +376,23 @@ export function buildDataProcessingPanels({
     },
     {
       id: 'content-analysis',
-      title: '内容分析',
-      description: '补齐基础结构化结果，不把 AI 能力混成前提。',
-      note: '无 AI 时也可以执行，优先补齐基础字段和统计口径。',
+      title: '关键信息整理',
+      description: '补齐摘要、分类和关键信息。',
+      note: '整理完成后，再决定是否追加智能整理。',
       stats: [
-        buildStat('基础分析完成', formatCount(analysisOverview?.base_ready_posts ?? analysisOverview?.analyzed_posts, ' 条'), 'sky'),
-        buildStat('结构化字段完成', formatCount(insightOverview?.insight_posts, ' 条'), 'fuchsia'),
+        buildStat('关键信息完成', formatCount(analysisOverview?.base_ready_posts ?? analysisOverview?.analyzed_posts, ' 条'), 'sky'),
+        buildStat('关键信息字段完成', formatCount(insightOverview?.insight_posts, ' 条'), 'fuchsia'),
         buildStat('待补齐', formatCount(analysisOverview?.base_pending_posts ?? insightOverview?.pending_insight_posts, ' 条'), 'slate'),
         buildStat('最近完成', formatAdminDateTime(insightLatestAnalyzedAt || analysisLatestAnalyzedAt), 'slate')
       ]
     },
     {
       id: 'job-index',
-      title: '岗位索引',
-      description: '基于正文和附件补齐岗位明细，AI 只是附加增强。',
-      note: '默认补本地可恢复的岗位信息，不依赖 OpenAI 才能成立。',
+      title: '岗位整理',
+      description: '从正文和附件整理岗位信息。',
+      note: '新增岗位会在写入后陆续计入总数。',
       stats: [
-        buildStat('岗位总数', formatCount(jobsOverview?.total_jobs, ' 个'), 'cyan'),
+        buildStat('岗位总数', formatCount(jobsOverview?.total_jobs, ' 个'), 'cyan', { meta: jobLiveMeta }),
         buildStat('含岗位帖子', formatCount(jobsOverview?.posts_with_jobs, ' 条'), 'cyan'),
         buildStat('待补齐', formatCount(jobsOverview?.pending_posts, ' 条'), 'amber'),
         buildStat('辅导员岗位', formatCount(jobsOverview?.counselor_jobs, ' 个'), 'emerald'),
@@ -257,7 +407,8 @@ export function buildAiEnhancementPanels({
   disabledReason = '',
   analysisRuntime = null,
   analysisOverview = null,
-  jobsOverview = null
+  jobsOverview = null,
+  taskRuns = []
 } = {}) {
   const runtimeCopy = getAdminRuntimeCopy(analysisRuntime)
   const readinessLabel = getOpenAiReadinessLabel({ openaiReady, analysisRuntime })
@@ -270,16 +421,18 @@ export function buildAiEnhancementPanels({
     ? (analysisRuntime?.model_name || NOT_FETCHED_LABEL)
     : '未配置'
   const modelHelper = openaiReady
-    ? '只影响 AI 增强任务，不会改变基础处理链路。'
-    : '没配 OpenAI 时，系统仍以基础模式继续运行。'
+    ? '当前会使用这个模型补充摘要和岗位识别。'
+    : '完成智能服务设置后即可使用。'
   const modelMeta = openaiReady
-    ? '可用于补摘要、阶段判断和更难恢复的岗位识别。'
-    : '完成 OpenAI 配置后，才会开放 AI 增强任务。'
+    ? '不会影响基础处理结果。'
+    : '不会影响抓取、关键信息整理和岗位整理。'
+  const aiAnalysisLiveMeta = buildAiAnalysisLiveMeta(taskRuns)
+  const aiJobLiveMeta = buildJobExtractionLiveMeta(taskRuns, { useAi: true })
 
   return [
     {
       id: 'ai-runtime-status',
-      title: '当前运行模式',
+      title: '当前可用能力',
       value: readinessLabel,
       helper: runtimeCopy.description,
       meta: runtimeCopy.emphasis,
@@ -288,7 +441,7 @@ export function buildAiEnhancementPanels({
     },
     {
       id: 'ai-models',
-      title: '增强模型',
+      title: '当前模型',
       value: modelLabel,
       helper: modelHelper,
       meta: modelMeta,
@@ -297,19 +450,19 @@ export function buildAiEnhancementPanels({
     },
     {
       id: 'ai-analysis-coverage',
-      title: 'AI 分析覆盖率',
+      title: '智能摘要覆盖率',
       value: formatAdminPercent(analysisOverview?.openai_analyzed_posts, analysisOverview?.total_posts),
       helper: `已覆盖 ${formatCount(analysisOverview?.openai_analyzed_posts, ' 条')}`,
-      meta: `待增强 ${formatCount(analysisOverview?.openai_pending_posts, ' 条')}`,
+      meta: [`待补充 ${formatCount(analysisOverview?.openai_pending_posts, ' 条')}`, ...aiAnalysisLiveMeta],
       disabled: !openaiReady,
       disabledReason: resolvedDisabledReason
     },
     {
       id: 'ai-job-extraction-coverage',
-      title: 'AI 岗位补抽覆盖率',
+      title: '智能岗位识别覆盖率',
       value: formatAdminPercent(jobsOverview?.ai_job_posts, jobsOverview?.posts_with_jobs),
-      helper: `AI 补抽帖子 ${formatCount(jobsOverview?.ai_job_posts, ' 条')}`,
-      meta: `附件/本地岗位帖子 ${formatCount(jobsOverview?.attachment_job_posts, ' 条')}`,
+      helper: `智能识别帖子 ${formatCount(jobsOverview?.ai_job_posts, ' 条')}`,
+      meta: [`附件/本地岗位帖子 ${formatCount(jobsOverview?.attachment_job_posts, ' 条')}`, ...aiJobLiveMeta],
       disabled: !openaiReady,
       disabledReason: resolvedDisabledReason
     }

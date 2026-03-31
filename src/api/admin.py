@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from contextlib import suppress
 import hashlib
 import secrets
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
@@ -27,18 +27,21 @@ from src.scheduler.jobs import (
 )
 from src.services.admin_task_service import (
     TaskAlreadyRunningError,
-    get_task_summary,
-    load_task_runs,
+    get_task_summary_for_admin,
+    load_task_runs_for_admin,
     record_task_run,
     resolve_conflict_task_types,
     start_task_run,
     update_task_run,
 )
 from src.services.duplicate_service import (
-    backfill_unchecked_duplicate_posts,
+    DUPLICATE_BACKFILL_SCOPE_RECHECK_RECENT,
+    DUPLICATE_BACKFILL_SCOPE_UNCHECKED,
     get_duplicate_summary,
+    run_duplicate_backfill,
 )
 from src.services.post_job_service import backfill_post_jobs, get_job_index_summary
+from src.services.task_progress import ProgressCallback
 from src.services.scraper_service import (
     ScrapeSourceError,
     backfill_existing_attachments,
@@ -150,38 +153,44 @@ CONTENT_MUTATION_TASK_TYPES = [
 ]
 
 
-class RunScrapeRequest(BaseModel):
+class TaskRetryMixin(BaseModel):
+    """复用“再次运行”任务来源标识。"""
+    rerun_of_task_id: str | None = None
+
+
+class RunScrapeRequest(TaskRetryMixin):
     """手动抓取请求"""
     source_id: int = Field(default=1, ge=1)
     max_pages: int = Field(default=5, ge=1, le=50)
 
 
-class BackfillAttachmentsRequest(BaseModel):
+class BackfillAttachmentsRequest(TaskRetryMixin):
     """历史附件补处理请求"""
     source_id: Optional[int] = Field(default=None, ge=1)
     limit: int = Field(default=100, ge=1, le=1000)
 
 
-class BackfillDuplicatesRequest(BaseModel):
+class BackfillDuplicatesRequest(TaskRetryMixin):
     """历史去重补齐请求"""
     limit: int = Field(default=200, ge=1, le=2000)
+    scope_mode: Literal["unchecked", "recheck_recent"] = Field(default=DUPLICATE_BACKFILL_SCOPE_UNCHECKED)
 
 
-class RunAIAnalysisRequest(BaseModel):
+class RunAIAnalysisRequest(TaskRetryMixin):
     """AI 分析任务请求"""
     source_id: Optional[int] = Field(default=None, ge=1)
     limit: int = Field(default=50, ge=1, le=500)
     only_unanalyzed: bool = True
 
 
-class BackfillBaseAnalysisRequest(BaseModel):
+class BackfillBaseAnalysisRequest(TaskRetryMixin):
     """基础分析补齐请求"""
     source_id: Optional[int] = Field(default=None, ge=1)
     limit: int = Field(default=100, ge=1, le=1000)
     only_pending: bool = True
 
 
-class RunJobExtractionRequest(BaseModel):
+class RunJobExtractionRequest(TaskRetryMixin):
     """岗位级抽取任务请求"""
     source_id: Optional[int] = Field(default=None, ge=1)
     limit: int = Field(default=100, ge=1, le=1000)
@@ -257,18 +266,72 @@ def build_progress_details(
     completed: int | None = None,
     total: int | None = None,
     unit: str | None = None,
+    metrics: dict | None = None,
+    stage_key: str | None = None,
 ) -> dict:
     """统一生成任务进度元数据。"""
     details = {
         "progress_mode": progress_mode,
     }
-    if completed is not None or total is not None or unit:
+    if stage_key:
+        details["stage_key"] = stage_key
+    if metrics is not None:
+        details["metrics"] = metrics
+    elif completed is not None or total is not None or unit:
         details["metrics"] = {
             "completed": completed,
             "total": total,
             "unit": unit or "items",
         }
     return details
+
+
+def build_admin_progress_callback(task_id: str) -> ProgressCallback:
+    """把服务层进度事件转换成后台任务详情。"""
+    def _callback(payload: dict) -> None:
+        metrics = dict(payload.get("metrics") or {})
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase=payload.get("stage_label") or "",
+            progress=None,
+            details=build_progress_details(
+                payload.get("progress_mode") or "stage_only",
+                stage_key=payload.get("stage_key") or "",
+                metrics=metrics,
+            ),
+        )
+
+    return _callback
+
+
+def _has_result_failures(result: dict, *keys: str) -> bool:
+    """判断任务结果里是否出现了失败计数。"""
+    return any(int(result.get(key) or 0) > 0 for key in keys)
+
+
+def _build_task_outcome(
+    *,
+    success_summary: str,
+    failure_summary: str,
+    phase_success: str,
+    phase_failed: str,
+    details: dict,
+    failed: bool,
+) -> dict:
+    """统一生成任务完成态归档参数。"""
+    outcome = {
+        "status": "failed" if failed else "success",
+        "summary": failure_summary if failed else success_summary,
+        "phase": phase_failed if failed else phase_success,
+        "details": details,
+    }
+    if failed and not details.get("failure_reason"):
+        outcome["details"] = {
+            **details,
+            "failure_reason": failure_summary,
+        }
+    return outcome
 
 
 def _get_task_type_label(task_type: str) -> str:
@@ -289,6 +352,7 @@ def _start_task_or_raise_conflict(
             task_type=task_type,
             summary=summary,
             params=params,
+            details={"rerun_of_task_id": params.get("rerun_of_task_id")},
             conflict_task_types=resolve_conflict_task_types(task_type, conflict_task_types),
         )
     except TaskAlreadyRunningError as exc:
@@ -305,35 +369,39 @@ def _start_task_or_raise_conflict(
 async def _run_with_heartbeat(
     *,
     task_id: str,
-    phase: str,
-    progress: int,
     awaitable,
+    phase: str | None = None,
+    progress: int | None = None,
+    details: dict | None = None,
     heartbeat_interval_seconds: int = 20,
 ):
     """执行长任务时持续刷新心跳，避免管理页误判卡住。"""
     stop_event = asyncio.Event()
 
+    def _send_update() -> None:
+        update_kwargs = {
+            "task_id": task_id,
+            "status": "running",
+        }
+        if phase is not None:
+            update_kwargs["phase"] = phase
+        if progress is not None:
+            update_kwargs["progress"] = progress
+        if details is not None:
+            update_kwargs["details"] = details
+        update_task_run(**update_kwargs)
+
     async def _heartbeat_loop():
         while True:
             if stop_event.is_set():
                 break
-            update_task_run(
-                task_id=task_id,
-                status="running",
-                phase=phase,
-                progress=progress,
-            )
+            _send_update()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=heartbeat_interval_seconds)
             except asyncio.TimeoutError:
                 continue
 
-    update_task_run(
-        task_id=task_id,
-        status="running",
-        phase=phase,
-        progress=progress,
-    )
+    _send_update()
     heartbeat_task = asyncio.create_task(_heartbeat_loop())
     try:
         return await awaitable
@@ -350,73 +418,87 @@ async def _run_duplicate_backfill_in_background(
 ) -> None:
     """后台执行历史去重补齐并写任务记录。"""
     db = SessionLocal()
+    scope_mode = params.get("scope_mode") or DUPLICATE_BACKFILL_SCOPE_UNCHECKED
+    is_recheck_recent = scope_mode == DUPLICATE_BACKFILL_SCOPE_RECHECK_RECENT
     try:
-        def _on_progress(phase: str, progress: int) -> None:
-            update_task_run(
-                task_id=task_id,
-                status="running",
-                phase=phase,
-                progress=progress,
-                details=build_progress_details(
-                    "determinate",
-                    completed=progress,
-                    total=100,
-                    unit="percent",
-                ),
-            )
-
         update_task_run(
             task_id=task_id,
             status="running",
-            phase="正在准备历史去重补齐",
-            progress=10,
-            details=build_progress_details("determinate", completed=10, total=100, unit="percent"),
+            phase="正在准备当前范围重复检查" if is_recheck_recent else "正在准备历史去重补齐",
+            progress=None,
+            details=build_progress_details(
+                "stage_only",
+                metrics={"completed": 10, "total": 100, "unit": "percent"},
+            ),
         )
-        result = backfill_unchecked_duplicate_posts(
+        result = run_duplicate_backfill(
             db,
             limit=params["limit"],
-            progress_callback=_on_progress,
+            scope_mode=scope_mode,
+            progress_callback=build_admin_progress_callback(task_id),
         )
         update_task_run(
             task_id=task_id,
             status="running",
-            phase="正在整理去重结果",
-            progress=97,
-            details=build_progress_details("determinate", completed=97, total=100, unit="percent"),
+            phase="正在整理重复检查结果" if is_recheck_recent else "正在整理去重结果",
+            progress=None,
+            details=build_progress_details(
+                "stage_only",
+                metrics={
+                    "completed": 97,
+                    "total": 100,
+                    "unit": "percent",
+                    "selected": result["selected"],
+                    "candidate_posts": result["scanned"],
+                    "groups": result["groups"],
+                    "duplicates": result["duplicates"],
+                },
+            ),
         )
         record_task_run(
             task_type="duplicate_backfill",
             status="success",
             summary=(
-                f"历史去重补齐完成，检查 {result['selected']} 条，"
+                f"{'当前范围重复检查完成' if is_recheck_recent else '历史去重补齐完成'}，检查 {result['selected']} 条，"
                 f"新增重复组 {result['groups']} 个，折叠 {result['duplicates']} 条，"
                 f"剩余未检查 {result['remaining_unchecked']} 条"
             ),
             details={
                 **params,
                 **result,
-                **build_progress_details("determinate", completed=100, total=100, unit="percent"),
+                **build_progress_details(
+                    "stage_only",
+                    metrics={
+                        "completed": 100,
+                        "total": 100,
+                        "unit": "percent",
+                        **result,
+                    },
+                ),
             },
             params=params,
             task_id=task_id,
             started_at=started_at,
-            phase="去重补齐完成",
+            phase="重复检查完成" if is_recheck_recent else "去重补齐完成",
             progress=100,
         )
     except Exception as exc:
         record_task_run(
             task_type="duplicate_backfill",
             status="failed",
-            summary="历史去重补齐失败",
+            summary="当前范围重复检查失败" if is_recheck_recent else "历史去重补齐失败",
             details={
                 **params,
                 "error": str(exc),
-                **build_progress_details("determinate", completed=100, total=100, unit="percent"),
+                **build_progress_details(
+                    "stage_only",
+                    metrics={"completed": 100, "total": 100, "unit": "percent"},
+                ),
             },
             params=params,
             task_id=task_id,
             started_at=started_at,
-            phase="去重补齐失败",
+            phase="重复检查失败" if is_recheck_recent else "去重补齐失败",
             progress=100,
         )
     finally:
@@ -435,42 +517,54 @@ async def _run_scrape_task_in_background(
             task_id=task_id,
             status="running",
             phase="正在准备抓取任务",
-            progress=10,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
         processed_records = await _run_with_heartbeat(
             task_id=task_id,
             phase="正在抓取源站并写入数据库",
-            progress=55,
+            details=build_progress_details("stage_only"),
             awaitable=scrape_and_save(
                 db,
                 source_id=params["source_id"],
-                max_pages=params["max_pages"]
+                max_pages=params["max_pages"],
+                progress_callback=build_admin_progress_callback(task_id),
             ),
         )
         details = {
             **params,
             "processed_records": processed_records
         }
+        outcome = _build_task_outcome(
+            success_summary=f"手动抓取完成，新增或更新 {processed_records} 条记录",
+            failure_summary="手动抓取失败",
+            phase_success="抓取完成",
+            phase_failed="抓取失败",
+            details={
+                **details,
+                **build_progress_details(
+                    "stage_only",
+                    metrics={"processed_records": processed_records},
+                ),
+            },
+            failed=False,
+        )
         update_task_run(
             task_id=task_id,
             status="running",
             phase="正在整理抓取结果",
-            progress=90,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
         record_task_run(
             task_type="manual_scrape",
-            status="success",
-            summary=f"手动抓取完成，新增或更新 {processed_records} 条记录",
-            details={
-                **details,
-                **build_progress_details("indeterminate"),
-            },
+            status=outcome["status"],
+            summary=outcome["summary"],
+            details=outcome["details"],
             params=params,
             task_id=task_id,
             started_at=started_at,
-            phase="抓取完成",
+            phase=outcome["phase"],
             progress=100,
         )
     except Exception as exc:
@@ -481,7 +575,7 @@ async def _run_scrape_task_in_background(
             details={
                 **params,
                 "error": str(exc),
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only"),
             },
             params=params,
             task_id=task_id,
@@ -505,42 +599,55 @@ async def _run_attachment_backfill_in_background(
             task_id=task_id,
             status="running",
             phase="正在准备历史附件补处理",
-            progress=10,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
             phase="正在补处理历史附件",
-            progress=60,
+            details=build_progress_details("stage_only"),
             awaitable=backfill_existing_attachments(
                 db,
                 source_id=params["source_id"],
-                limit=params["limit"]
+                limit=params["limit"],
+                progress_callback=build_admin_progress_callback(task_id),
             ),
         )
         update_task_run(
             task_id=task_id,
             status="running",
             phase="正在整理附件补处理结果",
-            progress=90,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
-        record_task_run(
-            task_type="attachment_backfill",
-            status="success",
-            summary=(
+        failed = _has_result_failures(result, "failures")
+        outcome = _build_task_outcome(
+            success_summary=(
                 f"历史附件补处理完成，更新 {result['posts_updated']} 条帖子，"
                 f"新增解析 {result['attachments_parsed']} 个附件"
             ),
+            failure_summary=(
+                f"历史附件补处理失败，已更新 {result['posts_updated']} 条帖子，"
+                f"失败 {result['failures']} 条"
+            ),
+            phase_success="附件补处理完成",
+            phase_failed="附件补处理失败",
             details={
                 **params,
                 **result,
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only", metrics=result),
             },
+            failed=failed,
+        )
+        record_task_run(
+            task_type="attachment_backfill",
+            status=outcome["status"],
+            summary=outcome["summary"],
+            details=outcome["details"],
             params=params,
             task_id=task_id,
             started_at=started_at,
-            phase="附件补处理完成",
+            phase=outcome["phase"],
             progress=100,
         )
     except Exception as exc:
@@ -551,7 +658,7 @@ async def _run_attachment_backfill_in_background(
             details={
                 **params,
                 "error": str(exc),
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only"),
             },
             params=params,
             task_id=task_id,
@@ -575,18 +682,19 @@ async def _run_ai_analysis_in_background(
             task_id=task_id,
             status="running",
             phase="正在准备 AI 分析任务",
-            progress=10,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
             phase="正在批量执行 AI 分析",
-            progress=65,
+            details=build_progress_details("stage_only"),
             awaitable=run_ai_analysis(
                 db,
                 source_id=params["source_id"],
                 limit=params["limit"],
-                only_unanalyzed=params["only_unanalyzed"]
+                only_unanalyzed=params["only_unanalyzed"],
+                progress_callback=build_admin_progress_callback(task_id),
             ),
         )
         insight_success_count = result.get("insight_success_count", 0)
@@ -594,25 +702,37 @@ async def _run_ai_analysis_in_background(
             task_id=task_id,
             status="running",
             phase="正在整理 AI 分析结果",
-            progress=90,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
-        record_task_run(
-            task_type="ai_analysis",
-            status="success",
-            summary=(
+        failed = _has_result_failures(result, "failure_count", "insight_failed_count")
+        outcome = _build_task_outcome(
+            success_summary=(
                 f"AI 分析完成，处理 {result['posts_analyzed']} 条，"
                 f"OpenAI 成功 {result['success_count']} 条，统计提取 {insight_success_count} 条，规则回退 {result['fallback_count']} 条"
             ),
+            failure_summary=(
+                f"AI 分析失败，已处理 {result['posts_analyzed']} 条，"
+                f"失败 {result['failure_count']} 条，统计失败 {result['insight_failed_count']} 条"
+            ),
+            phase_success="AI 分析完成",
+            phase_failed="AI 分析失败",
             details={
                 **params,
                 **result,
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only", metrics=result),
             },
+            failed=failed,
+        )
+        record_task_run(
+            task_type="ai_analysis",
+            status=outcome["status"],
+            summary=outcome["summary"],
+            details=outcome["details"],
             params=params,
             task_id=task_id,
             started_at=started_at,
-            phase="AI 分析完成",
+            phase=outcome["phase"],
             progress=100,
         )
     except Exception as exc:
@@ -623,7 +743,7 @@ async def _run_ai_analysis_in_background(
             details={
                 **params,
                 "error": str(exc),
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only"),
             },
             params=params,
             task_id=task_id,
@@ -646,13 +766,13 @@ async def _run_base_analysis_in_background(
             task_id=task_id,
             status="running",
             phase="正在准备基础分析补齐",
-            progress=10,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
             phase="正在补齐基础 analysis / insight",
-            progress=65,
+            details=build_progress_details("stage_only"),
             awaitable=asyncio.to_thread(
                 _run_base_analysis_with_new_session,
                 params,
@@ -662,8 +782,8 @@ async def _run_base_analysis_in_background(
             task_id=task_id,
             status="running",
             phase="正在整理基础分析结果",
-            progress=90,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
         record_task_run(
             task_type="base_analysis_backfill",
@@ -676,7 +796,7 @@ async def _run_base_analysis_in_background(
             details={
                 **params,
                 **result,
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only", metrics=result),
             },
             params=params,
             task_id=task_id,
@@ -692,7 +812,7 @@ async def _run_base_analysis_in_background(
             details={
                 **params,
                 "error": str(exc),
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only"),
             },
             params=params,
             task_id=task_id,
@@ -728,44 +848,57 @@ async def _run_job_extraction_in_background(
             task_id=task_id,
             status="running",
             phase="正在准备岗位级抽取任务",
-            progress=10,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
             phase="正在抽取岗位数据",
-            progress=65,
+            details=build_progress_details("stage_only"),
             awaitable=backfill_post_jobs(
                 db,
                 source_id=params["source_id"],
                 limit=params["limit"],
                 only_unindexed=params["only_unindexed"],
                 use_ai=params["use_ai"],
+                progress_callback=build_admin_progress_callback(task_id),
             ),
         )
         update_task_run(
             task_id=task_id,
             status="running",
             phase="正在整理岗位抽取结果",
-            progress=90,
-            details=build_progress_details("indeterminate"),
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
-        record_task_run(
-            task_type="job_extraction",
-            status="success",
-            summary=(
+        failed = _has_result_failures(result, "failures")
+        outcome = _build_task_outcome(
+            success_summary=(
                 f"岗位级抽取完成，更新 {result['posts_updated']} 条帖子，"
                 f"写入 {result['jobs_saved']} 条岗位，AI 参与 {result['ai_posts']} 条"
             ),
+            failure_summary=(
+                f"岗位级抽取失败，已更新 {result['posts_updated']} 条帖子，"
+                f"写入 {result['jobs_saved']} 条岗位，失败 {result['failures']} 条"
+            ),
+            phase_success="岗位抽取完成",
+            phase_failed="岗位抽取失败",
             details={
                 **params,
                 **result,
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only", metrics=result),
             },
+            failed=failed,
+        )
+        record_task_run(
+            task_type="job_extraction",
+            status=outcome["status"],
+            summary=outcome["summary"],
+            details=outcome["details"],
             params=params,
             task_id=task_id,
             started_at=started_at,
-            phase="岗位抽取完成",
+            phase=outcome["phase"],
             progress=100,
         )
     except Exception as exc:
@@ -776,7 +909,7 @@ async def _run_job_extraction_in_background(
             details={
                 **params,
                 "error": str(exc),
-                **build_progress_details("indeterminate"),
+                **build_progress_details("stage_only"),
             },
             params=params,
             task_id=task_id,
@@ -792,14 +925,14 @@ async def _run_job_extraction_in_background(
 async def get_task_runs(limit: int = Query(20, ge=1, le=50)):
     """获取最近的管理任务记录"""
     return {
-        "items": load_task_runs(limit=limit)
+        "items": load_task_runs_for_admin(limit=limit)
     }
 
 
 @protected_router.get("/task-runs/summary")
 async def get_task_runs_summary():
     """获取任务摘要，给前台显示数据新鲜度"""
-    return get_task_summary()
+    return get_task_summary_for_admin()
 
 
 @protected_router.get("/sources")
@@ -889,12 +1022,15 @@ async def backfill_duplicates_task(
     background_tasks: BackgroundTasks
 ):
     """补齐历史去重检查"""
+    is_recheck_recent = request.scope_mode == DUPLICATE_BACKFILL_SCOPE_RECHECK_RECENT
     params = {
-        "limit": request.limit
+        "limit": request.limit,
+        "scope_mode": request.scope_mode,
+        "rerun_of_task_id": request.rerun_of_task_id,
     }
     running_task = _start_task_or_raise_conflict(
         task_type="duplicate_backfill",
-        summary="历史去重补齐进行中",
+        summary="当前范围重复检查进行中" if is_recheck_recent else "历史去重补齐进行中",
         params=params,
         conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
     )
@@ -905,7 +1041,7 @@ async def backfill_duplicates_task(
         params,
     )
     return {
-        "message": "历史去重补齐任务已提交，后台执行中",
+        "message": "当前范围重复检查任务已提交，后台执行中" if is_recheck_recent else "历史去重补齐任务已提交，后台执行中",
         "task_run": running_task
     }
 
@@ -924,7 +1060,8 @@ async def run_scrape_task(
 
     params = {
         "source_id": request.source_id,
-        "max_pages": request.max_pages
+        "max_pages": request.max_pages,
+        "rerun_of_task_id": request.rerun_of_task_id,
     }
     running_task = _start_task_or_raise_conflict(
         task_type="manual_scrape",
@@ -954,6 +1091,7 @@ async def backfill_base_analysis_task(
         "source_id": request.source_id,
         "limit": request.limit,
         "only_pending": request.only_pending,
+        "rerun_of_task_id": request.rerun_of_task_id,
     }
     running_task = _start_task_or_raise_conflict(
         task_type="base_analysis_backfill",
@@ -992,7 +1130,8 @@ async def run_ai_analysis_task(
     params = {
         "source_id": request.source_id,
         "limit": request.limit,
-        "only_unanalyzed": request.only_unanalyzed
+        "only_unanalyzed": request.only_unanalyzed,
+        "rerun_of_task_id": request.rerun_of_task_id,
     }
     running_task = _start_task_or_raise_conflict(
         task_type="ai_analysis",
@@ -1020,7 +1159,8 @@ async def backfill_attachments_task(
     """补处理历史附件"""
     params = {
         "source_id": request.source_id,
-        "limit": request.limit
+        "limit": request.limit,
+        "rerun_of_task_id": request.rerun_of_task_id,
     }
     running_task = _start_task_or_raise_conflict(
         task_type="attachment_backfill",
@@ -1061,6 +1201,7 @@ async def run_job_extraction_task(
         "limit": request.limit,
         "only_unindexed": resolved_only_unindexed,
         "use_ai": request.use_ai,
+        "rerun_of_task_id": request.rerun_of_task_id,
     }
     running_task = _start_task_or_raise_conflict(
         task_type="job_extraction",

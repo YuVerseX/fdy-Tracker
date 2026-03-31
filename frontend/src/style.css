@@ -4,16 +4,53 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --app-bg: #eff6ff;
+  --app-panel: rgba(255, 255, 255, 0.92);
+  --app-panel-muted: #e2e8f0;
+  --app-border: rgba(148, 163, 184, 0.3);
+  --text-strong: #0f172a;
+  --text-muted: #475569;
+  --tone-info: #1d4ed8;
+  --tone-info-soft: #dbeafe;
+  --tone-success: #15803d;
+  --tone-success-soft: #dcfce7;
+  --tone-warning: #b45309;
+  --tone-warning-soft: #fef3c7;
+  --tone-danger: #b91c1c;
+  --tone-danger-soft: #fee2e2;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+}
+
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+html {
+  background:
+    radial-gradient(circle at top left, rgba(147, 197, 253, 0.28), transparent 36%),
+    linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+}
+
 body {
   font-family: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: transparent;
+  color: var(--text-strong);
+}
+
+button,
+summary,
+a {
+  -webkit-tap-highlight-color: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {

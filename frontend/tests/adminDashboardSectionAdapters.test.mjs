@@ -2,7 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { getAdminRuntimeCopy } from '../src/utils/adminDashboardMeta.js'
-import { buildOverviewSectionModel } from '../src/views/admin/adminDashboardSectionAdapters.js'
+import {
+  buildProcessingSectionModel,
+  buildOverviewSectionModel,
+  buildSystemSectionModel,
+  buildTaskRunsSectionModel
+} from '../src/views/admin/adminDashboardSectionAdapters.js'
 import { buildRecentTaskState } from '../src/views/admin/adminDashboardTaskSummary.js'
 
 test('buildRecentTaskState falls back to task runs when task summary is unavailable', () => {
@@ -93,5 +98,79 @@ test('buildOverviewSectionModel surfaces degraded fallback instead of staying in
   const recentTaskCard = section.cards.find((card) => card.id === 'recent-task')
 
   assert.equal(recentTaskCard.value, '手动抓取最新数据')
-  assert.ok(recentTaskCard.meta.some((item) => /任务摘要接口不可用/.test(item)))
+  assert.ok(recentTaskCard.meta.some((item) => /最近任务记录/.test(item)))
+  assert.ok(recentTaskCard.meta.every((item) => !/接口/.test(item)))
+  assert.equal(section.focusItems[0].title, '接下来优先处理')
+  assert.match(section.focusItems[0].description, /先补齐关键信息整理|先运行一次任务|最近任务/)
+})
+
+test('section model should not expose design-note copy to end users', () => {
+  const section = buildTaskRunsSectionModel({
+    taskRuns: [],
+    taskRunsLoaded: true,
+    loadingRuns: false,
+    retryingTaskId: '',
+    retryingTaskActionKey: 'incremental',
+    expandedTaskIds: [],
+    nowTs: Date.now(),
+    sourceOptions: [],
+    heartbeatStaleMs: 600000
+  })
+
+  const text = JSON.stringify(section)
+
+  assert.equal(section.retryingTaskActionKey, 'incremental')
+  assert.doesNotMatch(text, /默认先看当前异常和最近结果/)
+  assert.doesNotMatch(text, /避免把基础处理和 AI 增强混在一起/)
+})
+
+test('buildProcessingSectionModel should group base and ai work under shared processing tabs', () => {
+  const section = buildProcessingSectionModel({
+    mode: 'ai',
+    tabOptions: [
+      { value: 'base', label: '基础处理' },
+      { value: 'ai', label: '智能整理' }
+    ],
+    baseSection: {
+      collectPanel: { id: 'collect-and-backfill' }
+    },
+    aiSection: {
+      panels: [{ id: 'ai-runtime-status' }]
+    }
+  })
+
+  assert.equal(section.mode, 'ai')
+  assert.deepEqual(
+    section.tabOptions.map((item) => item.value),
+    ['base', 'ai']
+  )
+  assert.equal(section.baseSection.collectPanel.id, 'collect-and-backfill')
+  assert.equal(section.aiSection.panels[0].id, 'ai-runtime-status')
+})
+
+test('buildSystemSectionModel should expose concise schedule summary and save impact copy', () => {
+  const section = buildSystemSectionModel({
+    schedulerForm: {
+      enabled: true,
+      intervalSeconds: 7200,
+      defaultSourceId: 1,
+      defaultMaxPages: 5,
+      nextRunAt: '2026-03-31T10:00:00Z'
+    },
+    schedulerLoaded: true,
+    schedulerLoading: false,
+    schedulerSaving: false,
+    sourceOptions: [
+      { label: '江苏省人社厅', value: 1 }
+    ]
+  })
+
+  assert.equal(section.statusBadgeLabel, '自动抓取已启用')
+  assert.deepEqual(
+    section.summaryCards.map((item) => item.label),
+    ['当前状态', '下次运行', '默认范围']
+  )
+  assert.match(section.summaryCards[2].value, /江苏省人社厅/)
+  assert.match(section.helperNotice.description, /保存后会在下一次自动抓取时生效/)
+  assert.doesNotMatch(section.helperNotice.description, /环境变量|接口/)
 })

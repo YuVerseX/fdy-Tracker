@@ -16,6 +16,7 @@ from src.config import settings
 from src.database.models import Attachment, Post, PostAnalysis, PostField, PostInsight, PostJob
 from src.services.attachment_service import read_attachment_parse_result
 from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
+from src.services.task_progress import ProgressCallback, emit_progress
 
 try:
     from openai import OpenAI
@@ -1799,7 +1800,8 @@ async def run_ai_analysis(
     db: Session,
     source_id: int | None = None,
     limit: int = 50,
-    only_unanalyzed: bool = True
+    only_unanalyzed: bool = True,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """批量分析帖子"""
     query = db.query(Post).options(
@@ -1863,45 +1865,68 @@ async def run_ai_analysis(
     if not posts:
         return result
 
-    for post in posts:
+    total_posts = len(posts)
+    for index, post in enumerate(posts, start=1):
+        post_id = post.id
         try:
-            analysis_outcome: AnalysisOutcome | None = None
-            use_openai_insight = only_unanalyzed and has_successful_openai_analysis(post)
-            if use_openai_insight:
-                result["analysis_reused_count"] += 1
-            else:
-                analysis_outcome = await analyze_post(post)
-                upsert_post_analysis(db, post, analysis_outcome)
-                if analysis_outcome.provider == "openai":
-                    result["success_count"] += 1
-                elif analysis_outcome.result is not None:
-                    result["fallback_count"] += 1
+            with db.begin_nested():
+                analysis_outcome: AnalysisOutcome | None = None
+                use_openai_insight = only_unanalyzed and has_successful_openai_analysis(post)
+                if use_openai_insight:
+                    result["analysis_reused_count"] += 1
                 else:
-                    result["failure_count"] += 1
-                use_openai_insight = should_use_openai_insight(post, analysis_outcome)
+                    analysis_outcome = await analyze_post(post)
+                    upsert_post_analysis(db, post, analysis_outcome)
+                    if analysis_outcome.provider == "openai":
+                        result["success_count"] += 1
+                    elif analysis_outcome.result is not None:
+                        result["fallback_count"] += 1
+                    else:
+                        result["failure_count"] += 1
+                    use_openai_insight = should_use_openai_insight(post, analysis_outcome)
 
-            insight_outcome: InsightOutcome
-            if use_openai_insight:
-                insight_outcome = await analyze_post_insight(post)
-            else:
-                insight_outcome = build_rule_insight_outcome(post, reason="analysis_not_openai")
-
-            upsert_post_insight(db, post, insight_outcome)
-
-            if insight_outcome.status == "success":
-                if insight_outcome.provider == "openai":
-                    result["insight_success_count"] += 1
+                insight_outcome: InsightOutcome
+                if use_openai_insight:
+                    insight_outcome = await analyze_post_insight(post)
                 else:
-                    result["insight_fallback_count"] += 1
-            elif insight_outcome.status == "failed":
-                result["insight_failed_count"] += 1
-            else:
-                result["insight_skipped_count"] += 1
+                    insight_outcome = build_rule_insight_outcome(post, reason="analysis_not_openai")
 
-            result["posts_analyzed"] += 1
+                upsert_post_insight(db, post, insight_outcome)
+
+                if insight_outcome.status == "success":
+                    if insight_outcome.provider == "openai":
+                        result["insight_success_count"] += 1
+                    else:
+                        result["insight_fallback_count"] += 1
+                elif insight_outcome.status == "failed":
+                    result["insight_failed_count"] += 1
+                else:
+                    result["insight_skipped_count"] += 1
+
+                result["posts_analyzed"] += 1
         except Exception as exc:
-            logger.error(f"分析帖子失败: post_id={post.id} - {exc}")
+            logger.error(f"分析帖子失败: post_id={post_id} - {exc}")
             result["failure_count"] += 1
+        finally:
+            emit_progress(
+                progress_callback,
+                stage_key="analyze-posts",
+                stage_label="正在批量执行 AI 分析",
+                progress_mode="stage_only",
+                metrics={
+                    "posts_scanned": index,
+                    "posts_total": total_posts,
+                    "posts_analyzed": result["posts_analyzed"],
+                    "success_count": result["success_count"],
+                    "fallback_count": result["fallback_count"],
+                    "failure_count": result["failure_count"],
+                    "analysis_reused_count": result["analysis_reused_count"],
+                    "insight_success_count": result["insight_success_count"],
+                    "insight_fallback_count": result["insight_fallback_count"],
+                    "insight_failed_count": result["insight_failed_count"],
+                    "insight_skipped_count": result["insight_skipped_count"],
+                },
+            )
 
     db.commit()
     return result

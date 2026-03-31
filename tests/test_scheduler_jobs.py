@@ -120,6 +120,47 @@ class SchedulerJobsAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         mocked_scrape.assert_not_called()
         db.close.assert_called_once()
 
+    async def test_scheduled_scrape_should_keep_detail_stage_for_heartbeat(self):
+        db = MagicMock()
+        config = SimpleNamespace(
+            enabled=True,
+            default_source_id=1,
+            default_max_pages=3,
+        )
+        running_task = {
+            "id": "scheduled-run-1",
+            "task_type": "scheduled_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00",
+        }
+
+        async def fake_run_with_task_heartbeat(*, awaitable, phase, **_kwargs):
+            self.assertEqual(phase, "正在抓取源站并写入数据库")
+            return await awaitable
+
+        with patch("src.scheduler.jobs.SessionLocal", return_value=db), patch(
+            "src.scheduler.jobs.load_scheduler_config",
+            return_value=config,
+        ), patch(
+            "src.scheduler.jobs.is_scheduler_ready",
+            return_value=True,
+        ), patch(
+            "src.scheduler.jobs.start_task_run",
+            return_value=running_task,
+        ), patch(
+            "src.scheduler.jobs.scrape_and_save",
+            new_callable=AsyncMock,
+            return_value=1,
+        ), patch(
+            "src.scheduler.jobs._run_with_task_heartbeat",
+            side_effect=fake_run_with_task_heartbeat,
+        ), patch("src.scheduler.jobs.update_task_run"), patch(
+            "src.scheduler.jobs.record_task_run",
+        ):
+            await scheduler_jobs.scheduled_scrape()
+
+        db.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { createAdminDashboardDataService } from '../src/views/admin/adminDashboardDataService.js'
 
-function createHarness() {
+function createHarness({ adminApiOverrides = {} } = {}) {
   const calls = []
   const adminApi = {
     getSession: async () => ({ data: { username: 'admin' } }),
@@ -36,8 +36,10 @@ function createHarness() {
     getDuplicateSummary: async () => {
       calls.push('duplicate')
       return { data: { overview: { duplicate_posts: 0 } } }
-    }
+    },
+    runAiAnalysis: async () => ({ data: { message: '任务已提交' } })
   }
+  Object.assign(adminApi, adminApiOverrides)
   const adminAuthorized = { value: true }
   const adminAuthChecking = { value: false }
   const adminAuthError = { value: '' }
@@ -54,6 +56,7 @@ function createHarness() {
     duplicateSummary: null,
     expandedTaskIds: [],
     retryingTaskId: '',
+    retryingTaskActionKey: '',
     jobsSummaryUnavailable: false
   }
   const loading = {
@@ -133,4 +136,66 @@ test('createAdminDashboardDataService should expose refresh aliases expected by 
   assert.deepEqual(state.jobSummary, { overview: { total_jobs: 0 } })
   assert.deepEqual(state.duplicateSummary, { overview: { duplicate_posts: 0 } })
   assert.equal(forms.scheduler.defaultSourceId, 1)
+})
+
+test('retryTaskRun should submit action-specific rerun payloads and clear retry action state after completion', async () => {
+  let receivedPayload = null
+  const { service, state } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async (payload) => {
+        receivedPayload = payload
+        return { data: { message: '智能整理任务已提交' } }
+      }
+    }
+  })
+
+  await service.retryTaskRun({
+    id: 'run-ai-9',
+    task_type: 'ai_analysis',
+    status: 'success',
+    params: {
+      source_id: '8',
+      limit: '50',
+      only_unanalyzed: false
+    }
+  }, 'incremental')
+
+  assert.deepEqual(receivedPayload, {
+    source_id: 8,
+    limit: 50,
+    only_unanalyzed: true,
+    rerun_of_task_id: 'run-ai-9'
+  })
+  assert.equal(state.retryingTaskId, '')
+  assert.equal(state.retryingTaskActionKey, '')
+})
+
+test('retryTaskRun should rerun duplicate backfill with recheck_recent scope', async () => {
+  let receivedPayload = null
+  const { service, state } = createHarness({
+    adminApiOverrides: {
+      backfillDuplicates: async (payload) => {
+        receivedPayload = payload
+        return { data: { message: '历史去重补齐任务已提交' } }
+      }
+    }
+  })
+
+  await service.retryTaskRun({
+    id: 'run-dup-9',
+    task_type: 'duplicate_backfill',
+    status: 'success',
+    params: {
+      limit: '50',
+      scope_mode: 'unchecked'
+    }
+  }, 'rerun')
+
+  assert.deepEqual(receivedPayload, {
+    limit: 50,
+    scope_mode: 'recheck_recent',
+    rerun_of_task_id: 'run-dup-9'
+  })
+  assert.equal(state.retryingTaskId, '')
+  assert.equal(state.retryingTaskActionKey, '')
 })

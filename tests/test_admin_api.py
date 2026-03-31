@@ -120,22 +120,90 @@ class AdminApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
 
-    def test_get_task_runs_should_return_items(self):
-        with patch("src.api.admin.load_task_runs", return_value=[{"id": "1", "task_type": "manual_scrape"}]):
+    def test_get_task_runs_should_return_display_contract(self):
+        with patch(
+            "src.api.admin.load_task_runs_for_admin",
+            return_value=[{
+                "id": "run-1",
+                "task_type": "manual_scrape",
+                "display_name": "手动抓取最新数据",
+                "status": "running",
+                "status_label": "执行中",
+                "progress_mode": "stage_only",
+                "stage_label": "正在抓取源站并写入数据库",
+                "phase": "正在抓取源站并写入数据库",
+                "details": {
+                    "progress_mode": "stage_only",
+                    "metrics": {"posts_seen": 5},
+                    "posts_seen": 5,
+                },
+                "actions": [],
+            }],
+        ):
             self._login()
             response = self.client.get("/api/admin/task-runs")
 
         self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["items"][0]["task_type"], "manual_scrape")
+        payload = response.json()["items"][0]
+        self.assertEqual(payload["display_name"], "手动抓取最新数据")
+        self.assertEqual(payload["progress_mode"], "stage_only")
+        self.assertIn("stage_label", payload)
+        self.assertEqual(payload["phase"], "正在抓取源站并写入数据库")
+        self.assertEqual(payload["details"]["posts_seen"], 5)
 
     def test_get_task_summary_should_return_latest_success(self):
         with patch(
-            "src.api.admin.get_task_summary",
+            "src.api.admin.get_task_summary_for_admin",
             return_value={
-                "latest_success_run": {"id": "1", "status": "success"},
+                "latest_task_run": {
+                    "id": "run-latest-1",
+                    "task_type": "manual_scrape",
+                    "display_name": "手动抓取最新数据",
+                    "status": "running",
+                    "status_label": "执行中",
+                    "progress_mode": "stage_only",
+                    "stage_label": "正在抓取源站并写入数据库",
+                    "phase": "正在抓取源站并写入数据库",
+                    "details": {
+                        "progress_mode": "stage_only",
+                        "metrics": {"posts_seen": 5},
+                        "posts_seen": 5,
+                    },
+                    "actions": [],
+                },
+                "latest_success_run": {
+                    "id": "1",
+                    "task_type": "manual_scrape",
+                    "display_name": "手动抓取最新数据",
+                    "status": "success",
+                    "status_label": "完成",
+                    "progress_mode": "stage_only",
+                    "stage_label": "抓取完成",
+                    "phase": "抓取完成",
+                    "details": {
+                        "progress_mode": "stage_only",
+                        "metrics": {"posts_seen": 12},
+                        "posts_seen": 12,
+                    },
+                    "actions": [{"key": "rerun", "label": "再次运行"}],
+                },
                 "latest_success_at": "2026-03-24T10:00:00+00:00",
-                "running_tasks": [],
+                "running_tasks": [{
+                    "id": "run-latest-1",
+                    "task_type": "manual_scrape",
+                    "display_name": "手动抓取最新数据",
+                    "status": "running",
+                    "status_label": "执行中",
+                    "progress_mode": "stage_only",
+                    "stage_label": "正在抓取源站并写入数据库",
+                    "phase": "正在抓取源站并写入数据库",
+                    "details": {
+                        "progress_mode": "stage_only",
+                        "metrics": {"posts_seen": 5},
+                        "posts_seen": 5,
+                    },
+                    "actions": [],
+                }],
                 "total_runs": 3
             }
         ):
@@ -145,7 +213,38 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["latest_success_run"]["status"], "success")
-        self.assertEqual(payload["total_runs"], 3)
+        self.assertEqual(payload["latest_success_run"]["display_name"], "手动抓取最新数据")
+        self.assertEqual(payload["latest_task_run"]["progress_mode"], "stage_only")
+        self.assertEqual(payload["running_tasks"][0]["stage_label"], "正在抓取源站并写入数据库")
+        self.assertEqual(payload["latest_task_run"]["phase"], "正在抓取源站并写入数据库")
+        self.assertEqual(payload["latest_success_run"]["phase"], "抓取完成")
+        self.assertEqual(payload["running_tasks"][0]["details"]["posts_seen"], 5)
+
+    def test_build_admin_progress_callback_should_forward_stage_key_and_metrics(self):
+        callback = admin_api.build_admin_progress_callback("run-dup-1")
+
+        with patch("src.api.admin.update_task_run") as mocked_update:
+            callback({
+                "stage_key": "compare-candidates",
+                "stage_label": "正在比对重复候选",
+                "progress_mode": "stage_only",
+                "metrics": {
+                    "completed": 46,
+                    "total": 100,
+                    "unit": "percent",
+                    "compared_pairs": 120,
+                    "total_comparisons": 300,
+                },
+            })
+
+        mocked_update.assert_called_once()
+        kwargs = mocked_update.call_args.kwargs
+        self.assertEqual(kwargs["task_id"], "run-dup-1")
+        self.assertEqual(kwargs["phase"], "正在比对重复候选")
+        self.assertEqual(kwargs["details"]["progress_mode"], "stage_only")
+        self.assertEqual(kwargs["details"]["stage_key"], "compare-candidates")
+        self.assertEqual(kwargs["details"]["metrics"]["completed"], 46)
+        self.assertEqual(kwargs["details"]["metrics"]["compared_pairs"], 120)
 
     def test_get_sources_should_return_items(self):
         self.db.query.return_value.order_by.return_value.all.return_value = [
@@ -433,6 +532,71 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertIn("已提交", payload["message"])
         mocked_background.assert_called_once()
 
+    def test_backfill_duplicates_task_should_forward_rerun_of_task_id(self):
+        with patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-dup-2", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_duplicate_backfill_in_background",
+            new=AsyncMock(),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/backfill-duplicates",
+                json={"limit": 200, "rerun_of_task_id": "run-prev-1"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["rerun_of_task_id"], "run-prev-1")
+        self.assertEqual(
+            mocked_start.call_args.kwargs["details"],
+            {"rerun_of_task_id": "run-prev-1"},
+        )
+
+    def test_backfill_duplicates_task_should_forward_scope_mode(self):
+        with patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-dup-3", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_duplicate_backfill_in_background",
+            new=AsyncMock(),
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/backfill-duplicates",
+                json={
+                    "limit": 120,
+                    "scope_mode": "recheck_recent",
+                    "rerun_of_task_id": "run-prev-2",
+                },
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["scope_mode"], "recheck_recent")
+        args, _kwargs = mocked_background.call_args
+        self.assertEqual(args[2]["scope_mode"], "recheck_recent")
+
+    def test_run_scrape_task_should_forward_rerun_of_task_id(self):
+        with patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-scrape-6", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_scrape_task_in_background",
+            new=AsyncMock(),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-scrape",
+                json={"source_id": 1, "max_pages": 3, "rerun_of_task_id": "run-prev-2"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["rerun_of_task_id"], "run-prev-2")
+        self.assertEqual(
+            mocked_start.call_args.kwargs["details"],
+            {"rerun_of_task_id": "run-prev-2"},
+        )
+
     def test_backfill_base_analysis_task_should_return_task_run_when_openai_not_ready(self):
         with patch("src.api.admin.is_openai_ready", return_value=False), patch(
             "src.api.admin.start_task_run",
@@ -452,6 +616,27 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["task_run"]["status"], "running")
         self.assertIn("基础分析", payload["message"])
         mocked_background.assert_called_once()
+
+    def test_backfill_base_analysis_task_should_forward_rerun_of_task_id(self):
+        with patch("src.api.admin.is_openai_ready", return_value=False), patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-base-2", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_base_analysis_in_background",
+            new=AsyncMock(),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/backfill-base-analysis",
+                json={"limit": 20, "only_pending": True, "rerun_of_task_id": "run-prev-3"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["rerun_of_task_id"], "run-prev-3")
+        self.assertEqual(
+            mocked_start.call_args.kwargs["details"],
+            {"rerun_of_task_id": "run-prev-3"},
+        )
 
     def test_backfill_base_analysis_task_should_return_409_when_scrape_is_running(self):
         running_task = {
@@ -563,6 +748,27 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertIn("已提交", payload["message"])
         mocked_background.assert_called_once()
 
+    def test_backfill_attachments_task_should_forward_rerun_of_task_id(self):
+        with patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-attach-3", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_attachment_backfill_in_background",
+            new=AsyncMock(),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/backfill-attachments",
+                json={"limit": 50, "rerun_of_task_id": "run-prev-4"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["rerun_of_task_id"], "run-prev-4")
+        self.assertEqual(
+            mocked_start.call_args.kwargs["details"],
+            {"rerun_of_task_id": "run-prev-4"},
+        )
+
     def test_backfill_attachments_task_should_return_409_when_scrape_is_running(self):
         running_task = {
             "id": "running-scrape-2",
@@ -599,6 +805,27 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["task_run"]["status"], "running")
         self.assertIn("已提交", payload["message"])
         mocked_background.assert_called_once()
+
+    def test_run_ai_analysis_task_should_forward_rerun_of_task_id(self):
+        with patch("src.api.admin.is_openai_ready", return_value=True), patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-ai-3", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_ai_analysis_in_background",
+            new=AsyncMock(),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-ai-analysis",
+                json={"limit": 5, "only_unanalyzed": True, "rerun_of_task_id": "run-prev-5"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["rerun_of_task_id"], "run-prev-5")
+        self.assertEqual(
+            mocked_start.call_args.kwargs["details"],
+            {"rerun_of_task_id": "run-prev-5"},
+        )
 
     def test_run_ai_analysis_task_should_return_409_when_openai_not_ready(self):
         with patch("src.api.admin.is_openai_ready", return_value=False):
@@ -672,6 +899,27 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertIn("已提交", payload["message"])
         mocked_background.assert_called_once()
 
+    def test_run_job_extraction_task_should_forward_rerun_of_task_id(self):
+        with patch("src.api.admin.is_openai_ready", return_value=True), patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-job-6", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_job_extraction_in_background",
+            new=AsyncMock(),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-job-extraction",
+                json={"limit": 5, "only_unindexed": True, "use_ai": True, "rerun_of_task_id": "run-prev-6"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["rerun_of_task_id"], "run-prev-6")
+        self.assertEqual(
+            mocked_start.call_args.kwargs["details"],
+            {"rerun_of_task_id": "run-prev-6"},
+        )
+
     def test_run_job_extraction_task_should_return_409_when_scrape_is_running(self):
         running_task = {
             "id": "running-scrape-3",
@@ -728,6 +976,118 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertFalse(args[2]["only_unindexed"])
 
 class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_run_attachment_backfill_in_background_should_record_failed_when_result_contains_failures(self):
+        params = {"source_id": 1, "limit": 20}
+        fake_db = MagicMock()
+        result = {
+            "posts_scanned": 2,
+            "posts_updated": 1,
+            "attachments_discovered": 1,
+            "attachments_downloaded": 1,
+            "attachments_parsed": 1,
+            "fields_added": 3,
+            "failures": 1,
+        }
+
+        async def fake_run_with_heartbeat(*, awaitable, **_kwargs):
+            return await awaitable
+
+        with patch("src.api.admin.SessionLocal", return_value=fake_db), patch(
+            "src.api.admin._run_with_heartbeat",
+            side_effect=fake_run_with_heartbeat,
+        ), patch(
+            "src.api.admin.backfill_existing_attachments",
+            new_callable=AsyncMock,
+            return_value=result,
+        ), patch("src.api.admin.update_task_run"), patch(
+            "src.api.admin.record_task_run",
+        ) as mocked_record:
+            await admin_api._run_attachment_backfill_in_background(
+                "task-attachment-1",
+                "2026-03-24T09:00:00+00:00",
+                params,
+            )
+
+        self.assertEqual(mocked_record.call_args.kwargs["status"], "failed")
+        self.assertIn("失败", mocked_record.call_args.kwargs["summary"])
+        fake_db.close.assert_called_once()
+
+    async def test_run_ai_analysis_in_background_should_record_failed_when_result_contains_failures(self):
+        params = {"source_id": 1, "limit": 20, "only_unanalyzed": True}
+        fake_db = MagicMock()
+        result = {
+            "posts_scanned": 2,
+            "posts_analyzed": 1,
+            "success_count": 1,
+            "fallback_count": 0,
+            "failure_count": 1,
+            "analysis_reused_count": 0,
+            "insight_success_count": 1,
+            "insight_fallback_count": 0,
+            "insight_failed_count": 0,
+            "insight_skipped_count": 0,
+        }
+
+        async def fake_run_with_heartbeat(*, awaitable, **_kwargs):
+            return await awaitable
+
+        with patch("src.api.admin.SessionLocal", return_value=fake_db), patch(
+            "src.api.admin._run_with_heartbeat",
+            side_effect=fake_run_with_heartbeat,
+        ), patch(
+            "src.api.admin.run_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=result,
+        ), patch("src.api.admin.update_task_run"), patch(
+            "src.api.admin.record_task_run",
+        ) as mocked_record:
+            await admin_api._run_ai_analysis_in_background(
+                "task-ai-1",
+                "2026-03-24T09:00:00+00:00",
+                params,
+            )
+
+        self.assertEqual(mocked_record.call_args.kwargs["status"], "failed")
+        self.assertIn("失败", mocked_record.call_args.kwargs["summary"])
+        fake_db.close.assert_called_once()
+
+    async def test_run_job_extraction_in_background_should_record_failed_when_result_contains_failures(self):
+        params = {"source_id": 1, "limit": 20, "only_unindexed": True, "use_ai": True}
+        fake_db = MagicMock()
+        result = {
+            "posts_scanned": 2,
+            "posts_updated": 1,
+            "jobs_saved": 3,
+            "ai_posts": 1,
+            "attachment_posts": 1,
+            "dedicated_posts": 1,
+            "contains_posts": 0,
+            "failures": 1,
+        }
+
+        async def fake_run_with_heartbeat(*, awaitable, **_kwargs):
+            return await awaitable
+
+        with patch("src.api.admin.SessionLocal", return_value=fake_db), patch(
+            "src.api.admin._run_with_heartbeat",
+            side_effect=fake_run_with_heartbeat,
+        ), patch(
+            "src.api.admin.backfill_post_jobs",
+            new_callable=AsyncMock,
+            return_value=result,
+        ), patch("src.api.admin.update_task_run"), patch(
+            "src.api.admin.record_task_run",
+        ) as mocked_record:
+            await admin_api._run_job_extraction_in_background(
+                "task-job-1",
+                "2026-03-24T09:00:00+00:00",
+                params,
+            )
+
+        self.assertEqual(mocked_record.call_args.kwargs["status"], "failed")
+        self.assertIn("失败", mocked_record.call_args.kwargs["summary"])
+        fake_db.close.assert_called_once()
+
     async def test_run_base_analysis_in_background_should_open_session_inside_to_thread(self):
         params = {"source_id": 1, "limit": 20, "only_pending": True}
         fake_db = MagicMock()

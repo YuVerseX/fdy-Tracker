@@ -1,13 +1,15 @@
 const VALID_RUNTIME_MODES = new Set(['unknown', 'disabled', 'basic', 'ai_enhanced'])
 
-// 这是面向后续 task-oriented dashboard 的目标分区 taxonomy。
-// 当前页面在视图层仍可能保留 legacy key，迁移阶段不要把这里当成现状唯一真相。
 export const ADMIN_SECTION_OPTIONS = [
   { value: 'overview', label: '总览' },
-  { value: 'processing', label: '数据处理' },
-  { value: 'ai-enhancement', label: 'AI 增强' },
-  { value: 'system', label: '系统配置' },
-  { value: 'tasks', label: '任务记录' }
+  { value: 'processing', label: '处理任务' },
+  { value: 'tasks', label: '任务中心' },
+  { value: 'system', label: '系统设置' }
+]
+
+export const ADMIN_PROCESSING_TAB_OPTIONS = [
+  { value: 'base', label: '基础处理' },
+  { value: 'ai', label: '智能整理' }
 ]
 
 export const ADMIN_SECTION_LEGACY_ALIASES = Object.freeze({
@@ -16,24 +18,24 @@ export const ADMIN_SECTION_LEGACY_ALIASES = Object.freeze({
 
 const RUNTIME_COPY = {
   unknown: {
-    badge: '状态未知',
-    description: '分析运行状态加载中，或后端暂未返回完整运行信息。',
-    emphasis: '当前未获取完整信息，稍后刷新后再判断是否可执行基础处理或 AI 增强。'
+    badge: '状态更新中',
+    description: '当前能力信息正在更新，稍后刷新后再查看最新结果。',
+    emphasis: '如果刚完成设置或提交任务，稍后刷新会显示最新状态。'
   },
   disabled: {
-    badge: '增强已关闭',
-    description: '当前 AI 增强开关关闭，系统继续保留基础分析、结构化字段和岗位索引链路。',
-    emphasis: '基础分析、结构化字段和本地岗位索引仍可正常使用。'
+    badge: '智能整理已关闭',
+    description: '当前只保留基础处理和岗位整理。',
+    emphasis: '抓取、关键信息整理和岗位整理仍可继续。'
   },
   basic: {
-    badge: '基础模式',
-    description: '规则分析会继续产出结构化字段，当前仍可依赖本地能力完成基础处理。',
-    emphasis: '规则分析、结构化字段和本地岗位索引可正常使用。'
+    badge: '基础整理可用',
+    description: '基础处理已经可用，可以继续抓取、关键信息整理和岗位整理。',
+    emphasis: '当前基础处理可继续使用；需要更细的摘要或岗位识别时，再开启智能整理。'
   },
   ai_enhanced: {
-    badge: 'AI 增强模式',
-    description: '基础处理已就绪，当前可以在已有结构化结果之上继续执行 AI 增强。',
-    emphasis: '基础处理已就绪，可做 AI 增强。'
+    badge: '智能整理可用',
+    description: '智能整理已经就绪，可以继续补充摘要和岗位识别。',
+    emphasis: '基础处理和智能整理都可以继续使用。'
   }
 }
 

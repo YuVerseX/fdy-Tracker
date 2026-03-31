@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test tests/postFilters.test.mjs tests/routerScroll.test.mjs tests/publicFreshness.test.mjs tests/adminDashboardMeta.test.mjs tests/adminApiPosts.test.mjs tests/adminDashboardViewModels.test.mjs tests/adminDashboardHealth.test.mjs tests/adminDashboardTaskActions.test.mjs tests/adminDashboardSectionAdapters.test.mjs tests/adminDashboardDataService.test.mjs tests/adminDashboardStateBindings.test.mjs",
+    "test": "node --test tests/postFilters.test.mjs tests/routerScroll.test.mjs tests/publicFreshness.test.mjs tests/postDetailPresentation.test.mjs tests/postListCopy.test.mjs tests/postListPresentation.test.mjs tests/adminDashboardMeta.test.mjs tests/adminApiPosts.test.mjs tests/adminDashboardViewModels.test.mjs tests/adminDashboardHealth.test.mjs tests/adminDashboardTaskActions.test.mjs tests/adminTaskRunPresentation.test.mjs tests/adminProcessingActionCards.test.mjs tests/adminDashboardSectionAdapters.test.mjs tests/adminDashboardDataService.test.mjs tests/adminDashboardStateBindings.test.mjs tests/adminDashboardCopy.test.mjs tests/adminDashboardSharedUi.test.mjs tests/adminDashboardTaskCardsUi.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
     "axios": "^1.13.6",
+    "reka-ui": "^2.9.2",
     "vue": "^3.5.30",
     "vue-router": "^4.6.4"
   },

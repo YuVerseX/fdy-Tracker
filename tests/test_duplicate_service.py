@@ -15,6 +15,7 @@ from src.services.duplicate_service import (
     get_duplicate_summary,
     group_duplicate_posts,
     normalize_duplicate_title,
+    run_duplicate_backfill,
 )
 
 
@@ -199,12 +200,48 @@ class DuplicateServiceDatabaseTestCase(unittest.TestCase):
             result = backfill_unchecked_duplicate_posts(
                 db,
                 limit=100,
-                progress_callback=lambda phase, progress: events.append((phase, progress)),
+                progress_callback=lambda payload: events.append(payload),
             )
             self.assertEqual(result["selected"], 2)
             self.assertGreaterEqual(len(events), 4)
-            self.assertEqual(events[0][0], "正在筛选未检查帖子")
-            self.assertGreaterEqual(events[-1][1], 95)
+            self.assertEqual(events[0]["stage_label"], "正在筛选未检查帖子")
+            self.assertEqual(events[0]["progress_mode"], "stage_only")
+            self.assertEqual(events[0]["stage_key"], "select-unchecked")
+            self.assertEqual(events[0]["metrics"]["completed"], 8)
+            self.assertEqual(events[0]["metrics"]["unit"], "percent")
+            self.assertTrue(any(event["stage_key"] == "compare-candidates" for event in events))
+            self.assertTrue(any(event["stage_key"] == "write-complete" for event in events))
+            self.assertGreaterEqual(events[-1]["metrics"]["completed"], 95)
+        finally:
+            db.close()
+
+    def test_run_duplicate_backfill_should_recheck_recent_posts_even_when_already_checked(self):
+        db = self.SessionLocal()
+        checked_at = datetime(2026, 3, 28, tzinfo=timezone.utc)
+        try:
+            newest_post = db.query(Post).filter(Post.id == 1).first()
+            older_post = db.query(Post).filter(Post.id == 2).first()
+            newest_post.duplicate_checked_at = checked_at
+            older_post.duplicate_checked_at = None
+            db.commit()
+
+            result = run_duplicate_backfill(
+                db,
+                limit=1,
+                scope_mode="recheck_recent",
+            )
+
+            self.assertEqual(result["selected"], 1)
+            self.assertEqual(result["remaining_unchecked"], 1)
+
+            db.refresh(newest_post)
+            db.refresh(older_post)
+            self.assertIsNotNone(newest_post.duplicate_checked_at)
+            refreshed_checked_at = newest_post.duplicate_checked_at
+            if refreshed_checked_at.tzinfo is None:
+                refreshed_checked_at = refreshed_checked_at.replace(tzinfo=timezone.utc)
+            self.assertGreater(refreshed_checked_at, checked_at)
+            self.assertIsNone(older_post.duplicate_checked_at)
         finally:
             db.close()
 

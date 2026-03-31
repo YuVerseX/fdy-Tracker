@@ -37,6 +37,39 @@ const getRelativeTimeLabel = (value) => {
 }
 
 const getPanel = (panels = [], panelId) => panels.find((panel) => panel.id === panelId) || { stats: [] }
+const getSourceLabel = (sourceOptions = [], sourceId) => {
+  const matched = sourceOptions.find((source) => Number(source.value) === Number(sourceId))
+  return matched?.label || '默认数据源'
+}
+const buildOverviewFocusItems = ({ health, runtimeCopy, recentTaskState } = {}) => {
+  const latestSuccessTask = recentTaskState?.latestSuccessTask
+  const latestSuccessLabel = latestSuccessTask ? getTaskTypeLabel(latestSuccessTask.taskType) : ''
+  const primaryDescription = health?.alerts?.[0]
+    || recentTaskState?.fallbackNotice
+    || (latestSuccessLabel
+      ? `最近任务是 ${latestSuccessLabel}，当前主链路稳定，可以继续查看处理任务或任务中心。`
+      : '先运行一次任务后，这里会给出下一步建议。')
+
+  return [
+    {
+      id: 'next-step',
+      title: '接下来优先处理',
+      description: primaryDescription
+    },
+    {
+      id: 'latest-result',
+      title: '最近完成情况',
+      description: latestSuccessLabel
+        ? `${latestSuccessLabel} 已完成，可以继续查看任务中心了解细节。`
+        : '当前还没有最近完成记录。'
+    },
+    {
+      id: 'runtime',
+      title: '当前处理能力',
+      description: runtimeCopy?.emphasis || '当前能力信息正在更新。'
+    }
+  ]
+}
 
 export function buildOverviewSectionModel({
   health,
@@ -60,6 +93,7 @@ export function buildOverviewSectionModel({
     health,
     refreshing,
     runtimeCopy,
+    focusItems: buildOverviewFocusItems({ health, runtimeCopy, recentTaskState }),
     cards: [
       {
         id: 'scheduler',
@@ -74,13 +108,13 @@ export function buildOverviewSectionModel({
       },
       {
         id: 'runtime',
-        label: '运行模式',
+        label: '当前能力',
         value: runtimeCopy?.badge || LOADING_LABEL,
         meta: [runtimeCopy?.description || '', runtimeCopy?.emphasis || '']
       },
       {
         id: 'jobs',
-        label: '岗位索引',
+        label: '岗位整理',
         value: jobsLoaded ? `${showCount(true, jobsOverview?.total_jobs)} 个岗位` : LOADING_LABEL,
         meta: [
           `含岗位帖子 ${showCount(jobsLoaded, jobsOverview?.posts_with_jobs)} 条`,
@@ -107,12 +141,12 @@ export function buildOverviewSectionModel({
       }
     ],
     structuredFieldCards: [
-      { label: '基础分析完成', value: showCount(analysisLoaded, analysisOverview?.base_ready_posts ?? analysisOverview?.analyzed_posts) },
-      { label: '结构化字段完成', value: showCount(insightLoaded, insightOverview?.insight_posts) },
-      { label: 'AI 分析覆盖率', value: analysisLoaded ? formatAdminPercent(analysisOverview?.openai_analyzed_posts, analysisOverview?.total_posts) : LOADING_LABEL },
-      { label: 'AI 岗位补抽覆盖率', value: jobsLoaded ? formatAdminPercent(jobsOverview?.ai_job_posts, jobsOverview?.posts_with_jobs) : LOADING_LABEL }
+      { label: '关键信息整理完成', value: showCount(analysisLoaded, analysisOverview?.base_ready_posts ?? analysisOverview?.analyzed_posts) },
+      { label: '关键信息字段完成', value: showCount(insightLoaded, insightOverview?.insight_posts) },
+      { label: '智能摘要覆盖率', value: analysisLoaded ? formatAdminPercent(analysisOverview?.openai_analyzed_posts, analysisOverview?.total_posts) : LOADING_LABEL },
+      { label: '智能岗位识别覆盖率', value: jobsLoaded ? formatAdminPercent(jobsOverview?.ai_job_posts, jobsOverview?.posts_with_jobs) : LOADING_LABEL }
     ],
-    structureRefreshLabel: structureRefreshing ? '刷新中...' : '刷新结构化字段'
+    structureRefreshLabel: structureRefreshing ? '刷新中...' : '刷新整理结果'
   }
 }
 
@@ -173,6 +207,18 @@ export const buildAiEnhancementSectionModel = ({
   latestJobsLabel: latestLabels?.jobs
 })
 
+export const buildProcessingSectionModel = ({
+  mode = 'base',
+  tabOptions = [],
+  baseSection = {},
+  aiSection = {}
+} = {}) => ({
+  mode,
+  tabOptions,
+  baseSection,
+  aiSection
+})
+
 export function buildSystemSectionModel({
   schedulerForm,
   schedulerLoaded,
@@ -184,6 +230,37 @@ export function buildSystemSectionModel({
     ? (schedulerForm?.enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-gray-200 bg-gray-50 text-gray-700')
     : 'border-slate-200 bg-slate-50 text-slate-700'
 
+  const statusBadgeLabel = showBoolean(schedulerLoaded, schedulerForm?.enabled, '自动抓取已启用', '自动抓取已关闭')
+  const summaryCards = [
+    {
+      label: '当前状态',
+      value: showBoolean(schedulerLoaded, schedulerForm?.enabled, '已启用', '已关闭'),
+      meta: schedulerLoaded ? `间隔 ${formatAdminInterval(schedulerForm?.intervalSeconds)}` : LOADING_LABEL
+    },
+    {
+      label: '下次运行',
+      value: showText(
+        schedulerLoaded,
+        schedulerForm?.nextRunAt ? formatAdminDateTime(schedulerForm.nextRunAt) : '',
+        NOT_FETCHED_LABEL
+      ),
+      meta: schedulerLoaded ? '如需立即处理，可直接去“处理任务”手动运行。' : LOADING_LABEL
+    },
+    {
+      label: '默认范围',
+      value: schedulerLoaded
+        ? `${getSourceLabel(sourceOptions, schedulerForm?.defaultSourceId)} · ${showCount(true, schedulerForm?.defaultMaxPages)} 页`
+        : LOADING_LABEL,
+      meta: '新的默认设置会用于后续自动抓取。'
+    }
+  ]
+  const helperNotice = {
+    tone: schedulerForm?.enabled ? 'info' : 'warning',
+    description: schedulerForm?.enabled
+      ? '保存后会在下一次自动抓取时生效；手动运行任务不受影响。'
+      : '当前已关闭自动抓取；保存后会更新后台设置，手动运行任务不受影响。'
+  }
+
   return {
     schedulerForm,
     schedulerLoaded,
@@ -191,6 +268,9 @@ export function buildSystemSectionModel({
     schedulerSaving,
     sourceOptions,
     noticeClass,
+    statusBadgeLabel,
+    summaryCards,
+    helperNotice,
     statusLine: `当前状态：${showBoolean(schedulerLoaded, schedulerForm?.enabled, '已启用定时抓取', '已停用定时抓取')}；间隔 ${schedulerLoaded ? formatAdminInterval(schedulerForm?.intervalSeconds) : LOADING_LABEL}；默认抓 ${showCount(schedulerLoaded, schedulerForm?.defaultMaxPages)} 页。`,
     nextRunLine: `下次预计运行：${showText(schedulerLoaded, schedulerForm?.nextRunAt ? formatAdminDateTime(schedulerForm.nextRunAt) : '', NOT_FETCHED_LABEL)}`
   }
@@ -201,6 +281,7 @@ export const buildTaskRunsSectionModel = ({
   taskRunsLoaded,
   loadingRuns,
   retryingTaskId,
+  retryingTaskActionKey,
   expandedTaskIds,
   nowTs,
   sourceOptions,
@@ -210,6 +291,7 @@ export const buildTaskRunsSectionModel = ({
   taskRunsLoaded,
   loadingRuns,
   retryingTaskId,
+  retryingTaskActionKey,
   expandedTaskIds,
   nowTs,
   sourceOptions,

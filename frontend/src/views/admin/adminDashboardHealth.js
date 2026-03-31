@@ -41,12 +41,12 @@ const hasFreshFailure = (latestFailedTask, latestSuccessTask) => {
 
 const buildSummary = ({ level, runtimeMode, hasBaseBacklog, hasAiBacklog }) => {
   if (level === 'unknown') return '总览数据加载中，稍后再显示真实健康状态。'
-  if (level === 'warning') return '当前有会影响持续更新的项，建议优先处理。'
-  if (runtimeMode === 'disabled') return 'AI 增强当前未开启，基础处理链路仍可继续推进。'
-  if (hasBaseBacklog) return '系统能跑，但基础处理链路还有积压需要处理。'
-  if (hasAiBacklog) return '基础处理已就绪，但 AI 增强还有待处理积压。'
-  if (runtimeMode === 'basic') return '基础处理链路正常，当前运行在基础模式。'
-  return '抓取、分析和岗位索引都在正常状态。'
+  if (level === 'warning') return '当前有任务需要优先处理。'
+  if (runtimeMode === 'disabled') return '智能整理已关闭，基础处理仍可继续。'
+  if (hasBaseBacklog) return '还有基础处理等待完成。'
+  if (hasAiBacklog) return '还有智能整理等待完成。'
+  if (runtimeMode === 'basic') return '基础处理运行正常。'
+  return '抓取、整理和岗位处理都在正常状态。'
 }
 
 export function buildAdminHealthState({
@@ -81,16 +81,16 @@ export function buildAdminHealthState({
     alerts.push(`最近失败任务：${getTaskTypeLabel(latestFailedTask.taskType)}。${detail}`)
   }
   if (overviewReady && getCount(analysisOverview?.base_pending_posts) > 0) {
-    alerts.push(`还有 ${analysisOverview?.base_pending_posts} 条帖子待补齐基础分析。`)
+    alerts.push(`还有 ${analysisOverview?.base_pending_posts} 条帖子待补齐关键信息整理。`)
   }
   if (overviewReady && getCount(insightOverview?.pending_insight_posts) > 0) {
-    alerts.push(`还有 ${insightOverview?.pending_insight_posts} 条帖子待补齐结构化字段。`)
+    alerts.push(`还有 ${insightOverview?.pending_insight_posts} 条帖子待补齐关键信息字段。`)
   }
   if (overviewReady && shouldTrackAiBacklog && getCount(analysisOverview?.openai_pending_posts) > 0) {
-    alerts.push(`还有 ${analysisOverview?.openai_pending_posts} 条帖子待 AI 增强分析。`)
+    alerts.push(`还有 ${analysisOverview?.openai_pending_posts} 条帖子待补充智能摘要整理。`)
   }
   if (overviewReady && getCount(jobsOverview?.pending_posts) > 0) {
-    alerts.push(`还有 ${jobsOverview?.pending_posts} 条帖子待补齐岗位索引。`)
+    alerts.push(`还有 ${jobsOverview?.pending_posts} 条帖子待补齐岗位整理。`)
   }
 
   return {

@@ -1,11 +1,30 @@
-import { buildTaskRequestConfig, canRetryTask } from './adminDashboardTaskActions.js'
+import {
+  buildTaskRequestConfig,
+  getTaskActionDefinitions
+} from './adminDashboardTaskActions.js'
+import { normalizeAdminUiMessage, normalizeAdminUiText } from '../../utils/adminCopySanitizers.js'
+
+const TASK_ACTION_FEEDBACK = Object.freeze({
+  retry: {
+    success: '重试任务已提交',
+    error: '重试任务失败'
+  },
+  rerun: {
+    success: '再次运行已提交',
+    error: '再次运行失败'
+  },
+  incremental: {
+    success: '补处理任务已提交',
+    error: '补处理任务失败'
+  }
+})
 
 export function createAdminDashboardDataService({
   adminApi, adminAuthorized, adminAuthChecking, adminAuthError, adminAuthForm, feedback, sourceOptions, state, loading, loaded, requests, forms
 } = {}) {
   const setFeedback = (type, message) => { feedback.value = { type, message } }
   const clearAdminRuntimeState = () => {
-    Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', jobsSummaryUnavailable: false })
+    Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', retryingTaskActionKey: '', jobsSummaryUnavailable: false })
     Object.keys(loaded).forEach((key) => { loaded[key] = false })
   }
   const handleAdminAccessError = (error) => {
@@ -14,10 +33,17 @@ export function createAdminDashboardDataService({
     adminAuthorized.value = false
     adminAuthForm.password = ''
     clearAdminRuntimeState()
-    adminAuthError.value = error?.response?.data?.detail || (status === 401 ? '后台登录状态已失效，请重新登录。' : '后台会话鉴权暂不可用，请稍后再试。')
+    adminAuthError.value = normalizeAdminUiMessage(
+      error?.response?.data?.detail,
+      status === 401 ? '登录状态已失效，请重新登录。' : '暂时无法验证登录状态，请稍后再试。'
+    )
     return true
   }
-  const getErrorMessage = (error, fallback) => error?.response?.status >= 500 ? '后端执行任务失败了，请稍后再试' : (error?.code === 'ECONNABORTED' ? '请求超时了，任务可能还在后台继续跑，我已经帮你刷新了任务记录' : (error?.response?.data?.detail || fallback))
+  const getErrorMessage = (error, fallback) => {
+    if (error?.response?.status >= 500) return '任务处理失败，请稍后再试。'
+    if (error?.code === 'ECONNABORTED') return '请求已发出，结果正在更新，请稍后刷新任务中心。'
+    return normalizeAdminUiMessage(error?.response?.data?.detail, fallback)
+  }
   const applySchedulerConfig = (payload = {}) => {
     Object.assign(forms.scheduler, { enabled: payload.enabled ?? true, intervalSeconds: Number(payload.interval_seconds ?? payload.intervalSeconds ?? 7200), defaultSourceId: Number(payload.default_source_id ?? payload.defaultSourceId ?? forms.scrape.sourceId ?? 1), defaultMaxPages: Number(payload.default_max_pages ?? payload.defaultMaxPages ?? forms.scrape.maxPages ?? 5), nextRunAt: payload.next_run_at || payload.nextRunAt || '', updatedAt: payload.updated_at || payload.updatedAt || '' })
     forms.scrape.sourceId = forms.scheduler.defaultSourceId
@@ -32,7 +58,7 @@ export function createAdminDashboardDataService({
       adminAuthForm.username = response?.data?.username || adminAuthForm.username
       return true
     } catch (error) {
-      if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '后台登录验证失败'))
+      if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '验证登录状态失败'))
       return false
     } finally {
       adminAuthChecking.value = false
@@ -75,7 +101,7 @@ export function createAdminDashboardDataService({
       const items = response.data.items || []
       if (items.length) {
         sourceOptions.value = items.map((source) => ({
-          label: `${source.name}（source_id=${source.id}）${source.is_active ? '' : ' / 已停用'}`,
+          label: `${source.name}${source.is_active ? '' : ' / 已停用'}`,
           value: source.id,
           isActive: source.is_active
         }))
@@ -121,7 +147,7 @@ export function createAdminDashboardDataService({
       state.insightSummary = null
       if (handleAdminAccessError(error)) return
       loaded.insight = error?.response?.status === 404 || error?.response?.status === 405
-      if (!loaded.insight) setFeedback('error', getErrorMessage(error, '加载结构化字段摘要失败'))
+      if (!loaded.insight) setFeedback('error', getErrorMessage(error, '加载关键信息字段摘要失败'))
     } finally {
       loading.insight = false
     }
@@ -152,7 +178,7 @@ export function createAdminDashboardDataService({
     } catch (error) {
       state.duplicateSummary = null
       loaded.duplicate = false
-      if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载重复治理摘要失败'))
+      if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载重复整理概览失败'))
     } finally {
       loading.duplicate = false
     }
@@ -181,7 +207,7 @@ export function createAdminDashboardDataService({
     requests[busyKey] = true
     try {
       const response = await adminApi[config.apiAction](config.payload)
-      setFeedback('success', response?.data?.message || '任务已提交')
+      setFeedback('success', normalizeAdminUiText(response?.data?.message || '任务已提交', '任务已提交'))
       await refreshAfterTask(config.refreshOptions)
     } catch (error) {
       if (handleAdminAccessError(error)) return
@@ -191,24 +217,32 @@ export function createAdminDashboardDataService({
       requests[busyKey] = false
     }
   }
-  const retryTaskRun = async (run) => {
+  const retryTaskRun = async (run, actionKey = 'retry') => {
     const taskType = run?.task_type
-    const config = buildTaskRequestConfig(taskType, { params: run?.params || {}, forms })
-    if (!config || !canRetryTask(taskType)) {
-      setFeedback('error', '这个任务类型暂时不支持一键重试')
+    const actionDefinition = getTaskActionDefinitions(run).find((item) => item.key === actionKey)
+    const config = buildTaskRequestConfig(taskType, {
+      actionKey,
+      params: run?.params || {},
+      forms,
+      rerunOfTaskId: run?.id || ''
+    })
+    if (!config || !actionDefinition) {
+      setFeedback('error', '当前记录暂不支持这个操作。')
       return
     }
     state.retryingTaskId = run?.id || ''
+    state.retryingTaskActionKey = actionKey
     try {
       const response = await adminApi[config.apiAction](config.payload)
-      setFeedback('success', response?.data?.message || '重试任务已提交')
+      setFeedback('success', normalizeAdminUiText(response?.data?.message || TASK_ACTION_FEEDBACK[actionKey]?.success || '任务已提交', '任务已提交'))
       await refreshAfterTask(config.refreshOptions)
     } catch (error) {
       if (handleAdminAccessError(error)) return
       if (error?.code === 'ECONNABORTED' || error?.response?.status === 409) await refreshAfterTask(config.refreshOptions)
-      setFeedback('error', config.resolveError?.(error) || getErrorMessage(error, '重试任务失败'))
+      setFeedback('error', config.resolveError?.(error) || getErrorMessage(error, TASK_ACTION_FEEDBACK[actionKey]?.error || '任务提交失败'))
     } finally {
       state.retryingTaskId = ''
+      state.retryingTaskActionKey = ''
     }
   }
   const toggleTaskExpanded = (taskId) => {
@@ -218,7 +252,7 @@ export function createAdminDashboardDataService({
   }
   const submitAdminLogin = async () => {
     if (!String(adminAuthForm.username || '').trim() || !String(adminAuthForm.password || '')) {
-      adminAuthError.value = '请输入后台账号和密码。'
+      adminAuthError.value = '请输入账号和密码。'
       return
     }
     adminAuthChecking.value = true
@@ -231,7 +265,7 @@ export function createAdminDashboardDataService({
       await fetchSources()
       await refreshOverview()
     } catch (error) {
-      if (!handleAdminAccessError(error)) adminAuthError.value = getErrorMessage(error, '后台登录失败')
+      if (!handleAdminAccessError(error)) adminAuthError.value = getErrorMessage(error, '登录失败')
     } finally {
       adminAuthChecking.value = false
     }
@@ -239,10 +273,10 @@ export function createAdminDashboardDataService({
   const logoutAdmin = async () => {
     try {
       await adminApi.logout()
-      setFeedback('success', '已退出后台登录')
+      setFeedback('success', '已退出登录')
     } catch (error) {
-      setFeedback('error', getErrorMessage(error, '退出后台登录失败，请稍后再试。'))
-      adminAuthError.value = '退出请求未完成，已清空当前页面状态。刷新后若仍是已登录，请重试退出。'
+      setFeedback('error', getErrorMessage(error, '退出失败，请稍后再试。'))
+      adminAuthError.value = '退出请求未完成，当前已清除本地状态。刷新后若仍显示已登录，请再试一次。'
     } finally {
       adminAuthorized.value = false
       adminAuthForm.password = ''

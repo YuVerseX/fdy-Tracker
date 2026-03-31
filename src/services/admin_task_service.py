@@ -26,9 +26,25 @@ TASK_TYPE_LABELS = {
     "scheduled_scrape": "定时抓取",
     "attachment_backfill": "历史附件补处理",
     "duplicate_backfill": "历史去重补齐",
+    "base_analysis_backfill": "基础分析补齐",
     "ai_analysis": "OpenAI 分析",
     "job_extraction": "岗位级抽取",
     "ai_job_extraction": "岗位级抽取",
+}
+TASK_STATUS_LABELS = {
+    "queued": "排队中",
+    "pending": "排队中",
+    "running": "执行中",
+    "processing": "执行中",
+    "success": "完成",
+    "failed": "失败",
+}
+ADMIN_COMPATIBILITY_DETAIL_FIELDS = {
+    "processed_records",
+    "posts_updated",
+    "attachments_discovered",
+    "attachments_downloaded",
+    "fields_added",
 }
 SCRAPE_FRESHNESS_TASK_TYPES = {"manual_scrape", "scheduled_scrape"}
 CONTENT_MUTATION_TASK_TYPES = {
@@ -36,6 +52,7 @@ CONTENT_MUTATION_TASK_TYPES = {
     "scheduled_scrape",
     "attachment_backfill",
     "duplicate_backfill",
+    "base_analysis_backfill",
     "ai_analysis",
     "job_extraction",
     "ai_job_extraction",
@@ -287,6 +304,93 @@ def find_running_task(task_types: List[str] | None = None) -> Dict[str, Any] | N
         return _find_running_task(current_runs, task_types)
 
 
+def build_task_actions(task_run: Dict[str, Any]) -> List[Dict[str, str]]:
+    """为后台管理列表补充与状态匹配的操作语义。"""
+    task_type = task_run.get("task_type")
+    status = task_run.get("status")
+    if task_type not in CONTENT_MUTATION_TASK_TYPES:
+        return []
+    if status == "failed":
+        return [{"key": "retry", "label": "按原条件重试"}]
+    if status == "success":
+        return [{"key": "rerun", "label": "再次运行"}]
+    return []
+
+
+def _normalize_admin_progress_mode(details: Dict[str, Any]) -> str:
+    """后台展示契约只区分 determinate 和 stage_only。"""
+    return "determinate" if details.get("progress_mode") == "determinate" else "stage_only"
+
+
+def _build_admin_compatibility_details(
+    *,
+    raw_details: Dict[str, Any],
+    progress_mode: str,
+    metrics: Dict[str, Any],
+    failure_reason: str | None,
+) -> Dict[str, Any]:
+    """为当前前端提供安全的兼容 details 结构。"""
+    compatibility_details: Dict[str, Any] = {
+        "progress_mode": progress_mode,
+        "metrics": metrics,
+    }
+    stage_key = raw_details.get("stage_key")
+    if stage_key:
+        compatibility_details["stage_key"] = stage_key
+    for key, value in metrics.items():
+        compatibility_details[key] = value
+    for key in ADMIN_COMPATIBILITY_DETAIL_FIELDS:
+        if key in raw_details:
+            compatibility_details[key] = raw_details[key]
+    if failure_reason:
+        compatibility_details["failure_reason"] = failure_reason
+    return compatibility_details
+
+
+def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
+    """把原始任务记录转成后台任务列表展示契约。"""
+    normalized_task_run = dict(task_run or {})
+    details = dict(normalized_task_run.get("details") or {})
+    progress_mode = _normalize_admin_progress_mode(details)
+    metrics = dict(details.get("metrics") or {})
+    stage_label = normalized_task_run.get("phase") or ""
+    failure_reason = normalized_task_run.get("failure_reason")
+    stage_key = details.get("stage_key")
+    return {
+        "id": normalized_task_run.get("id"),
+        "task_type": normalized_task_run.get("task_type"),
+        "display_name": get_task_type_label(normalized_task_run.get("task_type") or ""),
+        "status": normalized_task_run.get("status"),
+        "status_label": TASK_STATUS_LABELS.get(normalized_task_run.get("status"), "未知"),
+        "progress_mode": progress_mode,
+        "stage_key": stage_key,
+        "stage_label": stage_label,
+        "phase": stage_label,
+        "metrics": metrics,
+        "actions": build_task_actions(normalized_task_run),
+        "rerun_of_task_id": normalized_task_run.get("rerun_of_task_id"),
+        "summary": normalized_task_run.get("summary"),
+        "started_at": normalized_task_run.get("started_at"),
+        "heartbeat_at": normalized_task_run.get("heartbeat_at"),
+        "finished_at": normalized_task_run.get("finished_at"),
+        "duration_ms": normalized_task_run.get("duration_ms"),
+        "params": normalized_task_run.get("params"),
+        "progress": normalized_task_run.get("progress"),
+        "failure_reason": failure_reason,
+        "details": _build_admin_compatibility_details(
+            raw_details=details,
+            progress_mode=progress_mode,
+            metrics=metrics,
+            failure_reason=failure_reason,
+        ),
+    }
+
+
+def load_task_runs_for_admin(limit: int = 20) -> List[Dict[str, Any]]:
+    """读取最近任务记录，并转换为后台展示契约。"""
+    return [serialize_task_run_for_admin(task_run) for task_run in load_task_runs(limit=limit)]
+
+
 def start_task_run(
     task_type: str,
     summary: str,
@@ -306,6 +410,13 @@ def start_task_run(
                 conflict_task_types=normalized_conflict_task_types,
             )
 
+        normalized_params = dict(params or {})
+        normalized_details = dict(details or {})
+        rerun_of_task_id = (
+            normalized_details.get("rerun_of_task_id")
+            or normalized_params.get("rerun_of_task_id")
+        )
+        started_at_value = datetime.now(timezone.utc).isoformat()
         task_run = {
             "id": uuid4().hex,
             "task_type": task_type,
@@ -313,11 +424,12 @@ def start_task_run(
             "summary": summary,
             "phase": "任务已提交，等待后台执行",
             "progress": 0,
-            "params": params or {},
-            "details": details or {},
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "heartbeat_at": datetime.now(timezone.utc).isoformat(),
-            "finished_at": None
+            "params": normalized_params,
+            "details": normalized_details,
+            "started_at": started_at_value,
+            "heartbeat_at": started_at_value,
+            "finished_at": None,
+            "rerun_of_task_id": rerun_of_task_id,
         }
         _write_task_runs([task_run, *current_runs])
         return task_run
@@ -402,8 +514,18 @@ def record_task_run(
         finished_at_value = _normalize_datetime_value(finished_at)
         existing_progress = _normalize_progress_value((existing_run or {}).get("progress"), fallback=0)
         duration_ms = _calculate_duration_ms(started_at_value, finished_at_value)
+        normalized_params = (
+            dict(params)
+            if params is not None
+            else dict((existing_run or {}).get("params") or {})
+        )
+        final_details = dict(details or {})
+        rerun_of_task_id = (
+            final_details.get("rerun_of_task_id")
+            or normalized_params.get("rerun_of_task_id")
+            or (existing_run or {}).get("rerun_of_task_id")
+        )
 
-        final_details = details or {}
         failure_reason = final_details.get("failure_reason") or final_details.get("error")
         if status == "success":
             final_progress = _normalize_progress_value(progress, fallback=100)
@@ -422,11 +544,12 @@ def record_task_run(
             "summary": summary,
             "phase": final_phase,
             "progress": final_progress,
-            "params": params if params is not None else (existing_run or {}).get("params", {}),
+            "params": normalized_params,
             "details": final_details,
             "started_at": started_at_value,
             "heartbeat_at": finished_at_value,
-            "finished_at": finished_at_value
+            "finished_at": finished_at_value,
+            "rerun_of_task_id": rerun_of_task_id,
         }
         if duration_ms is not None:
             task_run["duration_ms"] = duration_ms
@@ -456,6 +579,28 @@ def get_task_summary() -> Dict[str, Any]:
         "latest_success_at": latest_success_run.get("finished_at") if latest_success_run else None,
         "running_tasks": running_tasks,
         "total_runs": len(task_runs)
+    }
+
+
+def get_task_summary_for_admin() -> Dict[str, Any]:
+    """返回后台页面可直接消费的任务摘要。"""
+    summary = get_task_summary()
+    return {
+        **summary,
+        "latest_task_run": (
+            serialize_task_run_for_admin(summary["latest_task_run"])
+            if summary.get("latest_task_run")
+            else None
+        ),
+        "latest_success_run": (
+            serialize_task_run_for_admin(summary["latest_success_run"])
+            if summary.get("latest_success_run")
+            else None
+        ),
+        "running_tasks": [
+            serialize_task_run_for_admin(task_run)
+            for task_run in summary.get("running_tasks") or []
+        ],
     }
 
 

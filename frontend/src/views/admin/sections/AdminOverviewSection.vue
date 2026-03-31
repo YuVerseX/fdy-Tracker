@@ -1,33 +1,39 @@
 <template>
   <div class="space-y-6">
-    <section class="rounded-lg border p-6" :class="health.panelClass">
+    <section class="rounded-[28px] border p-6 shadow-sm" :class="health.panelClass">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <div class="flex flex-wrap items-center gap-3">
-            <h2 class="text-lg font-semibold">系统健康总览</h2>
-            <span class="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium" :class="health.badgeClass">
-              {{ health.label }}
-            </span>
-          </div>
+          <AppSectionHeader title="当前概况" description="查看最近任务、自动抓取状态和关键结果。">
+            <template #badge>
+              <AppStatusBadge :label="health.label" :tone="getHealthTone(health.level)" />
+            </template>
+          </AppSectionHeader>
           <p class="mt-2 text-sm" :class="health.textClass">{{ health.summary }}</p>
         </div>
-        <button
-          type="button"
-          :disabled="refreshing"
-          class="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors duration-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+        <AppActionButton
+          label="刷新总览"
+          busy-label="刷新中..."
+          :busy="refreshing"
           @click="refreshOverview"
-        >
-          {{ refreshing ? '刷新中...' : '刷新总览' }}
-        </button>
+        />
       </div>
 
       <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <article v-for="card in cards" :key="card.id" class="rounded-lg bg-white/80 px-4 py-4 shadow-sm ring-1 ring-black/5">
-          <div class="text-xs text-gray-500">{{ card.label }}</div>
-          <div class="mt-2 text-lg font-semibold text-sky-900">{{ card.value }}</div>
-          <p v-for="line in card.meta.filter(Boolean)" :key="`${card.id}-${line}`" class="mt-1 text-xs text-gray-500">
-            {{ line }}
-          </p>
+        <AppStatCard
+          v-for="card in cards"
+          :key="card.id"
+          :label="card.label"
+          :value="card.value"
+          :meta="card.meta"
+          value-tone="info"
+          class="border-0 bg-white/88 shadow-sm ring-1 ring-black/5"
+        />
+      </div>
+
+      <div class="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <article v-for="item in focusItems" :key="item.id" class="rounded-2xl border border-white/70 bg-white/80 px-4 py-4 shadow-sm">
+          <div class="text-xs font-medium tracking-[0.12em] text-slate-500 uppercase">{{ item.title }}</div>
+          <p class="mt-2 text-sm leading-6 text-slate-700">{{ item.description }}</p>
         </article>
       </div>
 
@@ -41,41 +47,47 @@
       </div>
     </section>
 
-    <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <section class="rounded-[28px] border border-slate-200 bg-white/90 p-6 shadow-sm">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <div class="flex flex-wrap items-center gap-3">
-            <h2 class="text-lg font-semibold text-sky-900">结构化字段</h2>
-            <span class="inline-flex items-center rounded-full bg-fuchsia-100 px-3 py-1 text-xs font-medium text-fuchsia-700">
-              {{ runtimeCopy.badge }}
-            </span>
-          </div>
-          <p class="mt-1 text-sm text-gray-500">{{ runtimeCopy.description }}</p>
+          <AppSectionHeader title="整理结果" :description="runtimeCopy.description">
+            <template #badge>
+              <AppStatusBadge :label="runtimeCopy.badge" tone="info" />
+            </template>
+          </AppSectionHeader>
           <p class="mt-2 text-xs text-gray-500">{{ runtimeCopy.emphasis }}</p>
         </div>
-        <button
-          type="button"
-          class="inline-flex items-center justify-center rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors duration-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+        <AppActionButton
+          label="刷新关键信息字段"
+          busy-label="刷新中..."
+          :busy="structureRefreshLabel === '刷新中...'"
           @click="refreshStructuredSummary"
-        >
-          {{ structureRefreshLabel }}
-        </button>
+        />
       </div>
 
       <div class="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <div v-for="card in structuredFieldCards" :key="card.label" class="rounded-lg border border-gray-200 bg-white px-4 py-3">
-          <div class="text-xs text-gray-500">{{ card.label }}</div>
-          <div class="mt-1 text-lg font-semibold text-gray-900">{{ card.value }}</div>
-        </div>
+        <AppStatCard
+          v-for="card in structuredFieldCards"
+          :key="card.label"
+          :label="card.label"
+          :value="card.value"
+          size="sm"
+        />
       </div>
     </section>
   </div>
 </template>
 
 <script setup>
+import AppActionButton from '../../../components/ui/AppActionButton.vue'
+import AppSectionHeader from '../../../components/ui/AppSectionHeader.vue'
+import AppStatCard from '../../../components/ui/AppStatCard.vue'
+import AppStatusBadge from '../../../components/ui/AppStatusBadge.vue'
+
 defineProps({
   health: { type: Object, required: true },
   refreshing: { type: Boolean, required: true },
+  focusItems: { type: Array, required: true },
   cards: { type: Array, required: true },
   runtimeCopy: { type: Object, required: true },
   structuredFieldCards: { type: Array, required: true },
@@ -83,4 +95,11 @@ defineProps({
   refreshOverview: { type: Function, required: true },
   refreshStructuredSummary: { type: Function, required: true }
 })
+
+const getHealthTone = (level) => {
+  if (level === 'healthy') return 'success'
+  if (level === 'warning') return 'danger'
+  if (level === 'attention') return 'warning'
+  return 'neutral'
+}
 </script>

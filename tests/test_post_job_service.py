@@ -739,6 +739,82 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["posts_updated"], 1)
         self.assertEqual(mocked_sync.await_count, 1)
 
+    async def test_backfill_post_jobs_should_emit_progress_metrics(self):
+        first_post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 2, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/jobs-progress-1",
+            original_url="https://example.com/posts/jobs-progress-1",
+            counselor_scope=COUNSELOR_SCOPE_DEDICATED,
+            has_counselor_job=True,
+            is_counselor=True,
+        )
+        second_post = Post(
+            source_id=1,
+            title="苏州高校2026年公开招聘辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/jobs-progress-2",
+            original_url="https://example.com/posts/jobs-progress-2",
+            counselor_scope=COUNSELOR_SCOPE_CONTAINS,
+            has_counselor_job=True,
+            is_counselor=True,
+        )
+        self.db.add_all([first_post, second_post])
+        self.db.commit()
+
+        updates = []
+        with patch(
+            "src.services.post_job_service.sync_post_jobs",
+            new_callable=AsyncMock,
+            side_effect=[
+                {
+                    "jobs_saved": 2,
+                    "has_counselor_job": True,
+                    "ai_job_count": 1,
+                    "has_attachment_jobs": True,
+                    "counselor_scope": COUNSELOR_SCOPE_DEDICATED,
+                },
+                {
+                    "jobs_saved": 1,
+                    "has_counselor_job": True,
+                    "ai_job_count": 0,
+                    "has_attachment_jobs": False,
+                    "counselor_scope": COUNSELOR_SCOPE_CONTAINS,
+                },
+            ],
+        ):
+            result = await backfill_post_jobs(
+                self.db,
+                limit=10,
+                only_unindexed=True,
+                use_ai=True,
+                progress_callback=updates.append,
+            )
+
+        self.assertEqual(len(updates), 2)
+        self.assertEqual([update["stage_key"] for update in updates], ["extract-post-jobs"] * 2)
+        self.assertEqual(
+            [update["metrics"]["posts_scanned"] for update in updates],
+            [1, 2],
+        )
+        self.assertEqual(
+            [update["metrics"]["posts_updated"] for update in updates],
+            [1, 2],
+        )
+        self.assertEqual(
+            [update["metrics"]["jobs_saved"] for update in updates],
+            [2, 3],
+        )
+        self.assertEqual(updates[-1]["metrics"]["posts_total"], result["posts_scanned"])
+        self.assertEqual(updates[-1]["metrics"]["posts_updated"], result["posts_updated"])
+        self.assertEqual(updates[-1]["metrics"]["jobs_saved"], result["jobs_saved"])
+        self.assertEqual(updates[-1]["metrics"]["ai_posts"], result["ai_posts"])
+        self.assertEqual(updates[-1]["metrics"]["dedicated_posts"], result["dedicated_posts"])
+        self.assertEqual(updates[-1]["metrics"]["contains_posts"], result["contains_posts"])
+
     def test_get_job_index_summary_should_exclude_duplicate_posts_and_jobs(self):
         primary_post = Post(
             source_id=1,

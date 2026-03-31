@@ -192,6 +192,66 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(called_post_ids, list)
         self.assertGreaterEqual(len(called_post_ids), 1)
 
+    async def test_scrape_and_save_should_emit_progress_metrics(self):
+        updates = []
+
+        with patch("src.services.scraper_service.create_scraper", return_value=FakeScraper()), patch(
+            "src.services.attachment_service.get_attachment_storage_path",
+            side_effect=self.build_attachment_storage_path
+        ):
+            result = await scrape_and_save(
+                self.db,
+                source_id=1,
+                max_pages=1,
+                progress_callback=updates.append,
+            )
+
+        self.assertEqual(len(updates), 3)
+        self.assertEqual([update["stage_key"] for update in updates], ["persist-posts"] * 3)
+        self.assertEqual(
+            [update["metrics"]["posts_seen"] for update in updates],
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            [update["metrics"]["posts_created"] for update in updates],
+            [1, 1, 2],
+        )
+        self.assertEqual(updates[-1]["metrics"]["posts_total"], 3)
+        self.assertEqual(updates[-1]["metrics"]["posts_created"], result)
+        self.assertEqual(updates[-1]["metrics"]["posts_updated"], 0)
+
+    async def test_scrape_and_save_should_raise_when_scraper_creation_fails(self):
+        with patch(
+            "src.services.scraper_service.create_scraper",
+            side_effect=ValueError("未注册的爬虫类: MissingScraper"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "未注册的爬虫类"):
+                await scrape_and_save(self.db, source_id=1, max_pages=1)
+
+    async def test_scrape_and_save_should_raise_when_scrape_request_fails(self):
+        class BrokenScraper:
+            async def scrape(self, max_pages=10):
+                raise RuntimeError("源站超时")
+
+        with patch(
+            "src.services.scraper_service.create_scraper",
+            return_value=BrokenScraper(),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "源站超时"):
+                await scrape_and_save(self.db, source_id=1, max_pages=1)
+
+    async def test_scrape_and_save_should_raise_when_commit_fails(self):
+        with patch("src.services.scraper_service.create_scraper", return_value=FakeScraper()), patch(
+            "src.services.attachment_service.get_attachment_storage_path",
+            side_effect=self.build_attachment_storage_path
+        ), patch.object(
+            self.db,
+            "commit",
+            side_effect=RuntimeError("提交失败"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "提交失败"):
+                await scrape_and_save(self.db, source_id=1, max_pages=1)
+
     async def test_scrape_and_save_should_raise_for_inactive_source(self):
         source = self.db.query(Source).filter(Source.id == 1).first()
         source.is_active = False

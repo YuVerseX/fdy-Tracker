@@ -33,9 +33,9 @@ test('buildAdminHealthState keeps basic mode healthy when only AI backlog remain
 
   assert.equal(health.level, 'healthy')
   assert.equal(health.label, '正常')
-  assert.match(health.summary, /基础模式|基础处理/)
-  assert.ok(health.alerts.every((item) => !/AI 增强未开启|基础模式/.test(item)))
-  assert.ok(health.alerts.every((item) => !/待 AI 增强分析/.test(item)))
+  assert.match(health.summary, /基础处理/)
+  assert.ok(health.alerts.every((item) => !/智能整理已关闭|基础模式/.test(item)))
+  assert.ok(health.alerts.every((item) => !/待补充智能摘要整理/.test(item)))
 })
 
 test('buildAdminHealthState counts AI backlog only when AI enhancement is truly available', () => {
@@ -49,7 +49,7 @@ test('buildAdminHealthState counts AI backlog only when AI enhancement is truly 
   )
 
   assert.equal(health.level, 'attention')
-  assert.ok(health.alerts.some((item) => /待 AI 增强分析/.test(item)))
+  assert.ok(health.alerts.some((item) => /待补充智能摘要整理/.test(item)))
 })
 
 test('buildAdminHealthState should keep explicit disabled runtime healthy when base chain has no backlog', () => {
@@ -68,6 +68,6 @@ test('buildAdminHealthState should keep explicit disabled runtime healthy when b
   )
 
   assert.equal(health.level, 'healthy')
-  assert.match(health.summary, /基础处理链路仍可继续推进/)
+  assert.match(health.summary, /智能整理已关闭，基础处理仍可继续/)
   assert.ok(health.alerts.every((item) => !/都不会继续推进/.test(item)))
 })

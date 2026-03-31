@@ -1,3 +1,5 @@
+import { normalizeAdminUiMessage, normalizeAdminUiText } from '../../utils/adminCopySanitizers.js'
+
 const EMPTY_TASK_STATE = Object.freeze({
   latestSuccessTask: null,
   latestFailedTask: null,
@@ -20,10 +22,13 @@ export const normalizeTaskRun = (run) => {
     id: run.id || '',
     taskType: run.task_type || run.taskType || '',
     status: run.status || '',
-    summary: run.summary || '',
+    summary: normalizeAdminUiText(run.summary || ''),
     startedAt: run.started_at || run.startedAt || '',
     finishedAt: run.finished_at || run.finishedAt || run.last_success_at || run.lastSuccessAt || run.started_at || run.startedAt || '',
-    failureReason: run.failure_reason || run.error || run.details?.failure_reason || run.details?.error || ''
+    failureReason: normalizeAdminUiMessage(
+      run.failure_reason || run.error || run.details?.failure_reason || run.details?.error || '',
+      '这次处理没有完成，请稍后再试。'
+    )
   }
 }
 
@@ -61,6 +66,6 @@ export function buildRecentTaskState({
     latestFailedTask,
     recentTaskLoaded: true,
     isDegraded,
-    fallbackNotice: isDegraded ? '任务摘要接口不可用，已回退到最近任务记录。' : ''
+    fallbackNotice: isDegraded ? '当前改用最近任务记录展示结果。' : ''
   }
 }

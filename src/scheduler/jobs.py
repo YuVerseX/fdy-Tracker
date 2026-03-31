@@ -17,6 +17,7 @@ from src.services.admin_task_service import (
     update_task_run,
 )
 from src.services.scraper_service import scrape_and_save
+from src.services.task_progress import ProgressCallback
 
 # 创建调度器
 scheduler = AsyncIOScheduler()
@@ -25,38 +26,76 @@ DEFAULT_SOURCE_ID = 1
 DEFAULT_MAX_PAGES = 5
 
 
+def build_progress_details(
+    progress_mode: str,
+    *,
+    metrics: dict | None = None,
+    stage_key: str | None = None,
+) -> dict:
+    """统一构造调度任务的进度详情。"""
+    details = {"progress_mode": progress_mode}
+    if stage_key:
+        details["stage_key"] = stage_key
+    if metrics is not None:
+        details["metrics"] = metrics
+    return details
+
+
+def build_scheduler_progress_callback(task_id: str) -> ProgressCallback:
+    """把服务层进度事件写回调度任务记录。"""
+    def _callback(payload: dict) -> None:
+        metrics = dict(payload.get("metrics") or {})
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase=payload.get("stage_label") or "",
+            progress=None,
+            details=build_progress_details(
+                payload.get("progress_mode") or "stage_only",
+                stage_key=payload.get("stage_key") or "",
+                metrics=metrics,
+            ),
+        )
+
+    return _callback
+
+
 async def _run_with_task_heartbeat(
     *,
     task_id: str,
-    phase: str,
-    progress: int,
     awaitable,
+    phase: str | None = None,
+    progress: int | None = None,
+    details: dict | None = None,
     heartbeat_interval_seconds: int = 20,
 ):
     """定时抓取长任务心跳刷新"""
     stop_event = asyncio.Event()
 
+    def _send_update() -> None:
+        update_kwargs = {
+            "task_id": task_id,
+            "status": "running",
+        }
+        if phase is not None:
+            update_kwargs["phase"] = phase
+        if progress is not None:
+            update_kwargs["progress"] = progress
+        if details is not None:
+            update_kwargs["details"] = details
+        update_task_run(**update_kwargs)
+
     async def _heartbeat_loop():
         while True:
             if stop_event.is_set():
                 break
-            update_task_run(
-                task_id=task_id,
-                status="running",
-                phase=phase,
-                progress=progress,
-            )
+            _send_update()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=heartbeat_interval_seconds)
             except asyncio.TimeoutError:
                 continue
 
-    update_task_run(
-        task_id=task_id,
-        status="running",
-        phase=phase,
-        progress=progress,
-    )
+    _send_update()
     heartbeat_task = asyncio.create_task(_heartbeat_loop())
     try:
         return await awaitable
@@ -213,16 +252,18 @@ async def scheduled_scrape():
             task_id=running_task["id"],
             status="running",
             phase="定时抓取启动中",
-            progress=10,
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
         count = await _run_with_task_heartbeat(
             task_id=running_task["id"],
-            phase="定时抓取执行中",
-            progress=60,
+            phase="正在抓取源站并写入数据库",
+            details=build_progress_details("stage_only"),
             awaitable=scrape_and_save(
                 db,
                 source_id=config.default_source_id,
-                max_pages=config.default_max_pages
+                max_pages=config.default_max_pages,
+                progress_callback=build_scheduler_progress_callback(running_task["id"]),
             ),
         )
         if count > 0:
@@ -235,7 +276,8 @@ async def scheduled_scrape():
             task_id=running_task["id"],
             status="running",
             phase="定时抓取收尾中",
-            progress=90,
+            progress=None,
+            details=build_progress_details("stage_only"),
         )
 
         record_task_run(
@@ -244,7 +286,11 @@ async def scheduled_scrape():
             summary=summary,
             details={
                 **params,
-                "processed_records": count
+                "processed_records": count,
+                **build_progress_details(
+                    "stage_only",
+                    metrics={"processed_records": count},
+                ),
             },
             params=params,
             task_id=running_task["id"],
@@ -261,7 +307,8 @@ async def scheduled_scrape():
                 summary="定时抓取失败",
                 details={
                     **params,
-                    "error": str(e)
+                    "error": str(e),
+                    **build_progress_details("stage_only"),
                 },
                 params=params,
                 task_id=running_task["id"],

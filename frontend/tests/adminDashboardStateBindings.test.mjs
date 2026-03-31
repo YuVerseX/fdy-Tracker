@@ -2,7 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { computed, ref } from 'vue'
 
-import { normalizeAdminDashboardBindings } from '../src/views/admin/useAdminDashboardState.js'
+import {
+  ADMIN_SECTION_ORDER,
+  PROCESSING_MODE_ORDER,
+  normalizeAdminDashboardBindings,
+  normalizeAdminSection,
+  normalizeProcessingMode
+} from '../src/views/admin/useAdminDashboardState.js'
 
 test('normalizeAdminDashboardBindings should unwrap refs and computed section models for template access', () => {
   const dashboard = normalizeAdminDashboardBindings({
@@ -20,4 +26,18 @@ test('normalizeAdminDashboardBindings should unwrap refs and computed section mo
   assert.deepEqual(dashboard.taskRunsSection.taskRuns, [])
   assert.equal(dashboard.taskRunsSection.taskRunsLoaded, true)
   assert.equal(typeof dashboard.setActiveSection, 'function')
+})
+
+test('normalizeAdminSection should collapse legacy ai enhancement routing into processing', () => {
+  assert.deepEqual(ADMIN_SECTION_ORDER, ['overview', 'processing', 'tasks', 'system'])
+  assert.equal(normalizeAdminSection('ai-enhancement'), 'processing')
+  assert.equal(normalizeAdminSection('governance'), 'processing')
+  assert.equal(normalizeAdminSection('unknown-section'), 'overview')
+})
+
+test('normalizeProcessingMode should keep processing tabs inside base and ai modes', () => {
+  assert.deepEqual(PROCESSING_MODE_ORDER, ['base', 'ai'])
+  assert.equal(normalizeProcessingMode('base'), 'base')
+  assert.equal(normalizeProcessingMode('ai'), 'ai')
+  assert.equal(normalizeProcessingMode('other'), 'base')
 })

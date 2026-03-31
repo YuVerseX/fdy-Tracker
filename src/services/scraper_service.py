@@ -8,6 +8,7 @@ from src.services.attachment_service import ensure_attachments_processed
 from src.services.duplicate_service import refresh_duplicate_posts
 from src.services.filter_service import is_counselor_position
 from src.services.post_job_service import sync_post_jobs
+from src.services.task_progress import ProgressCallback, emit_progress
 from src.database.models import Attachment, Post, Source, PostField
 from src.parsers.post_parser import parse_post_fields
 
@@ -235,7 +236,8 @@ def should_refresh_post_attachments(post: Post) -> bool:
 async def backfill_existing_attachments(
     db: Session,
     source_id: int | None = None,
-    limit: int = 100
+    limit: int = 100,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict:
     """补处理历史帖子附件"""
     logger.info(f"开始补处理历史附件: source_id={source_id}, limit={limit}")
@@ -265,8 +267,9 @@ async def backfill_existing_attachments(
         }
 
     scraper_cache = {}
+    total_posts = len(posts)
     result = {
-        "posts_scanned": len(posts),
+        "posts_scanned": total_posts,
         "posts_updated": 0,
         "attachments_discovered": 0,
         "attachments_downloaded": 0,
@@ -275,7 +278,7 @@ async def backfill_existing_attachments(
         "failures": 0
     }
 
-    for post in posts:
+    for index, post in enumerate(posts, start=1):
         try:
             with db.begin_nested():
                 before_attachment_map = build_attachment_metadata_map(post.attachments)
@@ -366,6 +369,23 @@ async def backfill_existing_attachments(
             logger.error(f"补处理历史附件失败: post_id={post.id} - {exc}")
             result["failures"] += 1
             continue
+        finally:
+            emit_progress(
+                progress_callback,
+                stage_key="persist-attachments",
+                stage_label="正在补处理历史附件",
+                progress_mode="stage_only",
+                metrics={
+                    "posts_scanned": index,
+                    "posts_total": total_posts,
+                    "posts_updated": result["posts_updated"],
+                    "attachments_discovered": result["attachments_discovered"],
+                    "attachments_downloaded": result["attachments_downloaded"],
+                    "attachments_parsed": result["attachments_parsed"],
+                    "fields_added": result["fields_added"],
+                    "failures": result["failures"],
+                },
+            )
 
     try:
         db.commit()
@@ -377,7 +397,12 @@ async def backfill_existing_attachments(
     return result
 
 
-async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) -> int:
+async def scrape_and_save(
+    db: Session,
+    source_id: int = 1,
+    max_pages: int = 10,
+    progress_callback: ProgressCallback | None = None,
+) -> int:
     """
     抓取数据并保存到数据库
 
@@ -398,20 +423,21 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
         scraper = create_scraper(source)
     except ValueError as e:
         logger.error(str(e))
-        return 0
+        raise RuntimeError(str(e)) from e
 
     # 抓取数据
     try:
         results = await scraper.scrape(max_pages=max_pages)
     except Exception as e:
         logger.error(f"抓取失败: {e}")
-        return 0
+        raise RuntimeError(str(e)) from e
 
     # 保存到数据库
     new_count = 0
     updated_count = 0
     touched_post_ids: set[int] = set()
-    for result in results:
+    total_results = len(results)
+    for index, result in enumerate(results, start=1):
         try:
             with db.begin_nested():
                 canonical_url = result["url"]
@@ -538,6 +564,19 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
         except Exception as e:
             logger.error(f"保存记录失败: {e}")
             continue
+        finally:
+            emit_progress(
+                progress_callback,
+                stage_key="persist-posts",
+                stage_label="正在抓取源站并写入数据库",
+                progress_mode="stage_only",
+                metrics={
+                    "posts_seen": index,
+                    "posts_total": total_results,
+                    "posts_created": new_count,
+                    "posts_updated": updated_count,
+                },
+            )
 
     # 提交事务
     try:
@@ -551,6 +590,6 @@ async def scrape_and_save(db: Session, source_id: int = 1, max_pages: int = 10) 
     except Exception as e:
         logger.error(f"提交事务失败: {e}")
         db.rollback()
-        return 0
+        raise RuntimeError(str(e)) from e
 
     return new_count + updated_count
