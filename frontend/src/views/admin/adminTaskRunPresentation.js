@@ -119,6 +119,7 @@ const getDeterminateProgressKind = (metrics = {}) => {
 }
 
 const getDefaultStageLabel = (run = {}) => {
+  if (run?.status === 'cancelled') return '已终止'
   if (run?.status === 'success') return '已完成'
   if (run?.status === 'failed') return '处理未完成'
   if (run?.status === 'queued' || run?.status === 'pending') return '排队等待执行'
@@ -138,7 +139,7 @@ const getProgressPercent = (run = {}, metrics = {}) => {
     return Math.max(0, Math.min(Math.round((completed / total) * 100), 100))
   }
 
-  if (run?.status === 'success') return 100
+  if (run?.status === 'success' || run?.status === 'cancelled') return 100
   return 0
 }
 
@@ -152,12 +153,17 @@ const getTaskElapsedMs = (run = {}, nowTs = Date.now()) => {
 }
 
 const getTaskFailureReason = (run = {}) => [run?.failure_reason, run?.error, run?.details?.failure_reason, run?.details?.error].find(Boolean) || ''
+const isTaskCancellationPending = (run = {}) => (
+  isRunningTaskStatus(run?.status) && Boolean(run?.details?.cancel_requested_at)
+)
 
 const getTaskStatusLabel = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) => {
   if (isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)) return '进度停滞'
+  if (isTaskCancellationPending(run)) return '正在终止'
   const statusLabel = String(run?.status_label || '').trim()
   if (statusLabel) return statusLabel
   if (run?.status === 'success') return '完成'
+  if (run?.status === 'cancelled') return '已终止'
   if (run?.status === 'failed') return '失败'
   if (run?.status === 'queued' || run?.status === 'pending') return '排队中'
   if (isRunningTaskStatus(run?.status)) return '运行中'
@@ -166,6 +172,7 @@ const getTaskStatusLabel = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 1
 
 const getTaskStatusTone = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) => {
   if (run?.status === 'success') return 'success'
+  if (run?.status === 'cancelled') return 'neutral'
   if (run?.status === 'failed' || isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)) return 'danger'
   if (run?.status === 'queued' || run?.status === 'pending') return 'neutral'
   if (isRunningTaskStatus(run?.status)) return 'warning'
@@ -174,12 +181,14 @@ const getTaskStatusTone = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10
 
 const getTaskSurfaceTone = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) => {
   if (run?.status === 'success') return 'success'
+  if (run?.status === 'cancelled') return 'muted'
   if (run?.status === 'failed' || isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)) return 'danger'
   if (isRunningTaskStatus(run?.status)) return 'info'
   return 'muted'
 }
 
 const getTaskStageTitle = (run = {}) => {
+  if (run?.status === 'cancelled') return '终止位置'
   if (run?.status === 'failed') return '未完成位置'
   if (run?.status === 'success') return '完成情况'
   return '当前阶段'
@@ -190,6 +199,7 @@ const getTaskResultTitle = (run = {}) => (
 )
 
 const getTaskResultHint = (run = {}) => {
+  if (run?.status === 'cancelled') return '已完成的结果会保留，可以继续补剩余内容或重新运行当前范围。'
   if (run?.status === 'failed') return '可以先查看失败原因，再决定是否重新处理当前范围。'
   if (run?.status === 'success') return '这是本次任务的最终结果，可以据此决定是否继续处理当前范围。'
   if (run?.status === 'queued' || run?.status === 'pending') return '任务开始后，这里的数量会按实际处理结果更新。'
@@ -199,6 +209,7 @@ const getTaskResultHint = (run = {}) => {
 const getTaskTimelineText = (run = {}) => {
   const timestamp = run?.finished_at || run?.finishedAt || run?.started_at || run?.startedAt || getTaskHeartbeatAt(run)
   const label = formatAdminDateTime(timestamp)
+  if ((run?.finished_at || run?.finishedAt) && run?.status === 'cancelled') return `终止于 ${label}`
   if (run?.finished_at || run?.finishedAt) return `完成于 ${label}`
   if (run?.started_at || run?.startedAt) return `开始于 ${label}`
   return label
@@ -248,6 +259,7 @@ const formatSourceParam = (run = {}, sourceOptions = []) => {
 }
 
 const buildDeterminateProgressLabel = (run = {}, metrics = {}) => {
+  if (run?.status === 'cancelled') return '已终止'
   const completed = toNumber(metrics.completed)
   const total = toNumber(metrics.total)
   const unit = String(metrics.unit || '').trim()
@@ -266,6 +278,7 @@ const buildDeterminateProgressLabel = (run = {}, metrics = {}) => {
 }
 
 const buildEstimatedProgressLabel = (run = {}, { isStuck = false } = {}) => {
+  if (run?.status === 'cancelled') return '已终止'
   if (run?.status === 'success') return '已完成'
   if (run?.status === 'failed') return '处理未完成'
   if (isStuck) return '等待阶段更新'
@@ -274,6 +287,7 @@ const buildEstimatedProgressLabel = (run = {}, { isStuck = false } = {}) => {
 }
 
 const buildStageOnlyProgressLabel = (run = {}, metrics = {}, { isStuck = false } = {}) => {
+  if (run?.status === 'cancelled') return '已终止'
   if (run?.status === 'success') return '已完成'
   if (run?.status === 'failed') return '处理未完成'
   if (isStuck) return '等待阶段更新'
@@ -445,6 +459,17 @@ export function buildTaskRunCardPresentation(run = {}, {
     getTaskFailureReason(run),
     '这次处理没有完成，请稍后再试。'
   )
+  const cancellationNotice = isTaskCancellationPending(run)
+    ? {
+        title: '终止请求已提交',
+        description: '当前处理单元结束后会停止，已完成结果会保留。'
+      }
+    : run?.status === 'cancelled'
+      ? {
+          title: '这次处理已终止',
+          description: '已完成的结果已保留，可继续补剩余内容或重新运行。'
+        }
+      : null
 
   return {
     title: run?.display_name || getTaskTypeLabel(run?.task_type || run?.taskType),
@@ -460,6 +485,7 @@ export function buildTaskRunCardPresentation(run = {}, {
     resultHint: getTaskResultHint(run),
     resultItems: buildTaskHeadlineResultItems(run),
     detailSections: buildTaskDetailSections(run, { sourceOptions, nowTs }),
+    cancellationNotice,
     failureNotice: run?.status === 'failed'
       ? {
           title: '这次处理未完成',

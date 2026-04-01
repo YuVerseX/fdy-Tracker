@@ -8,7 +8,12 @@ from src.services.attachment_service import ensure_attachments_processed
 from src.services.duplicate_service import refresh_duplicate_posts
 from src.services.filter_service import is_counselor_position
 from src.services.post_job_service import sync_post_jobs
-from src.services.task_progress import ProgressCallback, emit_progress
+from src.services.task_progress import (
+    CancelCheck,
+    ProgressCallback,
+    emit_progress,
+    raise_if_cancel_requested,
+)
 from src.database.models import Attachment, Post, Source, PostField
 from src.parsers.post_parser import parse_post_fields
 
@@ -238,6 +243,7 @@ async def backfill_existing_attachments(
     source_id: int | None = None,
     limit: int = 100,
     progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> dict:
     """补处理历史帖子附件"""
     logger.info(f"开始补处理历史附件: source_id={source_id}, limit={limit}")
@@ -279,6 +285,21 @@ async def backfill_existing_attachments(
     }
 
     for index, post in enumerate(posts, start=1):
+        raise_if_cancel_requested(
+            cancel_check,
+            on_cancel=(
+                db.commit
+                if any(result[key] > 0 for key in (
+                    "posts_updated",
+                    "attachments_discovered",
+                    "attachments_downloaded",
+                    "attachments_parsed",
+                    "fields_added",
+                ))
+                else None
+            ),
+            result=result,
+        )
         try:
             with db.begin_nested():
                 before_attachment_map = build_attachment_metadata_map(post.attachments)

@@ -16,7 +16,12 @@ from src.config import settings
 from src.database.models import Attachment, Post, PostAnalysis, PostField, PostInsight, PostJob
 from src.services.attachment_service import read_attachment_parse_result
 from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
-from src.services.task_progress import ProgressCallback, emit_progress
+from src.services.task_progress import (
+    CancelCheck,
+    ProgressCallback,
+    emit_progress,
+    raise_if_cancel_requested,
+)
 
 try:
     from openai import OpenAI
@@ -1632,11 +1637,26 @@ def ensure_pending_base_analysis_bundle(
     return analysis, insight
 
 
+def _raise_if_cancel_requested_after_checkpoint(
+    db: Session,
+    cancel_check: CancelCheck | None,
+    *,
+    should_commit: bool,
+    result: dict[str, Any],
+) -> None:
+    raise_if_cancel_requested(
+        cancel_check,
+        on_cancel=db.commit if should_commit else None,
+        result=result,
+    )
+
+
 def backfill_base_analysis(
     db: Session,
     source_id: int | None = None,
     limit: int = 100,
     only_pending: bool = True,
+    cancel_check: CancelCheck | None = None,
 ) -> dict[str, int]:
     """为主记录补齐基础 analysis 与 insight"""
     query = db.query(Post).options(
@@ -1687,6 +1707,12 @@ def backfill_base_analysis(
     }
 
     for post in posts:
+        _raise_if_cancel_requested_after_checkpoint(
+            db,
+            cancel_check,
+            should_commit=result["posts_updated"] > 0,
+            result=result,
+        )
         if only_pending:
             should_update_analysis = not is_successful_analysis_record(post.analysis)
             should_update_insight = not is_successful_insight_record(post.insight)
@@ -1802,6 +1828,7 @@ async def run_ai_analysis(
     limit: int = 50,
     only_unanalyzed: bool = True,
     progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> dict[str, Any]:
     """批量分析帖子"""
     query = db.query(Post).options(
@@ -1867,6 +1894,12 @@ async def run_ai_analysis(
 
     total_posts = len(posts)
     for index, post in enumerate(posts, start=1):
+        _raise_if_cancel_requested_after_checkpoint(
+            db,
+            cancel_check,
+            should_commit=result["posts_analyzed"] > 0,
+            result=result,
+        )
         post_id = post.id
         try:
             with db.begin_nested():

@@ -60,6 +60,7 @@ export function useAdminDashboardState() {
     expandedTaskIds: [],
     retryingTaskId: '',
     retryingTaskActionKey: '',
+    cancelingTaskId: '',
     pollingInFlight: false,
     pollingTimerId: null,
     nowTs: Date.now(),
@@ -112,6 +113,10 @@ export function useAdminDashboardState() {
     if (!analysisRuntime.value.openai_configured) return '请先完成智能服务配置后再运行智能整理。'
     if (!analysisRuntime.value.openai_sdk_available) return '智能服务暂时不可用，请稍后再试。'
     return '智能整理暂时不可用，基础处理仍可继续。'
+  })
+  const aiJobBlockedReason = computed(() => {
+    if (taskBusy.value.jobIndex || !taskBusy.value.aiAnalysis) return ''
+    return '智能摘要整理正在运行，需等待这轮处理结束后再补充智能岗位识别。'
   })
   const recentTaskState = computed(() => buildRecentTaskState({
     taskSummary: state.taskSummary,
@@ -218,6 +223,7 @@ export function useAdminDashboardState() {
     runtimeCopy: runtimeCopy.value,
     openaiReady: openaiReady.value,
     disabledReason: openaiUnavailableReason.value,
+    jobsBlockedReason: aiJobBlockedReason.value,
     panels: aiEnhancementPanels.value,
     sourceOptions: sourceOptions.value,
     forms: { analysis: forms.aiAnalysis, jobs: forms.aiJob },
@@ -237,7 +243,7 @@ export function useAdminDashboardState() {
     aiSection: aiEnhancementSection.value
   }))
   const systemSection = computed(() => buildSystemSectionModel({ schedulerForm: forms.scheduler, schedulerLoaded: loaded.scheduler, schedulerLoading: loading.scheduler, schedulerSaving: loading.schedulerSaving, sourceOptions: sourceOptions.value }))
-  const taskRunsSection = computed(() => buildTaskRunsSectionModel({ taskRuns: state.taskRuns, taskRunsLoaded: loaded.taskRuns, loadingRuns: loading.taskRuns, retryingTaskId: state.retryingTaskId, retryingTaskActionKey: state.retryingTaskActionKey, expandedTaskIds: state.expandedTaskIds, nowTs: state.nowTs, sourceOptions: sourceOptions.value, heartbeatStaleMs: TASK_HEARTBEAT_STALE_MS }))
+  const taskRunsSection = computed(() => buildTaskRunsSectionModel({ taskRuns: state.taskRuns, taskRunsLoaded: loaded.taskRuns, loadingRuns: loading.taskRuns, retryingTaskId: state.retryingTaskId, retryingTaskActionKey: state.retryingTaskActionKey, cancelingTaskId: state.cancelingTaskId, expandedTaskIds: state.expandedTaskIds, nowTs: state.nowTs, sourceOptions: sourceOptions.value, heartbeatStaleMs: TASK_HEARTBEAT_STALE_MS }))
 
   const setActiveSection = (value) => {
     const normalizedValue = normalizeAdminSection(value)

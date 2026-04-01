@@ -29,6 +29,7 @@ from src.services.ai_analysis_service import (
     infer_event_type,
     run_ai_analysis,
 )
+from src.services.task_progress import TaskCancellationRequested
 
 
 class AIAnalysisServiceTestCase(unittest.TestCase):
@@ -797,6 +798,106 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["insight_success_count"], 1)
         self.assertEqual(self.db.query(PostAnalysis).count(), 1)
         self.assertEqual(self.db.query(PostInsight).count(), 1)
+
+    def test_backfill_base_analysis_should_stop_before_next_post_when_cancel_requested(self):
+        cancel_state = {"count": 0}
+
+        def cancel_check():
+            cancel_state["count"] += 1
+            return cancel_state["count"] > 1
+
+        with self.assertRaises(TaskCancellationRequested):
+            backfill_base_analysis(
+                self.db,
+                source_id=1,
+                limit=10,
+                only_pending=True,
+                cancel_check=cancel_check,
+            )
+
+        saved_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 2).first()
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 2).first()
+        untouched_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 1).first()
+
+        self.assertIsNotNone(saved_analysis)
+        self.assertIsNotNone(saved_insight)
+        self.assertEqual(saved_insight.insight_status, "success")
+        self.assertIsNone(untouched_insight)
+
+    async def test_run_ai_analysis_should_stop_before_next_post_when_cancel_requested(self):
+        cancel_state = {"count": 0}
+
+        def cancel_check():
+            cancel_state["count"] += 1
+            return cancel_state["count"] > 1
+
+        with patch(
+            "src.services.ai_analysis_service.is_openai_ready",
+            return_value=True,
+        ), patch(
+            "src.services.ai_analysis_service.analyze_post",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIAnalysisResult(
+                    event_type="招聘公告",
+                    recruitment_stage="招聘启动",
+                    school_name="苏州高校",
+                    city="苏州",
+                    should_track=True,
+                    tracking_priority="high",
+                    summary="第一条已完成分析。",
+                    tags=["辅导员招聘"],
+                    entities=["苏州高校"],
+                ),
+                error_message="",
+                raw_result={"source": "openai"},
+            ),
+        ), patch(
+            "src.services.ai_analysis_service.analyze_post_insight",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(
+                status="success",
+                provider="openai",
+                model_name="gpt-5.4",
+                result=AIInsightResult(
+                    recruitment_count_total=2,
+                    counselor_recruitment_count=2,
+                    degree_floor="硕士",
+                    city_list=["南京"],
+                    gender_restriction="不限",
+                    political_status_required="中共党员",
+                    deadline_text="2026年4月1日",
+                    deadline_date="2026-04-01",
+                    deadline_status="报名中",
+                    has_written_exam=True,
+                    has_interview=True,
+                    has_attachment_job_table=False,
+                    evidence_summary="第一条已完成统计提取。",
+                ),
+                error_message="",
+                raw_result={"source": "openai-insight"},
+            ),
+        ):
+            with self.assertRaises(TaskCancellationRequested):
+                await run_ai_analysis(
+                    self.db,
+                    source_id=1,
+                    limit=10,
+                    only_unanalyzed=True,
+                    cancel_check=cancel_check,
+                )
+
+        saved_analysis = self.db.query(PostAnalysis).filter(PostAnalysis.post_id == 2).first()
+        saved_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 2).first()
+        untouched_insight = self.db.query(PostInsight).filter(PostInsight.post_id == 1).first()
+
+        self.assertIsNotNone(saved_analysis)
+        self.assertIsNotNone(saved_insight)
+        self.assertEqual(saved_insight.insight_provider, "openai")
+        self.assertIsNone(untouched_insight)
 
     def test_backfill_base_analysis_should_fill_analysis_and_insight_for_pending_primary_posts(self):
         duplicate_post = self.db.query(Post).filter(Post.id == 2).first()

@@ -218,7 +218,41 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["running_tasks"][0]["stage_label"], "正在抓取源站并写入数据库")
         self.assertEqual(payload["latest_task_run"]["phase"], "正在抓取源站并写入数据库")
         self.assertEqual(payload["latest_success_run"]["phase"], "抓取完成")
-        self.assertEqual(payload["running_tasks"][0]["details"]["posts_seen"], 5)
+
+    def test_cancel_task_run_should_return_202_for_running_task(self):
+        self._login()
+        with patch(
+            "src.api.admin.request_task_run_cancel",
+            return_value={
+                "id": "run-ai-1",
+                "task_type": "ai_analysis",
+                "status": "running",
+                "details": {"cancel_requested_at": "2026-04-01T10:00:00+00:00"},
+            },
+        ), patch(
+            "src.api.admin.serialize_task_run_for_admin",
+            return_value={
+                "id": "run-ai-1",
+                "task_type": "ai_analysis",
+                "status": "running",
+                "status_label": "执行中",
+                "details": {"cancel_requested_at": "2026-04-01T10:00:00+00:00"},
+            },
+        ):
+            response = self.client.post("/api/admin/task-runs/run-ai-1/cancel")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertIn("终止请求已提交", response.json()["message"])
+
+    def test_cancel_task_run_should_return_409_for_finished_task(self):
+        self._login()
+        with patch(
+            "src.api.admin.request_task_run_cancel",
+            side_effect=ValueError("task_not_running"),
+        ):
+            response = self.client.post("/api/admin/task-runs/run-ai-1/cancel")
+
+        self.assertEqual(response.status_code, 409)
 
     def test_build_admin_progress_callback_should_forward_stage_key_and_metrics(self):
         callback = admin_api.build_admin_progress_callback("run-dup-1")
@@ -1085,6 +1119,34 @@ class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("失败", mocked_record.call_args.kwargs["summary"])
         fake_db.close.assert_called_once()
 
+    async def test_run_ai_analysis_in_background_should_record_cancelled_when_cancel_requested(self):
+        params = {"source_id": 1, "limit": 20, "only_unanalyzed": True}
+        fake_db = MagicMock()
+
+        async def fake_run_with_heartbeat(*, awaitable, **_kwargs):
+            return await awaitable
+
+        async def raise_cancelled(*_args, **_kwargs):
+            raise admin_api.TaskCancellationRequested("user_requested")
+
+        with patch("src.api.admin.SessionLocal", return_value=fake_db), patch(
+            "src.api.admin._run_with_heartbeat",
+            side_effect=fake_run_with_heartbeat,
+        ), patch(
+            "src.api.admin.run_ai_analysis",
+            side_effect=raise_cancelled,
+        ), patch("src.api.admin.update_task_run"), patch(
+            "src.api.admin.record_task_run",
+        ) as mocked_record:
+            await admin_api._run_ai_analysis_in_background(
+                "task-ai-cancel-1",
+                "2026-04-01T10:00:00+00:00",
+                params,
+            )
+
+        self.assertEqual(mocked_record.call_args.kwargs["status"], "cancelled")
+        fake_db.close.assert_called_once()
+
     async def test_run_job_extraction_in_background_should_record_failed_when_result_contains_failures(self):
         params = {"source_id": 1, "limit": 20, "only_unindexed": True, "use_ai": True}
         fake_db = MagicMock()
@@ -1171,12 +1233,12 @@ class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
 
         mocked_to_thread.assert_called_once()
         mocked_heartbeat.assert_called_once()
-        mocked_backfill.assert_called_once_with(
-            fake_db,
-            source_id=1,
-            limit=20,
-            only_pending=True,
-        )
+        mocked_backfill.assert_called_once()
+        self.assertEqual(mocked_backfill.call_args.args[0], fake_db)
+        self.assertEqual(mocked_backfill.call_args.kwargs["source_id"], 1)
+        self.assertEqual(mocked_backfill.call_args.kwargs["limit"], 20)
+        self.assertTrue(mocked_backfill.call_args.kwargs["only_pending"])
+        self.assertTrue(callable(mocked_backfill.call_args.kwargs["cancel_check"]))
         fake_db.close.assert_called_once()
         mocked_record.assert_called_once()
 

@@ -16,6 +16,10 @@ const TASK_ACTION_FEEDBACK = Object.freeze({
   incremental: {
     success: '补处理任务已提交',
     error: '补处理任务失败'
+  },
+  cancel: {
+    success: '终止请求已提交',
+    error: '提交终止请求失败'
   }
 })
 
@@ -39,7 +43,7 @@ export function createAdminDashboardDataService({
 } = {}) {
   const setFeedback = (type, message) => { feedback.value = { type, message } }
   const clearAdminRuntimeState = () => {
-    Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', retryingTaskActionKey: '', jobsSummaryUnavailable: false })
+    Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', retryingTaskActionKey: '', cancelingTaskId: '', jobsSummaryUnavailable: false })
     Object.keys(loaded).forEach((key) => { loaded[key] = false })
   }
   const handleAdminAccessError = (error) => {
@@ -261,6 +265,21 @@ export function createAdminDashboardDataService({
       state.retryingTaskActionKey = ''
     }
   }
+  const cancelTaskRun = async (run) => {
+    if (!run?.id) return
+    state.cancelingTaskId = run.id
+    try {
+      const response = await adminApi.cancelTaskRun(run.id)
+      setFeedback('success', normalizeAdminUiText(response?.data?.message || TASK_ACTION_FEEDBACK.cancel.success, TASK_ACTION_FEEDBACK.cancel.success))
+      await refreshTaskStatus()
+    } catch (error) {
+      if (handleAdminAccessError(error)) return
+      if (error?.response?.status === 409) await refreshTaskStatus()
+      setFeedback('error', getErrorMessage(error, TASK_ACTION_FEEDBACK.cancel.error))
+    } finally {
+      state.cancelingTaskId = ''
+    }
+  }
   const toggleTaskExpanded = (taskId) => {
     state.expandedTaskIds = state.expandedTaskIds.includes(taskId)
       ? state.expandedTaskIds.filter((id) => id !== taskId)
@@ -325,7 +344,7 @@ export function createAdminDashboardDataService({
     refreshStructuredSummary: fetchInsightSummary,
     refreshJobSummary: fetchJobSummary,
     refreshDuplicateSummary: fetchDuplicateSummary,
-    refreshOverview, refreshTaskStatus, submitAdminLogin, logoutAdmin, saveSchedulerConfig, retryTaskRun, toggleTaskExpanded,
+    refreshOverview, refreshTaskStatus, submitAdminLogin, logoutAdmin, saveSchedulerConfig, retryTaskRun, cancelTaskRun, toggleTaskExpanded,
     runScrapeTask: () => runNamedTask('manual_scrape', 'scrape'),
     runBackfillTask: () => runNamedTask('attachment_backfill', 'backfill'),
     runDuplicateBackfillTask: () => runNamedTask('duplicate_backfill', 'duplicate'),

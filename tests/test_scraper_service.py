@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from src.database.models import Attachment, Base, Post, PostAnalysis, PostField, PostInsight, PostJob, Source
 from src.services.ai_analysis_service import ensure_rule_analysis_bundle
 from src.services.scraper_service import backfill_existing_attachments, scrape_and_save, should_refresh_post_attachments
+from src.services.task_progress import TaskCancellationRequested
 
 
 def build_excel_bytes(rows):
@@ -617,6 +618,72 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mocked_bundle.call_args.args[1].id, existing_post.id)
         self.assertEqual(saved_insight.insight_provider, "openai")
         self.assertEqual(saved_insight.evidence_summary, "历史 OpenAI insight")
+
+    async def test_backfill_existing_attachments_should_stop_before_next_post_when_cancel_requested(self):
+        first_post = Post(
+            source_id=1,
+            title="历史辅导员公告-1",
+            content="已有正文",
+            publish_date=datetime(2026, 3, 2, tzinfo=timezone.utc),
+            canonical_url="https://example.com/history-cancel-1",
+            original_url="https://example.com/history-cancel-1",
+            is_counselor=True,
+            confidence_score=0.95,
+        )
+        second_post = Post(
+            source_id=1,
+            title="历史辅导员公告-2",
+            content="已有正文",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/history-cancel-2",
+            original_url="https://example.com/history-cancel-2",
+            is_counselor=True,
+            confidence_score=0.95,
+        )
+        self.db.add_all([first_post, second_post])
+        self.db.commit()
+
+        attachment_bytes = build_excel_bytes([
+            ["岗位名称", "招聘人数", "学历要求", "工作地点"],
+            ["专职辅导员", "2", "硕士", "南京"],
+        ])
+
+        class HistoryBackfillScraper:
+            async def scrape_detail_page(self, url: str):
+                return {
+                    "content": "已有正文",
+                    "attachments": [
+                        {
+                            "filename": "历史岗位表.xlsx",
+                            "file_url": f"{url}/history.xlsx",
+                            "file_type": "xlsx",
+                        }
+                    ],
+                }
+
+            async def fetch(self, url: str, method: str = "GET", **kwargs):
+                return FakeResponse(attachment_bytes)
+
+        def cancel_check():
+            return self.db.query(Attachment).filter(Attachment.post_id == first_post.id).count() > 0
+
+        with patch("src.services.scraper_service.create_scraper", return_value=HistoryBackfillScraper()), patch(
+            "src.services.attachment_service.get_attachment_storage_path",
+            side_effect=self.build_attachment_storage_path,
+        ):
+            with self.assertRaises(TaskCancellationRequested):
+                await backfill_existing_attachments(
+                    self.db,
+                    source_id=1,
+                    limit=10,
+                    cancel_check=cancel_check,
+                )
+
+        first_attachments = self.db.query(Attachment).filter(Attachment.post_id == first_post.id).count()
+        second_attachments = self.db.query(Attachment).filter(Attachment.post_id == second_post.id).count()
+
+        self.assertEqual(first_attachments, 1)
+        self.assertEqual(second_attachments, 0)
 
     def test_should_refresh_post_attachments_should_ignore_stale_parse_sidecar(self):
         post = Post(

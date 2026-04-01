@@ -26,6 +26,7 @@ from src.services.post_job_service import (
     should_refresh_job_index,
     sync_post_jobs,
 )
+from src.services.task_progress import TaskCancellationRequested
 
 
 class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
@@ -548,6 +549,61 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(should_refresh_job_index(post, use_ai=False, only_unindexed=True))
 
+    def test_should_refresh_job_index_should_skip_non_counselor_attachment_refresh_for_ai_runs(self):
+        post = Post(
+            source_id=1,
+            title="某高校2026年公开招聘工作人员公告",
+            content="详见岗位表。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/rebuild-non-counselor-ai",
+            original_url="https://example.com/posts/rebuild-non-counselor-ai",
+            counselor_scope=COUNSELOR_SCOPE_NONE,
+            has_counselor_job=False,
+            is_counselor=False,
+            confidence_score=None,
+        )
+        self.db.add(post)
+        self.db.flush()
+
+        attachment_path = Path(self.temp_dir.name) / "jobs_non_counselor.xlsx"
+        attachment_path.write_bytes(b"fake")
+        write_attachment_parse_result(
+            attachment_path,
+            {
+                "filename": "岗位表.xlsx",
+                "file_type": "xlsx",
+                "parser": "table",
+                "text_length": 0,
+                "fields": [{"field_name": "学历要求", "field_value": "硕士"}],
+                "jobs": [
+                    {
+                        "job_name": "专任教师",
+                        "recruitment_count": "2人",
+                        "education_requirement": "硕士",
+                        "location": "南京",
+                        "source_type": "attachment",
+                        "is_counselor": False,
+                        "raw_payload": {"岗位名称": "专任教师"},
+                    }
+                ],
+            }
+        )
+        self.db.add(Attachment(
+            post_id=post.id,
+            filename="岗位表.xlsx",
+            file_url="https://example.com/files/jobs-non-counselor.xlsx",
+            file_type="xlsx",
+            is_downloaded=True,
+            local_path=str(attachment_path),
+            file_size=10,
+        ))
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+
+        self.assertTrue(should_refresh_job_index(post, use_ai=False, only_unindexed=True))
+        self.assertFalse(should_refresh_job_index(post, use_ai=True, only_unindexed=True))
+
     def test_should_refresh_job_index_should_treat_noisy_only_jobs_as_pending(self):
         post = Post(
             source_id=1,
@@ -814,6 +870,77 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updates[-1]["metrics"]["ai_posts"], result["ai_posts"])
         self.assertEqual(updates[-1]["metrics"]["dedicated_posts"], result["dedicated_posts"])
         self.assertEqual(updates[-1]["metrics"]["contains_posts"], result["contains_posts"])
+
+    async def test_backfill_post_jobs_should_stop_before_next_post_when_cancel_requested(self):
+        first_post = Post(
+            source_id=1,
+            title="南京大学2026年公开招聘专职辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 3, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/jobs-cancel-1",
+            original_url="https://example.com/posts/jobs-cancel-1",
+            counselor_scope=COUNSELOR_SCOPE_DEDICATED,
+            has_counselor_job=True,
+            is_counselor=True,
+        )
+        second_post = Post(
+            source_id=1,
+            title="苏州高校2026年公开招聘辅导员公告",
+            content="岗位信息详见正文。",
+            publish_date=datetime(2026, 3, 2, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/jobs-cancel-2",
+            original_url="https://example.com/posts/jobs-cancel-2",
+            counselor_scope=COUNSELOR_SCOPE_CONTAINS,
+            has_counselor_job=True,
+            is_counselor=True,
+        )
+        self.db.add_all([first_post, second_post])
+        self.db.commit()
+
+        cancel_state = {"count": 0}
+
+        def cancel_check():
+            cancel_state["count"] += 1
+            return cancel_state["count"] > 1
+
+        async def fake_sync(db, post, use_ai):
+            db.add(PostJob(
+                post_id=post.id,
+                job_name=f"岗位-{post.id}",
+                recruitment_count="1",
+                source_type="ai",
+                is_counselor=True,
+                raw_payload_json=json.dumps({"post_id": post.id}, ensure_ascii=False),
+                sort_order=0,
+            ))
+            db.flush()
+            return {
+                "jobs_saved": 1,
+                "has_counselor_job": True,
+                "ai_job_count": 1,
+                "has_attachment_jobs": False,
+                "counselor_scope": post.counselor_scope,
+            }
+
+        with patch(
+            "src.services.post_job_service.sync_post_jobs",
+            new_callable=AsyncMock,
+            side_effect=fake_sync,
+        ):
+            with self.assertRaises(TaskCancellationRequested):
+                await backfill_post_jobs(
+                    self.db,
+                    limit=10,
+                    only_unindexed=True,
+                    use_ai=True,
+                    cancel_check=cancel_check,
+                )
+
+        first_jobs = self.db.query(PostJob).filter(PostJob.post_id == first_post.id).count()
+        second_jobs = self.db.query(PostJob).filter(PostJob.post_id == second_post.id).count()
+
+        self.assertEqual(first_jobs, 1)
+        self.assertEqual(second_jobs, 0)
 
     def test_get_job_index_summary_should_exclude_duplicate_posts_and_jobs(self):
         primary_post = Post(

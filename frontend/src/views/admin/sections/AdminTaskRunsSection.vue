@@ -73,11 +73,13 @@
             :run="run"
             :retrying-task-id="retryingTaskId"
             :retrying-task-action-key="retryingTaskActionKey"
+            :canceling-task-id="cancelingTaskId"
             :expanded-task-ids="expandedTaskIds"
             :now-ts="nowTs"
             :source-options="sourceOptions"
             :heartbeat-stale-ms="heartbeatStaleMs"
             :retry-task-run="retryTaskRun"
+            :cancel-task-run="cancelTaskRun"
             :toggle-task-expanded="toggleTaskExpanded"
             :can-retry-task="canRetryTask"
           />
@@ -112,11 +114,13 @@
             :run="run"
             :retrying-task-id="retryingTaskId"
             :retrying-task-action-key="retryingTaskActionKey"
+            :canceling-task-id="cancelingTaskId"
             :expanded-task-ids="expandedTaskIds"
             :now-ts="nowTs"
             :source-options="sourceOptions"
             :heartbeat-stale-ms="heartbeatStaleMs"
             :retry-task-run="retryTaskRun"
+            :cancel-task-run="cancelTaskRun"
             :toggle-task-expanded="toggleTaskExpanded"
             :can-retry-task="canRetryTask"
           />
@@ -137,11 +141,13 @@
             :run="run"
             :retrying-task-id="retryingTaskId"
             :retrying-task-action-key="retryingTaskActionKey"
+            :canceling-task-id="cancelingTaskId"
             :expanded-task-ids="expandedTaskIds"
             :now-ts="nowTs"
             :source-options="sourceOptions"
             :heartbeat-stale-ms="heartbeatStaleMs"
             :retry-task-run="retryTaskRun"
+            :cancel-task-run="cancelTaskRun"
             :toggle-task-expanded="toggleTaskExpanded"
             :can-retry-task="canRetryTask"
           />
@@ -171,12 +177,14 @@ const props = defineProps({
   loadingRuns: { type: Boolean, required: true },
   retryingTaskId: { type: String, required: true },
   retryingTaskActionKey: { type: String, required: true },
+  cancelingTaskId: { type: String, required: true },
   expandedTaskIds: { type: Array, required: true },
   nowTs: { type: Number, required: true },
   sourceOptions: { type: Array, required: true },
   heartbeatStaleMs: { type: Number, required: true },
   refreshTaskStatus: { type: Function, required: true },
   retryTaskRun: { type: Function, required: true },
+  cancelTaskRun: { type: Function, required: true },
   toggleTaskExpanded: { type: Function, required: true },
   canRetryTask: { type: Function, required: true }
 })

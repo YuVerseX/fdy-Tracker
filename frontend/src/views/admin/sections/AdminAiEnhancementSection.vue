@@ -78,6 +78,7 @@ const props = defineProps({
   runtimeCopy: { type: Object, required: true },
   openaiReady: { type: Boolean, required: true },
   disabledReason: { type: String, required: true },
+  jobsBlockedReason: { type: String, required: true },
   panels: { type: Array, required: true },
   sourceOptions: { type: Array, required: true },
   analysisForm: { type: Object, required: true },

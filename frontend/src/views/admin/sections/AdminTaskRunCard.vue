@@ -71,6 +71,13 @@
         </div>
 
         <AppNotice
+          v-if="cardPresentation.cancellationNotice"
+          tone="warning"
+          :title="cardPresentation.cancellationNotice.title"
+          :description="cardPresentation.cancellationNotice.description"
+        />
+
+        <AppNotice
           v-if="cardPresentation.stuckNotice"
           tone="warning"
           :title="cardPresentation.stuckNotice.title"
@@ -169,11 +176,13 @@ const props = defineProps({
   run: { type: Object, required: true },
   retryingTaskId: { type: String, required: true },
   retryingTaskActionKey: { type: String, required: true },
+  cancelingTaskId: { type: String, required: true },
   expandedTaskIds: { type: Array, required: true },
   nowTs: { type: Number, required: true },
   sourceOptions: { type: Array, required: true },
   heartbeatStaleMs: { type: Number, required: true },
   retryTaskRun: { type: Function, required: true },
+  cancelTaskRun: { type: Function, required: true },
   toggleTaskExpanded: { type: Function, required: true },
   canRetryTask: { type: Function, required: true }
 })
@@ -197,7 +206,9 @@ const actionDefinitions = computed(() => (
     ? cardPresentation.value.actionItems
     : []
 ))
-const isAnyActionSubmitting = computed(() => props.retryingTaskId === props.run.id)
+const isAnyActionSubmitting = computed(() => (
+  props.retryingTaskId === props.run.id || props.cancelingTaskId === props.run.id
+))
 const hasDetailContent = computed(() => cardPresentation.value.detailSections.length > 0)
 const surfaceToneClass = computed(() => toneClassMap[cardPresentation.value.surfaceTone] || toneClassMap.muted)
 const isTaskExpanded = (taskId) => props.expandedTaskIds.includes(taskId)
@@ -212,11 +223,23 @@ const progressBarStyle = computed(() => ({
   width: `${cardPresentation.value.progressView.visualPercent}%`
 }))
 
-const isActionSubmitting = (actionKey) => props.retryingTaskId === props.run.id && props.retryingTaskActionKey === actionKey
+const isActionSubmitting = (actionKey) => (
+  actionKey === 'cancel'
+    ? props.cancelingTaskId === props.run.id
+    : props.retryingTaskId === props.run.id && props.retryingTaskActionKey === actionKey
+)
 
-const getActionButtonVariant = (actionKey) => (actionKey === 'incremental' ? 'neutral' : 'sky-soft')
+const getActionButtonVariant = (actionKey) => {
+  if (actionKey === 'incremental') return 'neutral'
+  if (actionKey === 'cancel') return 'warning'
+  return 'sky-soft'
+}
 
 const handleTaskAction = (actionKey) => {
+  if (actionKey === 'cancel') {
+    props.cancelTaskRun(props.run)
+    return
+  }
   props.retryTaskRun(props.run, actionKey)
 }
 </script>

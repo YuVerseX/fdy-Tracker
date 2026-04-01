@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from src.database.models import Post
 from src.scrapers.jiangsu_hrss import normalize_content_text
-from src.services.task_progress import ProgressCallback, emit_progress
+from src.services.task_progress import (
+    CancelCheck,
+    ProgressCallback,
+    emit_progress,
+    raise_if_cancel_requested,
+)
 
 DUPLICATE_STATUS_NONE = "none"
 DUPLICATE_STATUS_PRIMARY = "primary"
@@ -210,6 +215,7 @@ def group_duplicate_posts(
     posts: list[Any],
     progress_callback: ProgressCallback | None = None,
     progress_range: tuple[int, int] = (0, 0),
+    cancel_check: CancelCheck | None = None,
 ) -> list[dict[str, Any]]:
     """把帖子按重复关系分组。"""
     if not posts:
@@ -267,6 +273,7 @@ def group_duplicate_posts(
 
     for index, left in enumerate(ordered_posts):
         for right in ordered_posts[index + 1:]:
+            raise_if_cancel_requested(cancel_check)
             reason = detect_duplicate_reason(left, right)
             if reason:
                 union(getattr(left, "id"), getattr(right, "id"), reason)
@@ -388,6 +395,7 @@ def refresh_duplicate_posts(
     db: Session,
     post_ids: list[int],
     progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> dict[str, int]:
     """增量刷新重复分组。"""
     unique_ids = sorted({post_id for post_id in post_ids if post_id})
@@ -456,6 +464,7 @@ def refresh_duplicate_posts(
         candidate_posts,
         progress_callback=progress_callback,
         progress_range=(46, 62),
+        cancel_check=cancel_check,
     )
     touched_id_set = set(unique_ids)
     selected_groups = [
@@ -489,6 +498,16 @@ def refresh_duplicate_posts(
     duplicate_count = 0
     total_groups = len(selected_groups)
     for index, group in enumerate(selected_groups, start=1):
+        raise_if_cancel_requested(
+            cancel_check,
+            on_cancel=db.commit if duplicate_count > 0 else None,
+            result={
+                "selected": len(unique_ids),
+                "scanned": len(candidate_posts),
+                "groups": total_groups,
+                "duplicates": duplicate_count,
+            },
+        )
         primary = apply_duplicate_group(
             db,
             group["posts"],
@@ -582,6 +601,7 @@ def backfill_unchecked_duplicate_posts(
     db: Session,
     limit: int | None = None,
     progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> dict[str, int]:
     """批量补齐还没做过去重检查的帖子。"""
     _emit_progress(
@@ -629,6 +649,7 @@ def backfill_unchecked_duplicate_posts(
         db,
         post_ids,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
     db.commit()
 
@@ -673,6 +694,7 @@ def run_duplicate_backfill(
     limit: int | None = None,
     scope_mode: str = DUPLICATE_BACKFILL_SCOPE_UNCHECKED,
     progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> dict[str, int]:
     """按指定范围执行去重检查。"""
     normalized_scope_mode = (scope_mode or DUPLICATE_BACKFILL_SCOPE_UNCHECKED).strip()
@@ -681,6 +703,7 @@ def run_duplicate_backfill(
             db,
             limit=limit,
             progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
 
     if normalized_scope_mode != DUPLICATE_BACKFILL_SCOPE_RECHECK_RECENT:
@@ -724,6 +747,7 @@ def run_duplicate_backfill(
         db,
         post_ids,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
     db.commit()
 

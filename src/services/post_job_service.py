@@ -35,7 +35,12 @@ from src.services.attachment_service import (
 )
 from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
 from src.services.filter_service import ROLE_EXCLUDE_PATTERNS, _matches_any_pattern
-from src.services.task_progress import ProgressCallback, emit_progress
+from src.services.task_progress import (
+    CancelCheck,
+    ProgressCallback,
+    emit_progress,
+    raise_if_cancel_requested,
+)
 
 try:
     from openai import OpenAI
@@ -757,6 +762,9 @@ def should_refresh_job_index(post: Post, use_ai: bool, only_unindexed: bool) -> 
     if index_state["pending_extraction"]:
         return True
 
+    if use_ai:
+        return bool(index_state["is_counselor_related"]) and not index_state["has_ai_jobs"]
+
     has_attachment_jobs = bool(index_state["has_attachment_jobs"])
     for attachment in post.attachments or []:
         local_path = getattr(attachment, "local_path", None)
@@ -778,8 +786,6 @@ def should_refresh_job_index(post: Post, use_ai: bool, only_unindexed: bool) -> 
         if attachment_jobs and not has_attachment_jobs:
             return True
 
-    if use_ai and index_state["is_counselor_related"] and not index_state["has_ai_jobs"]:
-        return True
     return False
 
 
@@ -790,6 +796,7 @@ async def backfill_post_jobs(
     only_unindexed: bool = True,
     use_ai: bool = False,
     progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> dict[str, Any]:
     """批量重建岗位级结果"""
     query = db.query(Post).options(
@@ -825,6 +832,15 @@ async def backfill_post_jobs(
     }
 
     for index, post in enumerate(selected_posts, start=1):
+        raise_if_cancel_requested(
+            cancel_check,
+            on_cancel=(
+                db.commit
+                if result["posts_updated"] > 0 or result["jobs_saved"] > 0
+                else None
+            ),
+            result=result,
+        )
         try:
             with db.begin_nested():
                 sync_result = await sync_post_jobs(db, post, use_ai=use_ai)

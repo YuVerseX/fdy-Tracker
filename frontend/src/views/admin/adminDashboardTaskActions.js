@@ -11,6 +11,14 @@ const TASK_REFRESH_OPTIONS = Object.freeze({
 
 const JOB_API_UNAVAILABLE_MESSAGE = '岗位整理功能暂时不可用，请稍后再试。'
 const RETRYABLE_TASK_TYPES = new Set(Object.keys(TASK_REFRESH_OPTIONS))
+const CANCELABLE_TASK_TYPES = new Set([
+  'attachment_backfill',
+  'duplicate_backfill',
+  'base_analysis_backfill',
+  'ai_analysis',
+  'job_extraction',
+  'ai_job_extraction'
+])
 const INCREMENTAL_ACTION_TASK_TYPES = new Set([
   'base_analysis_backfill',
   'ai_analysis',
@@ -39,6 +47,13 @@ const ACTION_COPY = Object.freeze({
     busyLabel: '提交中...',
     description: '只补还没处理完的内容，已经完成的结果会尽量保留。',
     scopeLabel: '仅补剩余内容'
+  },
+  cancel: {
+    key: 'cancel',
+    label: '提前终止',
+    busyLabel: '提交中...',
+    description: '停止后续未开始的处理内容，已完成结果会保留。',
+    scopeLabel: '当前任务'
   }
 })
 
@@ -301,7 +316,9 @@ const getBaseActionDefinitions = (run = {}) => {
         .filter(Boolean)
     : []
   if (backendActions.length > 0) return backendActions
-  if (run?.status === 'failed') return [resolveActionDefinition(taskType, 'retry')].filter(Boolean)
+  if (run?.status === 'failed' || run?.status === 'cancelled') {
+    return [resolveActionDefinition(taskType, 'retry')].filter(Boolean)
+  }
   if (run?.status === 'success') return [resolveActionDefinition(taskType, 'rerun')].filter(Boolean)
   return []
 }
@@ -414,7 +431,21 @@ export const getTaskActionDefinitions = (run = {}) => {
   const actions = getBaseActionDefinitions(run)
   const actionKeys = new Set(actions.map((item) => item.key))
 
-  if (run?.status === 'success' && INCREMENTAL_ACTION_TASK_TYPES.has(taskType) && !actionKeys.has('incremental')) {
+  if (
+    CANCELABLE_TASK_TYPES.has(taskType)
+    && ['queued', 'pending', 'running', 'processing'].includes(run?.status)
+    && !run?.details?.cancel_requested_at
+    && !actionKeys.has('cancel')
+  ) {
+    actions.push(resolveActionDefinition(taskType, 'cancel'))
+    actionKeys.add('cancel')
+  }
+
+  if (
+    ['success', 'cancelled'].includes(run?.status)
+    && INCREMENTAL_ACTION_TASK_TYPES.has(taskType)
+    && !actionKeys.has('incremental')
+  ) {
     actions.push(resolveActionDefinition(taskType, 'incremental'))
   }
 

@@ -2,6 +2,33 @@
 from typing import Any, Callable
 
 ProgressCallback = Callable[[dict[str, Any]], None]
+CancelCheck = Callable[[], bool]
+
+
+class TaskCancellationRequested(RuntimeError):
+    """协作式取消：在安全检查点停止后续处理。"""
+
+    def __init__(
+        self,
+        reason: str = "user_requested",
+        *,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.result = dict(result or {})
+
+def raise_if_cancel_requested(
+    cancel_check: CancelCheck | None,
+    *,
+    on_cancel: Callable[[], None] | None = None,
+    result: dict[str, Any] | None = None,
+) -> None:
+    """在安全检查点检查是否已收到取消请求。"""
+    if cancel_check and cancel_check():
+        if on_cancel is not None:
+            on_cancel()
+        raise TaskCancellationRequested("user_requested", result=result)
 
 
 def emit_progress(

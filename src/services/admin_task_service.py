@@ -38,6 +38,7 @@ TASK_STATUS_LABELS = {
     "processing": "执行中",
     "success": "完成",
     "failed": "失败",
+    "cancelled": "已终止",
 }
 ADMIN_COMPATIBILITY_DETAIL_FIELDS = {
     "processed_records",
@@ -304,13 +305,62 @@ def find_running_task(task_types: List[str] | None = None) -> Dict[str, Any] | N
         return _find_running_task(current_runs, task_types)
 
 
+def request_task_run_cancel(
+    task_id: str,
+    *,
+    cancel_reason: str = "user_requested",
+    cancel_requested_by: str | None = None,
+) -> Dict[str, Any]:
+    """为运行中的任务写入取消请求。"""
+    with TASK_RUNS_LOCK:
+        current_runs = _load_task_runs_with_cleanup()
+        next_runs: List[Dict[str, Any]] = []
+        updated_run: Dict[str, Any] | None = None
+
+        for task_run in current_runs:
+            if task_run.get("id") != task_id or updated_run is not None:
+                next_runs.append(task_run)
+                continue
+
+            if task_run.get("status") not in RUNNING_STATUSES:
+                raise ValueError("task_not_running")
+
+            merged_details = dict(task_run.get("details") or {})
+            if not merged_details.get("cancel_requested_at"):
+                merged_details["cancel_requested_at"] = datetime.now(timezone.utc).isoformat()
+            merged_details["cancel_reason"] = cancel_reason
+            if cancel_requested_by:
+                merged_details["cancel_requested_by"] = cancel_requested_by
+
+            updated_run = {
+                **task_run,
+                "details": merged_details,
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+            }
+            next_runs.append(updated_run)
+
+        if updated_run is None:
+            raise ValueError("task_not_found")
+
+        _write_task_runs(next_runs)
+        return updated_run
+
+
+def is_task_run_cancel_requested(task_id: str) -> bool:
+    """判断指定任务是否已收到取消请求。"""
+    with TASK_RUNS_LOCK:
+        current_runs = _load_task_runs_with_cleanup()
+        task_run = next((item for item in current_runs if item.get("id") == task_id), None)
+        return bool((task_run or {}).get("details", {}).get("cancel_requested_at"))
+
+
 def build_task_actions(task_run: Dict[str, Any]) -> List[Dict[str, str]]:
     """为后台管理列表补充与状态匹配的操作语义。"""
     task_type = task_run.get("task_type")
     status = task_run.get("status")
     if task_type not in CONTENT_MUTATION_TASK_TYPES:
         return []
-    if status == "failed":
+    if status in {"failed", "cancelled"}:
         return [{"key": "retry", "label": "按原条件重试"}]
     if status == "success":
         return [{"key": "rerun", "label": "再次运行"}]
@@ -342,6 +392,12 @@ def _build_admin_compatibility_details(
     for key in ADMIN_COMPATIBILITY_DETAIL_FIELDS:
         if key in raw_details:
             compatibility_details[key] = raw_details[key]
+    if raw_details.get("cancel_requested_at"):
+        compatibility_details["cancel_requested_at"] = raw_details.get("cancel_requested_at")
+    if raw_details.get("cancel_reason"):
+        compatibility_details["cancel_reason"] = raw_details.get("cancel_reason")
+    if raw_details.get("cancel_requested_by"):
+        compatibility_details["cancel_requested_by"] = raw_details.get("cancel_requested_by")
     if failure_reason:
         compatibility_details["failure_reason"] = failure_reason
     return compatibility_details

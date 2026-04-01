@@ -28,9 +28,12 @@ from src.scheduler.jobs import (
 from src.services.admin_task_service import (
     TaskAlreadyRunningError,
     get_task_summary_for_admin,
+    is_task_run_cancel_requested,
     load_task_runs_for_admin,
     record_task_run,
+    request_task_run_cancel,
     resolve_conflict_task_types,
+    serialize_task_run_for_admin,
     start_task_run,
     update_task_run,
 )
@@ -41,7 +44,10 @@ from src.services.duplicate_service import (
     run_duplicate_backfill,
 )
 from src.services.post_job_service import backfill_post_jobs, get_job_index_summary
-from src.services.task_progress import ProgressCallback
+from src.services.task_progress import (
+    ProgressCallback,
+    TaskCancellationRequested,
+)
 from src.services.scraper_service import (
     ScrapeSourceError,
     backfill_existing_attachments,
@@ -334,6 +340,48 @@ def _build_task_outcome(
     return outcome
 
 
+def build_admin_cancel_check(task_id: str):
+    """为后台长任务构造取消检查器。"""
+    return lambda: is_task_run_cancel_requested(task_id)
+
+
+def _record_cancelled_task_run(
+    *,
+    task_type: str,
+    task_id: str,
+    started_at: str | None,
+    params: dict,
+    result: dict | None = None,
+) -> None:
+    """把收到取消请求的任务统一归档为 cancelled。"""
+    metrics = dict(result or {})
+    summary = "用户已提前终止，本次已保留已处理结果"
+
+    posts_scanned = metrics.get("posts_scanned")
+    jobs_saved = metrics.get("jobs_saved")
+    if posts_scanned is not None and jobs_saved is not None:
+        summary = f"用户已提前终止，已处理 {posts_scanned} 条，已写入 {jobs_saved} 条岗位"
+    elif posts_scanned is not None:
+        summary = f"用户已提前终止，已处理 {posts_scanned} 条，已保留已完成结果"
+
+    record_task_run(
+        task_type=task_type,
+        status="cancelled",
+        summary=summary,
+        details={
+            **params,
+            **metrics,
+            "cancel_reason": "user_requested",
+            **build_progress_details("stage_only", metrics=metrics),
+        },
+        params=params,
+        task_id=task_id,
+        started_at=started_at,
+        phase="已终止",
+        progress=100,
+    )
+
+
 def _get_task_type_label(task_type: str) -> str:
     """把任务类型转成人看得懂的名字"""
     return TASK_TYPE_LABELS.get(task_type, task_type)
@@ -420,6 +468,8 @@ async def _run_duplicate_backfill_in_background(
     db = SessionLocal()
     scope_mode = params.get("scope_mode") or DUPLICATE_BACKFILL_SCOPE_UNCHECKED
     is_recheck_recent = scope_mode == DUPLICATE_BACKFILL_SCOPE_RECHECK_RECENT
+    result: dict[str, Any] | None = None
+    cancel_check = build_admin_cancel_check(task_id)
     try:
         update_task_run(
             task_id=task_id,
@@ -436,6 +486,7 @@ async def _run_duplicate_backfill_in_background(
             limit=params["limit"],
             scope_mode=scope_mode,
             progress_callback=build_admin_progress_callback(task_id),
+            cancel_check=cancel_check,
         )
         update_task_run(
             task_id=task_id,
@@ -481,6 +532,14 @@ async def _run_duplicate_backfill_in_background(
             started_at=started_at,
             phase="重复检查完成" if is_recheck_recent else "去重补齐完成",
             progress=100,
+        )
+    except TaskCancellationRequested as exc:
+        _record_cancelled_task_run(
+            task_type="duplicate_backfill",
+            task_id=task_id,
+            started_at=started_at,
+            params=params,
+            result=exc.result or result,
         )
     except Exception as exc:
         record_task_run(
@@ -599,6 +658,8 @@ async def _run_attachment_backfill_in_background(
 ) -> None:
     """后台执行历史附件补处理并写任务记录。"""
     db = SessionLocal()
+    result: dict[str, Any] | None = None
+    cancel_check = build_admin_cancel_check(task_id)
     try:
         update_task_run(
             task_id=task_id,
@@ -616,6 +677,7 @@ async def _run_attachment_backfill_in_background(
                 source_id=params["source_id"],
                 limit=params["limit"],
                 progress_callback=build_admin_progress_callback(task_id),
+                cancel_check=cancel_check,
             ),
         )
         update_task_run(
@@ -655,6 +717,14 @@ async def _run_attachment_backfill_in_background(
             phase=outcome["phase"],
             progress=100,
         )
+    except TaskCancellationRequested as exc:
+        _record_cancelled_task_run(
+            task_type="attachment_backfill",
+            task_id=task_id,
+            started_at=started_at,
+            params=params,
+            result=exc.result or result,
+        )
     except Exception as exc:
         record_task_run(
             task_type="attachment_backfill",
@@ -682,6 +752,8 @@ async def _run_ai_analysis_in_background(
 ) -> None:
     """后台执行 AI 分析并写任务记录。"""
     db = SessionLocal()
+    result: dict | None = None
+    cancel_check = build_admin_cancel_check(task_id)
     try:
         update_task_run(
             task_id=task_id,
@@ -700,6 +772,7 @@ async def _run_ai_analysis_in_background(
                 limit=params["limit"],
                 only_unanalyzed=params["only_unanalyzed"],
                 progress_callback=build_admin_progress_callback(task_id),
+                cancel_check=cancel_check,
             ),
         )
         insight_success_count = result.get("insight_success_count", 0)
@@ -740,6 +813,14 @@ async def _run_ai_analysis_in_background(
             phase=outcome["phase"],
             progress=100,
         )
+    except TaskCancellationRequested as exc:
+        _record_cancelled_task_run(
+            task_type="ai_analysis",
+            task_id=task_id,
+            started_at=started_at,
+            params=params,
+            result=exc.result or result,
+        )
     except Exception as exc:
         record_task_run(
             task_type="ai_analysis",
@@ -766,6 +847,7 @@ async def _run_base_analysis_in_background(
     params: dict,
 ) -> None:
     """后台执行基础分析补齐并写任务记录。"""
+    cancel_check = build_admin_cancel_check(task_id)
     try:
         update_task_run(
             task_id=task_id,
@@ -781,6 +863,7 @@ async def _run_base_analysis_in_background(
             awaitable=asyncio.to_thread(
                 _run_base_analysis_with_new_session,
                 params,
+                cancel_check,
             ),
         )
         update_task_run(
@@ -809,6 +892,14 @@ async def _run_base_analysis_in_background(
             phase="基础分析补齐完成",
             progress=100,
         )
+    except TaskCancellationRequested as exc:
+        _record_cancelled_task_run(
+            task_type="base_analysis_backfill",
+            task_id=task_id,
+            started_at=started_at,
+            params=params,
+            result=exc.result,
+        )
     except Exception as exc:
         record_task_run(
             task_type="base_analysis_backfill",
@@ -827,7 +918,10 @@ async def _run_base_analysis_in_background(
         )
 
 
-def _run_base_analysis_with_new_session(params: dict) -> dict:
+def _run_base_analysis_with_new_session(
+    params: dict,
+    cancel_check,
+) -> dict:
     """在线程内创建独立 Session 执行基础分析补齐。"""
     db = SessionLocal()
     try:
@@ -836,6 +930,7 @@ def _run_base_analysis_with_new_session(params: dict) -> dict:
             source_id=params["source_id"],
             limit=params["limit"],
             only_pending=params["only_pending"],
+            cancel_check=cancel_check,
         )
     finally:
         db.close()
@@ -848,6 +943,8 @@ async def _run_job_extraction_in_background(
 ) -> None:
     """后台执行岗位级抽取并写任务记录。"""
     db = SessionLocal()
+    result: dict | None = None
+    cancel_check = build_admin_cancel_check(task_id)
     try:
         update_task_run(
             task_id=task_id,
@@ -867,6 +964,7 @@ async def _run_job_extraction_in_background(
                 only_unindexed=params["only_unindexed"],
                 use_ai=params["use_ai"],
                 progress_callback=build_admin_progress_callback(task_id),
+                cancel_check=cancel_check,
             ),
         )
         update_task_run(
@@ -906,6 +1004,14 @@ async def _run_job_extraction_in_background(
             phase=outcome["phase"],
             progress=100,
         )
+    except TaskCancellationRequested as exc:
+        _record_cancelled_task_run(
+            task_type="job_extraction",
+            task_id=task_id,
+            started_at=started_at,
+            params=params,
+            result=exc.result or result,
+        )
     except Exception as exc:
         record_task_run(
             task_type="job_extraction",
@@ -938,6 +1044,26 @@ async def get_task_runs(limit: int = Query(20, ge=1, le=50)):
 async def get_task_runs_summary():
     """获取任务摘要，给前台显示数据新鲜度"""
     return get_task_summary_for_admin()
+
+
+@protected_router.post("/task-runs/{task_id}/cancel", status_code=202)
+async def cancel_task_run(task_id: str):
+    """为运行中的任务提交终止请求。"""
+    try:
+        task_run = request_task_run_cancel(
+            task_id,
+            cancel_reason="user_requested",
+            cancel_requested_by="admin",
+        )
+    except ValueError as exc:
+        if str(exc) == "task_not_found":
+            raise HTTPException(status_code=404, detail="未找到对应任务。") from exc
+        raise HTTPException(status_code=409, detail="当前任务已经结束，不能再终止。") from exc
+
+    return {
+        "message": "终止请求已提交，正在等待当前处理单元结束。",
+        "task_run": serialize_task_run_for_admin(task_run),
+    }
 
 
 @protected_router.get("/sources")

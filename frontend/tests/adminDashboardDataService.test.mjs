@@ -57,6 +57,7 @@ function createHarness({ adminApiOverrides = {} } = {}) {
     expandedTaskIds: [],
     retryingTaskId: '',
     retryingTaskActionKey: '',
+    cancelingTaskId: '',
     jobsSummaryUnavailable: false
   }
   const loading = {
@@ -232,4 +233,21 @@ test('retryTaskRun should reuse legacy task shape params for rerun payloads', as
   })
   assert.equal(state.retryingTaskId, '')
   assert.equal(state.retryingTaskActionKey, '')
+})
+
+test('cancelTaskRun should submit cancel request and clear canceling state after completion', async () => {
+  let cancelledTaskId = ''
+  const { service, state } = createHarness({
+    adminApiOverrides: {
+      cancelTaskRun: async (taskId) => {
+        cancelledTaskId = taskId
+        return { data: { message: '终止请求已提交' } }
+      }
+    }
+  })
+
+  await service.cancelTaskRun({ id: 'run-ai-1' })
+
+  assert.equal(cancelledTaskId, 'run-ai-1')
+  assert.equal(state.cancelingTaskId, '')
 })

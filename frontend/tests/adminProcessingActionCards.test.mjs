@@ -86,3 +86,29 @@ test('buildAiProcessingCards should disable primary actions until AI runtime is 
   assert.equal(cards[0].summary, '默认范围：全部数据源 · 最多 100 条 · 只处理未补充内容')
   assert.match(cards[1].footer, /最近智能岗位识别时间：未获取/)
 })
+
+test('buildAiProcessingCards should block ai job extraction while ai analysis is running', () => {
+  const cards = buildAiProcessingCards({
+    sourceOptions,
+    jobsSummaryUnavailable: false,
+    analysisForm: { sourceId: '', limit: 100, onlyUnanalyzed: true },
+    jobsForm: { sourceId: '', limit: 100, onlyPending: true },
+    analysisBusy: true,
+    jobsBusy: false,
+    analysisLoading: false,
+    jobsLoading: false,
+    openaiReady: true,
+    disabledReason: '',
+    jobsBlockedReason: '智能摘要整理正在运行，需等待这轮处理结束后再补充智能岗位识别。',
+    latestAnalysisLabel: '2026/03/31 09:00',
+    latestJobsLabel: '未获取',
+    runAiAnalysisTask: noop,
+    runAiJobExtractionTask: noop,
+    refreshAnalysisSummary: noop,
+    refreshJobSummary: noop
+  })
+
+  assert.equal(cards[1].primaryAction.disabled, true)
+  assert.equal(cards[1].primaryAction.busy, false)
+  assert.equal(cards[1].notice.description, '智能摘要整理正在运行，需等待这轮处理结束后再补充智能岗位识别。')
+})

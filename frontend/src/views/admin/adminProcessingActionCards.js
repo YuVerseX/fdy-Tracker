@@ -394,6 +394,7 @@ export function buildAiProcessingCards({
   jobsForm,
   analysisBusy = false,
   jobsBusy = false,
+  jobsBlockedReason = '',
   analysisLoading = false,
   jobsLoading = false,
   openaiReady = false,
@@ -411,6 +412,12 @@ export function buildAiProcessingCards({
         tone: 'warning',
         description: disabledReason || '智能服务准备完成后，这里的任务会开放；基础处理现在仍可继续。'
       }
+  const jobsBlockedNotice = jobsBlockedReason
+    ? {
+        tone: 'warning',
+        description: jobsBlockedReason
+      }
+    : null
 
   return [
     {
@@ -496,7 +503,7 @@ export function buildAiProcessingCards({
         label: '补充智能岗位识别',
         busyLabel: '识别中...',
         busy: jobsBusy,
-        disabled: jobsBusy || !openaiReady,
+        disabled: jobsBusy || !openaiReady || Boolean(jobsBlockedReason),
         onClick: runAiJobExtractionTask
       }),
       secondaryAction: buildSecondaryAction({
@@ -536,12 +543,12 @@ export function buildAiProcessingCards({
           }
         ]
       },
-      notice: jobsSummaryUnavailable
+      notice: jobsBlockedNotice || (jobsSummaryUnavailable
         ? {
             tone: 'warning',
             description: '岗位统计暂时无法读取，不影响继续运行智能岗位识别。'
           }
-        : runtimeNotice,
+        : runtimeNotice),
       footer: `最近智能岗位识别时间：${latestJobsLabel || '未获取'}`
     }
   ]

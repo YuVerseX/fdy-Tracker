@@ -17,6 +17,7 @@ from src.services.duplicate_service import (
     normalize_duplicate_title,
     run_duplicate_backfill,
 )
+from src.services.task_progress import TaskCancellationRequested
 
 
 class DuplicateServiceTestCase(unittest.TestCase):
@@ -242,6 +243,79 @@ class DuplicateServiceDatabaseTestCase(unittest.TestCase):
                 refreshed_checked_at = refreshed_checked_at.replace(tzinfo=timezone.utc)
             self.assertGreater(refreshed_checked_at, checked_at)
             self.assertIsNone(older_post.duplicate_checked_at)
+        finally:
+            db.close()
+
+    def test_run_duplicate_backfill_should_stop_before_next_group_when_cancel_requested(self):
+        db = self.SessionLocal()
+        try:
+            db.add_all([
+                Post(
+                    id=3,
+                    source_id=1,
+                    title="C高校辅导员招聘公告",
+                    content="招聘专职辅导员",
+                    publish_date=datetime(2026, 3, 22, tzinfo=timezone.utc),
+                    canonical_url="https://example.com/posts/3",
+                    original_url="https://example.com/posts/3",
+                ),
+                Post(
+                    id=4,
+                    source_id=1,
+                    title="C高校辅导员招聘公告",
+                    content="招聘专职辅导员",
+                    publish_date=datetime(2026, 3, 22, tzinfo=timezone.utc),
+                    canonical_url="https://example.com/posts/4",
+                    original_url="https://example.com/posts/4",
+                ),
+                Post(
+                    id=5,
+                    source_id=1,
+                    title="D高校辅导员招聘公告",
+                    content="招聘专职辅导员",
+                    publish_date=datetime(2026, 3, 21, tzinfo=timezone.utc),
+                    canonical_url="https://example.com/posts/5",
+                    original_url="https://example.com/posts/5",
+                ),
+                Post(
+                    id=6,
+                    source_id=1,
+                    title="D高校辅导员招聘公告",
+                    content="招聘专职辅导员",
+                    publish_date=datetime(2026, 3, 21, tzinfo=timezone.utc),
+                    canonical_url="https://example.com/posts/6",
+                    original_url="https://example.com/posts/6",
+                ),
+            ])
+            db.commit()
+
+            def cancel_check():
+                return (
+                    db.query(Post)
+                    .filter(Post.id.in_([3, 4, 5, 6]), Post.duplicate_group_key.isnot(None))
+                    .count()
+                    >= 2
+                )
+
+            with self.assertRaises(TaskCancellationRequested):
+                run_duplicate_backfill(
+                    db,
+                    limit=4,
+                    scope_mode="recheck_recent",
+                    cancel_check=cancel_check,
+                )
+
+            refreshed = {
+                post.id: post
+                for post in db.query(Post).filter(Post.id.in_([3, 4, 5, 6])).all()
+            }
+            grouped_pairs = [
+                {post_id for post_id in pair if refreshed[post_id].duplicate_group_key}
+                for pair in ([3, 4], [5, 6])
+            ]
+
+            self.assertEqual(sum(1 for pair in grouped_pairs if len(pair) == 2), 1)
+            self.assertEqual(sum(1 for pair in grouped_pairs if len(pair) == 0), 1)
         finally:
             db.close()
 

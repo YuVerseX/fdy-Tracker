@@ -188,6 +188,30 @@ test('getTaskActionDefinitions should distinguish failed retry from successful r
   assert.equal(successActions[1].label, '只补未补充内容')
 })
 
+test('getTaskActionDefinitions should expose cancel for running task without cancel request', () => {
+  const actions = getTaskActionDefinitions({
+    task_type: 'ai_analysis',
+    status: 'running',
+    details: {}
+  })
+
+  assert.equal(actions.some((item) => item.key === 'cancel'), true)
+})
+
+test('getTaskActionDefinitions should keep retry and incremental for cancelled incremental task', () => {
+  const actions = getTaskActionDefinitions({
+    task_type: 'ai_analysis',
+    status: 'cancelled',
+    details: {},
+    params: { limit: 100, only_unanalyzed: true }
+  })
+
+  assert.deepEqual(
+    actions.map((item) => item.key),
+    ['retry', 'incremental']
+  )
+})
+
 test('getTaskActionDefinitions should expose user-facing semantics for retry, rerun, and incremental actions', () => {
   const failedActions = getTaskActionDefinitions({
     task_type: 'attachment_backfill',

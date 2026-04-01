@@ -83,6 +83,10 @@ export const createAdminApi = (client) => ({
     return client.get('/api/admin/task-runs/summary')
   },
 
+  cancelTaskRun(taskId) {
+    return client.post(`/api/admin/task-runs/${taskId}/cancel`)
+  },
+
   getSources() {
     return client.get('/api/admin/sources')
   },

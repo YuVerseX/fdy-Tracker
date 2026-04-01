@@ -422,6 +422,62 @@ class AdminTaskServiceTestCase(unittest.TestCase):
 
         self.assertEqual(summary["latest_success_run"]["task_type"], "scheduled_scrape")
 
+    def test_request_task_run_cancel_should_mark_running_task(self):
+        created = admin_task_service.start_task_run(
+            task_type="ai_analysis",
+            summary="AI 分析进行中",
+            params={"limit": 100},
+        )
+
+        cancelled = admin_task_service.request_task_run_cancel(
+            task_id=created["id"],
+            cancel_reason="user_requested",
+            cancel_requested_by="admin",
+        )
+
+        self.assertEqual(cancelled["status"], "running")
+        self.assertEqual(cancelled["details"]["cancel_reason"], "user_requested")
+        self.assertEqual(cancelled["details"]["cancel_requested_by"], "admin")
+        self.assertTrue(cancelled["details"]["cancel_requested_at"])
+
+    def test_request_task_run_cancel_should_reject_finished_task(self):
+        finished = admin_task_service.record_task_run(
+            task_type="ai_analysis",
+            status="success",
+            summary="AI 分析完成",
+            details={"progress_mode": "stage_only"},
+            params={"limit": 100},
+            phase="AI 分析完成",
+            progress=100,
+        )
+
+        with self.assertRaises(ValueError):
+            admin_task_service.request_task_run_cancel(task_id=finished["id"])
+
+    def test_serialize_task_run_should_expose_cancelled_status_and_cancel_request_flag(self):
+        task_run = admin_task_service.record_task_run(
+            task_type="job_extraction",
+            status="cancelled",
+            summary="用户已提前终止，已处理 4 条，已写入 12 条岗位",
+            details={
+                "progress_mode": "stage_only",
+                "metrics": {"posts_scanned": 4, "jobs_saved": 12},
+                "cancel_requested_at": "2026-04-01T10:00:00+00:00",
+                "cancel_reason": "user_requested",
+            },
+            params={"limit": 100, "only_unindexed": True, "use_ai": True},
+            phase="已终止",
+            progress=100,
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(task_run)
+
+        self.assertEqual(serialized["status"], "cancelled")
+        self.assertEqual(serialized["status_label"], "已终止")
+        self.assertEqual(serialized["details"]["cancel_reason"], "user_requested")
+        self.assertEqual(serialized["metrics"]["jobs_saved"], 12)
+        self.assertEqual(serialized["actions"][0]["key"], "retry")
+
 
 if __name__ == "__main__":
     unittest.main()

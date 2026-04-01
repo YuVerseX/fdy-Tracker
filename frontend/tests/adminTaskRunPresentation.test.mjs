@@ -302,3 +302,27 @@ test('buildTaskRunCardPresentation should expose failure reason and action summa
     ['完成分析', '成功完成', '失败']
   )
 })
+
+test('buildTaskRunCardPresentation should surface cancelling notice while request is pending', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'ai_analysis',
+    status: 'running',
+    summary: 'AI 分析进行中',
+    details: { cancel_requested_at: '2026-04-01T10:00:00Z' }
+  })
+
+  assert.equal(card.statusLabel, '正在终止')
+  assert.equal(card.cancellationNotice.title, '终止请求已提交')
+})
+
+test('buildTaskRunCardPresentation should treat cancelled run as non-failure final state', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'job_extraction',
+    status: 'cancelled',
+    summary: '用户已提前终止，已处理 4 条，已写入 12 条岗位',
+    metrics: { posts_scanned: 4, jobs_saved: 12 }
+  })
+
+  assert.equal(card.statusLabel, '已终止')
+  assert.equal(card.failureNotice, null)
+})
