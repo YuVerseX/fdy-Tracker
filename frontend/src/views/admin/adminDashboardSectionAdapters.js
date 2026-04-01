@@ -156,7 +156,15 @@ export const buildDataProcessingSectionModel = ({
   jobsSummaryUnavailable,
   forms,
   busy,
-  loading
+  loading,
+  runScrapeTask,
+  runBackfillTask,
+  runDuplicateBackfillTask,
+  runBaseAnalysisTask,
+  runJobIndexTask,
+  refreshDuplicateSummary,
+  refreshAnalysisSummary,
+  refreshJobSummary
 } = {}) => ({
   collectPanel: getPanel(panels, 'collect-and-backfill'),
   duplicatePanel: getPanel(panels, 'duplicate-governance'),
@@ -176,7 +184,15 @@ export const buildDataProcessingSectionModel = ({
   jobIndexBusy: busy?.jobIndex,
   duplicateLoading: loading?.duplicate,
   analysisLoading: loading?.analysis,
-  jobsLoading: loading?.jobs
+  jobsLoading: loading?.jobs,
+  runScrapeTask,
+  runBackfillTask,
+  runDuplicateBackfillTask,
+  runBaseAnalysisTask,
+  runJobIndexTask,
+  refreshDuplicateSummary,
+  refreshAnalysisSummary,
+  refreshJobSummary
 })
 
 export const buildAiEnhancementSectionModel = ({
@@ -189,7 +205,11 @@ export const buildAiEnhancementSectionModel = ({
   busy,
   loading,
   jobsSummaryUnavailable,
-  latestLabels
+  latestLabels,
+  runAiAnalysisTask,
+  runAiJobExtractionTask,
+  refreshAnalysisSummary,
+  refreshJobSummary
 } = {}) => ({
   runtimeCopy,
   openaiReady,
@@ -204,7 +224,11 @@ export const buildAiEnhancementSectionModel = ({
   jobsLoading: loading?.jobs,
   jobsSummaryUnavailable,
   latestAnalysisLabel: latestLabels?.analysis,
-  latestJobsLabel: latestLabels?.jobs
+  latestJobsLabel: latestLabels?.jobs,
+  runAiAnalysisTask,
+  runAiJobExtractionTask,
+  refreshAnalysisSummary,
+  refreshJobSummary
 })
 
 export const buildProcessingSectionModel = ({

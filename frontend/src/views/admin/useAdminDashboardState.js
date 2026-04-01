@@ -198,7 +198,22 @@ export function useAdminDashboardState() {
     insightOverview: insightOverview.value,
     structureRefreshing: loading.insight
   }))
-  const dataProcessingSection = computed(() => buildDataProcessingSectionModel({ panels: dataProcessingPanels.value, sourceOptions: sourceOptions.value, jobsSummaryUnavailable: state.jobsSummaryUnavailable, forms, busy: taskBusy.value, loading }))
+  const dataProcessingSection = computed(() => buildDataProcessingSectionModel({
+    panels: dataProcessingPanels.value,
+    sourceOptions: sourceOptions.value,
+    jobsSummaryUnavailable: state.jobsSummaryUnavailable,
+    forms,
+    busy: taskBusy.value,
+    loading,
+    runScrapeTask: dataService.runScrapeTask,
+    runBackfillTask: dataService.runBackfillTask,
+    runDuplicateBackfillTask: dataService.runDuplicateBackfillTask,
+    runBaseAnalysisTask: dataService.runBaseAnalysisTask,
+    runJobIndexTask: dataService.runJobIndexTask,
+    refreshDuplicateSummary: dataService.refreshDuplicateSummary,
+    refreshAnalysisSummary: dataService.refreshAnalysisSummary,
+    refreshJobSummary: dataService.refreshJobSummary
+  }))
   const aiEnhancementSection = computed(() => buildAiEnhancementSectionModel({
     runtimeCopy: runtimeCopy.value,
     openaiReady: openaiReady.value,
@@ -209,7 +224,11 @@ export function useAdminDashboardState() {
     busy: { analysis: taskBusy.value.aiAnalysis, jobs: taskBusy.value.jobIndex },
     loading: { analysis: loading.analysis, jobs: loading.jobs },
     jobsSummaryUnavailable: state.jobsSummaryUnavailable,
-    latestLabels: { analysis: formatAdminDateTime(analysisLatestAnalyzedAt.value), jobs: formatAdminDateTime(jobLatestExtractedAt.value) }
+    latestLabels: { analysis: formatAdminDateTime(analysisLatestAnalyzedAt.value), jobs: formatAdminDateTime(jobLatestExtractedAt.value) },
+    runAiAnalysisTask: dataService.runAiAnalysisTask,
+    runAiJobExtractionTask: dataService.runAiJobExtractionTask,
+    refreshAnalysisSummary: dataService.refreshAnalysisSummary,
+    refreshJobSummary: dataService.refreshJobSummary
   }))
   const processingSection = computed(() => buildProcessingSectionModel({
     mode: processingMode.value,

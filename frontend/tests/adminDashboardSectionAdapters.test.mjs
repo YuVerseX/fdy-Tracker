@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import { getAdminRuntimeCopy } from '../src/utils/adminDashboardMeta.js'
 import {
+  buildAiEnhancementSectionModel,
+  buildDataProcessingSectionModel,
   buildProcessingSectionModel,
   buildOverviewSectionModel,
   buildSystemSectionModel,
@@ -146,6 +148,65 @@ test('buildProcessingSectionModel should group base and ai work under shared pro
   )
   assert.equal(section.baseSection.collectPanel.id, 'collect-and-backfill')
   assert.equal(section.aiSection.panels[0].id, 'ai-runtime-status')
+})
+
+test('processing section adapters should preserve task action callbacks needed by action cards', () => {
+  const noop = () => {}
+
+  const baseSection = buildDataProcessingSectionModel({
+    panels: [],
+    sourceOptions: [],
+    jobsSummaryUnavailable: false,
+    forms: {
+      scrape: {},
+      backfill: {},
+      duplicate: {},
+      baseAnalysis: {},
+      jobIndex: {}
+    },
+    busy: {},
+    loading: {},
+    runScrapeTask: noop,
+    runBackfillTask: noop,
+    runDuplicateBackfillTask: noop,
+    runBaseAnalysisTask: noop,
+    runJobIndexTask: noop,
+    refreshDuplicateSummary: noop,
+    refreshAnalysisSummary: noop,
+    refreshJobSummary: noop
+  })
+
+  const aiSection = buildAiEnhancementSectionModel({
+    runtimeCopy: { badge: 'ok' },
+    openaiReady: true,
+    disabledReason: '',
+    panels: [],
+    sourceOptions: [],
+    forms: {
+      analysis: {},
+      jobs: {}
+    },
+    busy: {},
+    loading: {},
+    jobsSummaryUnavailable: false,
+    latestLabels: {
+      analysis: '',
+      jobs: ''
+    },
+    runAiAnalysisTask: noop,
+    runAiJobExtractionTask: noop,
+    refreshAnalysisSummary: noop,
+    refreshJobSummary: noop
+  })
+
+  assert.equal(baseSection.runBaseAnalysisTask, noop)
+  assert.equal(baseSection.runJobIndexTask, noop)
+  assert.equal(baseSection.refreshAnalysisSummary, noop)
+  assert.equal(baseSection.refreshJobSummary, noop)
+  assert.equal(aiSection.runAiAnalysisTask, noop)
+  assert.equal(aiSection.runAiJobExtractionTask, noop)
+  assert.equal(aiSection.refreshAnalysisSummary, noop)
+  assert.equal(aiSection.refreshJobSummary, noop)
 })
 
 test('buildSystemSectionModel should expose concise schedule summary and save impact copy', () => {
