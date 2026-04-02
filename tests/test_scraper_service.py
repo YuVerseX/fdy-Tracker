@@ -59,7 +59,19 @@ class FakeScraper:
             ["专职辅导员", "2", "硕士", "南京"]
         ])
 
-    async def scrape(self, max_pages=10):
+    async def scrape(self, max_pages=10, progress_callback=None):
+        if progress_callback:
+            progress_callback({
+                "stage": "collecting",
+                "stage_key": "collect-pages",
+                "stage_label": "正在采集源站页面",
+                "progress_mode": "stage_only",
+                "metrics": {
+                    "pages_fetched": 1,
+                    "detail_pages_fetched": 3,
+                    "raw_items_collected": 3,
+                },
+            })
         return [
             {
                 "title": "第一条专职辅导员公告",
@@ -223,20 +235,43 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
                 progress_callback=updates.append,
             )
 
-        self.assertEqual(len(updates), 3)
-        self.assertEqual([update["stage_key"] for update in updates], ["persist-posts"] * 3)
+        persisting_updates = [update for update in updates if update["stage"] == "persisting"]
+
+        self.assertEqual(len(persisting_updates), 3)
+        self.assertEqual([update["stage_key"] for update in persisting_updates], ["persist-posts"] * 3)
         self.assertEqual(
-            [update["metrics"]["posts_seen"] for update in updates],
+            [update["metrics"]["posts_seen"] for update in persisting_updates],
             [1, 2, 3],
         )
         self.assertEqual(
-            [update["metrics"]["posts_created"] for update in updates],
+            [update["metrics"]["posts_created"] for update in persisting_updates],
             [1, 1, 2],
         )
+        self.assertEqual(persisting_updates[-1]["metrics"]["posts_total"], 3)
+        self.assertEqual(persisting_updates[-1]["metrics"]["posts_created"], result["posts_created"])
+        self.assertEqual(persisting_updates[-1]["metrics"]["posts_updated"], 0)
+        self.assertEqual(persisting_updates[-1]["metrics"]["failures"], 1)
+
+    async def test_scrape_and_save_should_emit_collecting_then_persisting_progress(self):
+        updates = []
+
+        with patch("src.services.scraper_service.create_scraper", return_value=FakeScraper()), patch(
+            "src.services.attachment_service.get_attachment_storage_path",
+            side_effect=self.build_attachment_storage_path
+        ):
+            result = await scrape_and_save(
+                self.db,
+                source_id=1,
+                max_pages=1,
+                progress_callback=updates.append,
+            )
+
+        self.assertEqual(updates[0]["stage"], "collecting")
+        self.assertEqual(updates[0]["metrics"]["pages_fetched"], 1)
+        self.assertEqual(updates[0]["metrics"]["raw_items_collected"], 3)
+        self.assertTrue(all(update["stage"] == "persisting" for update in updates[1:]))
         self.assertEqual(updates[-1]["metrics"]["posts_total"], 3)
-        self.assertEqual(updates[-1]["metrics"]["posts_created"], result["posts_created"])
-        self.assertEqual(updates[-1]["metrics"]["posts_updated"], 0)
-        self.assertEqual(updates[-1]["metrics"]["failures"], 1)
+        self.assertEqual(result["posts_created"], 2)
 
     async def test_scrape_and_save_should_raise_when_scraper_creation_fails(self):
         with patch(
@@ -248,7 +283,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_scrape_and_save_should_raise_when_scrape_request_fails(self):
         class BrokenScraper:
-            async def scrape(self, max_pages=10):
+            async def scrape(self, max_pages=10, progress_callback=None):
                 raise RuntimeError("源站超时")
 
         with patch(
@@ -298,7 +333,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         ])
 
         class ExistingPostScraper:
-            async def scrape(self, max_pages=10):
+            async def scrape(self, max_pages=10, progress_callback=None):
                 return [
                     {
                         "title": "已有公告",
@@ -386,7 +421,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         ])
 
         class ExistingPostScraper:
-            async def scrape(self, max_pages=10):
+            async def scrape(self, max_pages=10, progress_callback=None):
                 return [
                     {
                         "title": "已有 OpenAI 洞察公告",
@@ -452,7 +487,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         ])
 
         class MetadataRefreshScraper:
-            async def scrape(self, max_pages=10):
+            async def scrape(self, max_pages=10, progress_callback=None):
                 return [
                     {
                         "title": "已有公告",
@@ -543,6 +578,59 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fields["工作地点"], "无锡")
         jobs = self.db.query(PostJob).filter(PostJob.post_id == existing_post.id).all()
         self.assertEqual(jobs[0].job_name, "专职辅导员")
+
+    async def test_backfill_existing_attachments_should_emit_persisting_progress(self):
+        existing_post = Post(
+            source_id=1,
+            title="历史辅导员公告",
+            content="已有正文",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/history-progress",
+            original_url="https://example.com/history-progress",
+            is_counselor=True,
+            confidence_score=0.95
+        )
+        self.db.add(existing_post)
+        self.db.commit()
+
+        attachment_bytes = build_excel_bytes([
+            ["岗位名称", "招聘人数", "学历要求", "工作地点"],
+            ["专职辅导员", "4", "博士", "无锡"]
+        ])
+        updates = []
+
+        class HistoryBackfillScraper:
+            async def scrape_detail_page(self, url: str):
+                return {
+                    "content": "已有正文",
+                    "attachments": [
+                        {
+                            "filename": "历史岗位表.xlsx",
+                            "file_url": "https://example.com/files/history-progress.xlsx",
+                            "file_type": "xlsx"
+                        }
+                    ]
+                }
+
+            async def fetch(self, url: str, method: str = "GET", **kwargs):
+                return FakeResponse(attachment_bytes)
+
+        with patch("src.services.scraper_service.create_scraper", return_value=HistoryBackfillScraper()), patch(
+            "src.services.attachment_service.get_attachment_storage_path",
+            side_effect=self.build_attachment_storage_path
+        ):
+            result = await backfill_existing_attachments(
+                self.db,
+                source_id=1,
+                limit=10,
+                progress_callback=updates.append,
+            )
+
+        self.assertEqual(result["posts_updated"], 1)
+        self.assertEqual(updates[-1]["stage"], "persisting")
+        self.assertEqual(updates[-1]["stage_key"], "persist-attachments")
+        self.assertEqual(updates[-1]["metrics"]["posts_scanned"], 1)
+        self.assertEqual(updates[-1]["metrics"]["posts_updated"], 1)
 
     async def test_backfill_existing_attachments_should_trigger_bundle_without_overwriting_openai_insight(self):
         existing_post = Post(
@@ -728,7 +816,7 @@ class ScraperServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_scrape_and_save_should_parse_pdf_attachment(self):
         class PdfScraper:
-            async def scrape(self, max_pages=10):
+            async def scrape(self, max_pages=10, progress_callback=None):
                 return [
                     {
                         "title": "PDF 辅导员公告",

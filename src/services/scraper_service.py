@@ -393,6 +393,7 @@ async def backfill_existing_attachments(
         finally:
             emit_progress(
                 progress_callback,
+                stage="persisting",
                 stage_key="persist-attachments",
                 stage_label="正在补处理历史附件",
                 progress_mode="stage_only",
@@ -448,7 +449,10 @@ async def scrape_and_save(
 
     # 抓取数据
     try:
-        results = await scraper.scrape(max_pages=max_pages)
+        results = await scraper.scrape(
+            max_pages=max_pages,
+            progress_callback=progress_callback,
+        )
     except Exception as e:
         logger.error(f"抓取失败: {e}")
         raise RuntimeError(str(e)) from e
@@ -590,8 +594,9 @@ async def scrape_and_save(
         finally:
             emit_progress(
                 progress_callback,
+                stage="persisting",
                 stage_key="persist-posts",
-                stage_label="正在抓取源站并写入数据库",
+                stage_label="正在写入抓取结果",
                 progress_mode="stage_only",
                 metrics={
                     "posts_seen": index,
