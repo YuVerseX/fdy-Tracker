@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 import httpx
 from loguru import logger
 from src.config import settings
+from src.services.task_progress import ProgressCallback
 
 
 class BaseScraper(ABC):
@@ -69,7 +70,11 @@ class BaseScraper(ABC):
         await asyncio.sleep(delay_time)
 
     @abstractmethod
-    async def scrape(self, max_pages: int = 10) -> List[Dict[str, Any]]:
+    async def scrape(
+        self,
+        max_pages: int = 10,
+        progress_callback: ProgressCallback | None = None,
+    ) -> List[Dict[str, Any]]:
         """
         抓取数据（子类必须实现）
 

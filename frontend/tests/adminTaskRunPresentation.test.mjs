@@ -236,17 +236,18 @@ test('buildTaskDetailSections should group task facts ahead of result metrics', 
   )
 })
 
-test('buildTaskRunCardPresentation should prioritize current phase and live result counts for running tasks', () => {
+test('buildTaskRunCardPresentation should expose canonical stage timeline items', () => {
   const card = buildTaskRunCardPresentation({
     id: 'run-manual-1',
     task_type: 'manual_scrape',
     status: 'running',
-    stage_label: '正在抓取源站并写入数据库',
+    stage: 'persisting',
+    stage_label: '正在写入抓取结果',
+    stage_started_at: '2026-03-31T09:02:00Z',
     started_at: '2026-03-31T09:00:00Z',
     heartbeat_at: '2026-03-31T09:04:00Z',
     summary: '本轮正在更新最新公告。',
-    progress_mode: 'stage_only',
-    metrics: {
+    live_metrics: {
       posts_seen: 18,
       posts_total: 20,
       posts_created: 8,
@@ -259,10 +260,18 @@ test('buildTaskRunCardPresentation should prioritize current phase and live resu
 
   assert.equal(card.stageTitle, '当前阶段')
   assert.equal(card.resultTitle, '当前结果')
-  assert.equal(card.resultHint, '数量会继续变化，可稍后再回来查看。')
+  assert.deepEqual(
+    card.stageTimelineItems.map((item) => [item.key, item.state]),
+    [
+      ['submitted', 'done'],
+      ['collecting', 'done'],
+      ['persisting', 'current'],
+      ['finalizing', 'upcoming']
+    ]
+  )
   assert.deepEqual(
     card.stageFacts.map((item) => item.label),
-    ['当前阶段', '进度说明', '最近更新', '已运行']
+    ['最近更新', '已运行']
   )
   assert.deepEqual(
     card.resultItems.map((item) => item.label),
@@ -271,26 +280,52 @@ test('buildTaskRunCardPresentation should prioritize current phase and live resu
   assert.equal(card.failureNotice, null)
 })
 
+test('buildTaskRunCardPresentation should map raw stage keys into canonical timeline stages', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'attachment_backfill',
+    status: 'running',
+    stage: 'persist-attachments',
+    stage_key: 'persist-attachments',
+    stage_label: '正在补处理历史附件',
+    live_metrics: {
+      posts_scanned: 3,
+      posts_updated: 1
+    }
+  })
+
+  assert.deepEqual(
+    card.stageTimelineItems.map((item) => [item.key, item.state]),
+    [
+      ['submitted', 'done'],
+      ['collecting', 'done'],
+      ['persisting', 'current'],
+      ['finalizing', 'upcoming']
+    ]
+  )
+})
+
 test('buildTaskRunCardPresentation should show collecting-state result copy when no live result metrics exist yet', () => {
   const card = buildTaskRunCardPresentation({
     task_type: 'manual_scrape',
     status: 'running',
-    stage_label: '正在准备抓取任务',
+    stage: 'collecting',
+    stage_label: '正在采集源站页面',
     summary: '正在准备抓取任务',
-    metrics: {}
+    live_metrics: {}
   })
 
-  assert.equal(card.resultTitle, '当前结果会在后续阶段逐步补充')
-  assert.equal(card.resultHint, '当前还在采集源站，结果数会随处理进度逐步补充。')
-  assert.equal(card.resultEmptyText, '当前阶段还没有可展示的结果数量。')
+  assert.equal(card.resultTitle, '当前结果')
+  assert.equal(card.resultHint, '当前阶段还没有结果。')
+  assert.equal(card.resultEmptyText, '当前阶段还没有结果。')
 })
 
 test('buildTaskRunCardPresentation should keep current-result copy once visible metrics exist', () => {
   const card = buildTaskRunCardPresentation({
     task_type: 'manual_scrape',
     status: 'running',
+    stage: 'persisting',
     stage_label: '正在整理抓取结果',
-    metrics: {
+    live_metrics: {
       posts_seen: 18,
       posts_created: 8,
       posts_updated: 4
@@ -298,7 +333,6 @@ test('buildTaskRunCardPresentation should keep current-result copy once visible 
   })
 
   assert.equal(card.resultTitle, '当前结果')
-  assert.equal(card.resultHint, '数量会继续变化，可稍后再回来查看。')
   assert.equal(card.resultEmptyText, '')
 })
 
@@ -339,11 +373,12 @@ test('buildTaskRunCardPresentation should expose failure reason and action summa
     id: 'run-ai-1',
     task_type: 'ai_analysis',
     status: 'failed',
-    stage_label: '正在补充智能摘要',
+    stage: '',
+    stage_label: '处理失败',
     started_at: '2026-03-31T09:00:00Z',
     finished_at: '2026-03-31T09:02:00Z',
     failure_reason: '智能服务暂时不可用，请稍后再试。',
-    metrics: {
+    final_metrics: {
       posts_scanned: 8,
       success_count: 5,
       failure_count: 3
@@ -355,11 +390,11 @@ test('buildTaskRunCardPresentation should expose failure reason and action summa
 
   assert.equal(card.stageTitle, '未完成位置')
   assert.equal(card.resultTitle, '本次结果')
-  assert.equal(card.resultHint, '这次处理没有完成，可先看失败原因再决定是否重试。')
   assert.equal(card.failureNotice.title, '这次处理未完成')
   assert.match(card.failureNotice.description, /智能服务暂时不可用/)
-  assert.equal(card.actionSummary.title, '可执行操作')
-  assert.match(card.actionSummary.description, /按当前范围继续补充/)
+  assert.equal(card.actionSummary, null)
+  assert.deepEqual(card.actionItems.map((item) => item.key), ['retry'])
+  assert.equal(card.stageTimelineItems.find((item) => item.key === 'finalizing')?.state, 'done')
   assert.deepEqual(
     card.resultItems.map((item) => item.label),
     ['完成分析', '成功完成', '失败']
@@ -369,13 +404,16 @@ test('buildTaskRunCardPresentation should expose failure reason and action summa
 test('buildTaskRunCardPresentation should surface cancelling notice while request is pending', () => {
   const card = buildTaskRunCardPresentation({
     task_type: 'ai_analysis',
-    status: 'running',
+    status: 'cancel_requested',
     summary: 'AI 分析进行中',
+    stage: 'finalizing',
     details: { cancel_requested_at: '2026-04-01T10:00:00Z' }
   })
 
   assert.equal(card.statusLabel, '正在终止')
   assert.equal(card.cancellationNotice.title, '终止请求已提交')
+  assert.equal(card.stageTimelineItems.find((item) => item.key === 'finalizing')?.label, '正在收尾')
+  assert.deepEqual(card.actionItems, [])
 })
 
 test('buildTaskRunCardPresentation should treat cancelled run as non-failure final state', () => {
@@ -383,9 +421,36 @@ test('buildTaskRunCardPresentation should treat cancelled run as non-failure fin
     task_type: 'job_extraction',
     status: 'cancelled',
     summary: '用户已提前终止，已处理 4 条，已写入 12 条岗位',
-    metrics: { posts_scanned: 4, jobs_saved: 12 }
+    final_metrics: { posts_scanned: 4, jobs_saved: 12 }
   })
 
   assert.equal(card.statusLabel, '已终止')
   assert.equal(card.failureNotice, null)
+  assert.equal(card.cancellationNotice?.description, '已完成的结果已保留，可按当前建议操作继续处理。')
+  assert.deepEqual(
+    card.stageTimelineItems.map((item) => [item.key, item.state, item.label]),
+    [
+      ['submitted', 'done', '已提交'],
+      ['collecting', 'done', '处理中'],
+      ['persisting', 'done', '写入结果'],
+      ['finalizing', 'done', '收尾完成']
+    ]
+  )
+})
+
+test('buildTaskRunCardPresentation should use final metrics for finished runs', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'manual_scrape',
+    status: 'success',
+    stage: '',
+    final_summary: '手动抓取完成，新增或更新 12 条记录',
+    final_metrics: {
+      posts_seen: 18,
+      posts_created: 8,
+      posts_updated: 4
+    }
+  })
+
+  assert.equal(card.resultTitle, '本次结果')
+  assert.deepEqual(card.resultItems.map((item) => item.label), ['发现公告', '新增公告', '更新公告'])
 })

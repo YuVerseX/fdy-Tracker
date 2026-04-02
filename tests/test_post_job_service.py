@@ -852,6 +852,7 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(updates), 2)
         self.assertEqual([update["stage_key"] for update in updates], ["extract-post-jobs"] * 2)
+        self.assertEqual([update["stage"] for update in updates], ["persisting"] * 2)
         self.assertEqual(
             [update["metrics"]["posts_scanned"] for update in updates],
             [1, 2],

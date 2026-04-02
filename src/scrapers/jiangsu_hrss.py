@@ -7,6 +7,7 @@ from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 from loguru import logger
 from src.scrapers.base import BaseScraper
+from src.services.task_progress import ProgressCallback, emit_progress
 
 NOISE_TEXTS = {
     "当前位置：",
@@ -442,7 +443,32 @@ class JiangsuHRSSScraper(BaseScraper):
         logger.info(f"第 {page_num} 页抓取完成，共 {len(results)} 条记录")
         return results
 
-    async def scrape(self, max_pages: int = 10) -> List[Dict[str, Any]]:
+    def _emit_collecting_progress(
+        self,
+        progress_callback: ProgressCallback | None,
+        *,
+        pages_fetched: int,
+        detail_pages_fetched: int,
+        raw_items_collected: int,
+    ) -> None:
+        emit_progress(
+            progress_callback,
+            stage="collecting",
+            stage_key="collect-pages",
+            stage_label="正在采集源站页面",
+            progress_mode="stage_only",
+            metrics={
+                "pages_fetched": pages_fetched,
+                "detail_pages_fetched": detail_pages_fetched,
+                "raw_items_collected": raw_items_collected,
+            },
+        )
+
+    async def scrape(
+        self,
+        max_pages: int = 10,
+        progress_callback: ProgressCallback | None = None,
+    ) -> List[Dict[str, Any]]:
         """
         抓取多页数据
 
@@ -453,10 +479,20 @@ class JiangsuHRSSScraper(BaseScraper):
             List[Dict[str, Any]]: 所有数据列表
         """
         all_results = []
+        pages_fetched = 0
+        detail_pages_fetched = 0
 
         # 抓取首页
         first_page_results = await self.scrape_first_page()
+        pages_fetched += 1
+        detail_pages_fetched += len(first_page_results)
         all_results.extend(first_page_results)
+        self._emit_collecting_progress(
+            progress_callback,
+            pages_fetched=pages_fetched,
+            detail_pages_fetched=detail_pages_fetched,
+            raw_items_collected=len(all_results),
+        )
         await self.delay()
 
         # 抓取后续页
@@ -466,7 +502,15 @@ class JiangsuHRSSScraper(BaseScraper):
                 if not page_results:
                     logger.info(f"第 {page_num} 页无数据，停止抓取")
                     break
+                pages_fetched += 1
+                detail_pages_fetched += len(page_results)
                 all_results.extend(page_results)
+                self._emit_collecting_progress(
+                    progress_callback,
+                    pages_fetched=pages_fetched,
+                    detail_pages_fetched=detail_pages_fetched,
+                    raw_items_collected=len(all_results),
+                )
                 await self.delay()
             except Exception as e:
                 logger.error(f"抓取第 {page_num} 页失败: {e}")

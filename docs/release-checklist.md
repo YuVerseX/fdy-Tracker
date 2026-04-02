@@ -36,9 +36,13 @@ npm run build
 ## 4. 关键功能冒烟
 
 - [ ] 管理接口提交返回 `202`
-- [ ] 任务状态能走 `running -> success/failed`
-- [ ] 管理页能看到 `phase / progress / heartbeat_at`
-- [ ] 去重补齐任务进度能连续变化（非单点跳变）
+- [ ] 任务状态覆盖 `queued/pending -> running/processing -> cancel_requested -> success/failed/cancelled`
+- [ ] 管理页任务中心展示 canonical `status / stage / live_metrics / final_metrics`
+- [ ] AI 岗位任务提交与重试后仍保持 `ai_job_extraction / 智能岗位识别` 展示口径
+- [ ] `finalizing` 中间态和 `cancelled` 归档都显式携带 canonical stage，不依赖前端猜测
+- [ ] collecting 阶段只显示采集指标，不伪造结果数
+- [ ] 每个可操作状态最多一个主动作，`cancel_requested` 不再展示主动作
+- [ ] 前台 freshness 仍保持最近一次成功快照语义
 
 ## 5. 发布动作
 

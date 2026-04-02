@@ -71,7 +71,79 @@ const TASK_HEADLINE_LABEL_OVERRIDES = Object.freeze({
   ai_job_extraction: { posts_scanned: '检查公告' }
 })
 const RUNNING_HEADLINE_HIDDEN_KEYS = new Set(['posts_total', 'total_groups', 'total_comparisons', 'total'])
-const DELAYED_RESULT_TASK_TYPES = new Set(['scrape', 'manual_scrape', 'scheduled_scrape'])
+const FINAL_TASK_STATUSES = new Set(['success', 'failed', 'cancelled'])
+const STAGE_TIMELINE = Object.freeze(['submitted', 'collecting', 'persisting', 'finalizing'])
+const STAGE_TIMELINE_COPY = Object.freeze({
+  submitted: {
+    key: 'submitted',
+    eyebrow: '提交',
+    label: '已提交',
+    description: '任务已进入队列'
+  },
+  collecting: {
+    key: 'collecting',
+    eyebrow: '处理',
+    label: '处理中',
+    description: '正在采集或扫描当前范围'
+  },
+  persisting: {
+    key: 'persisting',
+    eyebrow: '写入',
+    label: '写入结果',
+    description: '正在保存本轮处理结果'
+  },
+  finalizing: {
+    key: 'finalizing',
+    eyebrow: '收尾',
+    label: '收尾',
+    description: '结束本轮任务并整理状态'
+  }
+})
+const STAGE_ALIAS_MAP = Object.freeze({
+  submitted: 'submitted',
+  queued: 'submitted',
+  pending: 'submitted',
+  collecting: 'collecting',
+  scraping: 'collecting',
+  crawling: 'collecting',
+  fetching: 'collecting',
+  scanning: 'collecting',
+  analyzing: 'collecting',
+  processing: 'collecting',
+  running: 'collecting',
+  persisting: 'persisting',
+  saving: 'persisting',
+  writing: 'persisting',
+  persisted: 'persisting',
+  finalizing: 'finalizing',
+  finalized: 'finalizing',
+  cancelling: 'finalizing',
+  cancel_requested: 'finalizing',
+  finished: 'finalizing',
+  success: 'finalizing',
+  failed: 'finalizing',
+  cancelled: 'finalizing'
+})
+const STAGE_KEY_CANONICAL_MAP = Object.freeze({
+  'persist-posts': 'persisting',
+  'persist-attachments': 'persisting',
+  'write-groups': 'persisting',
+  'analyze-posts': 'persisting',
+  'extract-post-jobs': 'persisting',
+  'count-remaining': 'finalizing',
+  'backfill-ready': 'finalizing',
+  'write-complete': 'finalizing',
+  'no-pending-posts': 'finalizing',
+  'no-posts-in-range': 'finalizing',
+  'select-unchecked': 'collecting',
+  'select-recheck-range': 'collecting',
+  'start-backfill': 'collecting',
+  'start-recheck-range': 'collecting',
+  'load-candidates': 'collecting',
+  'group-candidates': 'collecting',
+  'compare-candidates': 'collecting',
+  'reset-marks': 'collecting'
+})
 
 const toNumber = (value) => {
   const numeric = Number(value)
@@ -97,8 +169,11 @@ const getTaskParam = (run = {}, ...keys) => {
 }
 
 const getRunMetricSource = (run = {}) => {
+  const canonicalMetricSources = FINAL_TASK_STATUSES.has(run?.status)
+    ? [run, run?.details, run?.details?.metrics, run?.metrics, run?.details?.final_metrics, run?.final_metrics]
+    : [run, run?.details, run?.details?.metrics, run?.metrics, run?.details?.live_metrics, run?.live_metrics]
   const merged = {}
-  for (const source of [run?.details, run?.details?.metrics, run?.metrics, run]) {
+  for (const source of canonicalMetricSources) {
     if (!source || typeof source !== 'object') continue
     Object.assign(merged, source)
   }
@@ -120,6 +195,7 @@ const getDeterminateProgressKind = (metrics = {}) => {
 }
 
 const getDefaultStageLabel = (run = {}) => {
+  if (run?.status === 'cancel_requested') return '正在终止'
   if (run?.status === 'cancelled') return '已终止'
   if (run?.status === 'success') return '已完成'
   if (run?.status === 'failed') return '处理未完成'
@@ -155,7 +231,8 @@ const getTaskElapsedMs = (run = {}, nowTs = Date.now()) => {
 
 const getTaskFailureReason = (run = {}) => [run?.failure_reason, run?.error, run?.details?.failure_reason, run?.details?.error].find(Boolean) || ''
 const isTaskCancellationPending = (run = {}) => (
-  isRunningTaskStatus(run?.status) && Boolean(run?.details?.cancel_requested_at)
+  run?.status === 'cancel_requested'
+  || (isRunningTaskStatus(run?.status) && Boolean(run?.details?.cancel_requested_at))
 )
 
 const getTaskStatusLabel = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) => {
@@ -197,34 +274,110 @@ const getTaskStageTitle = (run = {}) => {
 
 const hasVisibleResultItems = (resultItems = []) => resultItems.length > 0
 
-const isDelayedScrapeResultState = (run = {}, resultItems = []) => (
-  isRunningTaskStatus(run?.status) &&
-  !['queued', 'pending'].includes(run?.status) &&
-  DELAYED_RESULT_TASK_TYPES.has(run?.task_type || run?.taskType) &&
-  !hasVisibleResultItems(resultItems)
-)
+const resolveCanonicalStageFromValue = (value) => {
+  const token = String(value || '').trim().toLowerCase()
+  if (!token) return ''
+  if (STAGE_ALIAS_MAP[token]) return STAGE_ALIAS_MAP[token]
+  if (STAGE_KEY_CANONICAL_MAP[token]) return STAGE_KEY_CANONICAL_MAP[token]
+  if (/^(persist|write|save|store)/.test(token)) return 'persisting'
+  if (/^(count|finish|final|cancel|cleanup|no-posts|no-pending)/.test(token)) return 'finalizing'
+  if (/^(select|start|load|group|compare|collect|crawl|scrap|fetch|scan|analy|process|reset)/.test(token)) return 'collecting'
+  return ''
+}
 
-const getTaskResultTitle = (run = {}, resultItems = []) => {
-  if (isDelayedScrapeResultState(run, resultItems)) return '当前结果会在后续阶段逐步补充'
-  return isRunningTaskStatus(run?.status) ? '当前结果' : '本次结果'
+const resolveStageFromHints = (run = {}) => {
+  const hintText = [
+    run?.stage_label,
+    run?.phase_label,
+    run?.phase,
+    run?.summary,
+    run?.final_summary,
+    run?.details?.stage_label,
+    run?.details?.phase_label,
+    run?.details?.phase
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+  if (/final|finish|cancel|cleanup|finalizing|failed|failure|收尾|终止|结束|完成|失败/.test(hintText)) return 'finalizing'
+  if (/persist|saving|write|store|save|写入|保存|入库|落库/.test(hintText)) return 'persisting'
+  if (/collect|crawl|scrap|fetch|scan|analy|process|采集|抓取|扫描|读取|分析|检查|处理/.test(hintText)) return 'collecting'
+  return ''
+}
+
+const getCanonicalStage = (run = {}) => {
+  for (const value of [run?.stage, run?.details?.stage, run?.stage_key, run?.details?.stage_key, run?.phase, run?.details?.phase]) {
+    const token = resolveCanonicalStageFromValue(value)
+    if (token) return token
+  }
+
+  const hintedStage = resolveStageFromHints(run)
+  if (hintedStage) return hintedStage
+  const statusStage = resolveCanonicalStageFromValue(run?.status)
+  if (statusStage) return statusStage
+  if (run?.status === 'queued' || run?.status === 'pending') return 'submitted'
+  if (FINAL_TASK_STATUSES.has(run?.status)) return 'finalizing'
+  return 'collecting'
+}
+
+const getStageTimelineItemCopy = (key, state) => {
+  const baseCopy = STAGE_TIMELINE_COPY[key] || { key, eyebrow: key, label: key, description: '' }
+  if (key !== 'finalizing') return baseCopy
+  if (state === 'current') {
+    return {
+      ...baseCopy,
+      label: '正在收尾',
+      description: '正在结束本轮任务并整理状态'
+    }
+  }
+  if (state === 'done') {
+    return {
+      ...baseCopy,
+      label: '收尾完成',
+      description: '本轮任务已完成最终整理'
+    }
+  }
+  return baseCopy
+}
+
+const buildStageTimelineItems = (run = {}) => {
+  const currentStage = getCanonicalStage(run)
+  const currentIndex = Math.max(STAGE_TIMELINE.indexOf(currentStage), 0)
+  const allDone = run?.status === 'success'
+  const terminalAtFinalizing = FINAL_TASK_STATUSES.has(run?.status) && currentStage === 'finalizing'
+
+  return STAGE_TIMELINE.map((key, index) => {
+    let state = 'upcoming'
+    if (allDone || terminalAtFinalizing || index < currentIndex) state = 'done'
+    else if (index === currentIndex) state = 'current'
+
+    return {
+      ...getStageTimelineItemCopy(key, state),
+      state
+    }
+  })
+}
+
+const getTaskResultTitle = (run = {}) => {
+  return FINAL_TASK_STATUSES.has(run?.status) ? '本次结果' : '当前结果'
 }
 
 const getTaskResultHint = (run = {}, resultItems = [], { isStuck = false } = {}) => {
   if (isStuck && isRunningTaskStatus(run?.status)) return '结果暂未继续更新，请先刷新状态确认任务是否仍在处理。'
-  if (isDelayedScrapeResultState(run, resultItems)) return '当前还在采集源站，结果数会随处理进度逐步补充。'
   if (run?.status === 'cancelled') return '任务已终止，已写入的结果会保留。'
   if (run?.status === 'failed') return '这次处理没有完成，可先看失败原因再决定是否重试。'
   if (run?.status === 'success') return '这里是本次任务的最终结果。'
   if (run?.status === 'queued' || run?.status === 'pending') return '开始处理后，会逐步更新可核对的结果数量。'
-  return '数量会继续变化，可稍后再回来查看。'
+  if (!hasVisibleResultItems(resultItems)) return '当前阶段还没有结果。'
+  return '结果会继续变化，可稍后再回来查看。'
 }
 
 const getTaskResultEmptyText = (run = {}, resultItems = [], { isStuck = false } = {}) => {
   if (hasVisibleResultItems(resultItems)) return ''
   if (isStuck && isRunningTaskStatus(run?.status)) return '当前没有新的结果变化，请先刷新状态确认任务是否仍在处理。'
-  if (isDelayedScrapeResultState(run, resultItems)) return '当前阶段还没有可展示的结果数量。'
   if (run?.status === 'queued' || run?.status === 'pending') return '开始处理后，会逐步出现可核对的结果数量。'
-  if (isRunningTaskStatus(run?.status)) return '当前阶段还没有可展示的结果数量。'
+  if (isRunningTaskStatus(run?.status)) return '当前阶段还没有结果。'
   return '这次任务没有留下额外的结果指标。'
 }
 
@@ -237,13 +390,21 @@ const getTaskTimelineText = (run = {}) => {
   return label
 }
 
+const getTaskSummaryText = (run = {}) => {
+  const summary = FINAL_TASK_STATUSES.has(run?.status)
+    ? (run?.final_summary || run?.details?.final_summary || run?.summary || run?.details?.summary || '')
+    : (run?.summary || run?.details?.summary || '')
+
+  return normalizeAdminUiText(summary)
+}
+
 const buildTaskStageFacts = (run = {}, progressView = {}, { nowTs = Date.now() } = {}) => {
-  const timeLabel = run?.finished_at || run?.finishedAt ? '完成时间' : '最近更新'
-  const durationLabel = isRunningTaskStatus(run?.status) ? '已运行' : '耗时'
+  const timeLabel = run?.status === 'cancelled'
+    ? '终止时间'
+    : (run?.finished_at || run?.finishedAt ? '完成时间' : '最近更新')
+  const durationLabel = FINAL_TASK_STATUSES.has(run?.status) ? '耗时' : '已运行'
 
   return [
-    { label: getTaskStageTitle(run), value: progressView.stageLabel },
-    { label: '进度说明', value: progressView.progressLabel },
     { label: timeLabel, value: formatAdminDateTime(run?.finished_at || run?.finishedAt || getTaskHeartbeatAt(run)) },
     { label: durationLabel, value: formatAdminDurationMs(getTaskElapsedMs(run, nowTs)) }
   ].filter((item) => item.value && item.value !== EMPTY_LABEL)
@@ -260,17 +421,6 @@ const buildTaskHeadlineResultItems = (run = {}) => {
       ...item,
       label: labelOverrides[item.key] || item.label
     }))
-}
-
-const buildTaskActionSummary = (actionGuide) => {
-  if (!actionGuide?.actions?.length) return null
-
-  return {
-    title: '可执行操作',
-    description: actionGuide.actions
-      .map((action) => `${action.label}${action.scopeLabel ? `：${action.scopeLabel}` : ''}`)
-      .join('；')
-  }
 }
 
 const formatSourceParam = (run = {}, sourceOptions = []) => {
@@ -356,7 +506,17 @@ export function buildTaskProgressView(run = {}, { nowTs = Date.now(), heartbeatS
   const metrics = getRunMetricSource(run)
   const percent = getProgressPercent(run, metrics)
   const isStuck = isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)
-  const stageLabel = String(run?.stage_label || run?.phase || '').trim() || getDefaultStageLabel(run)
+  const currentStage = getCanonicalStage(run)
+  const stageLabel = String(
+    run?.stage_label
+    || run?.phase_label
+    || run?.details?.stage_label
+    || run?.details?.phase_label
+    || ''
+  ).trim() || getStageTimelineItemCopy(
+    currentStage,
+    FINAL_TASK_STATUSES.has(run?.status) ? 'done' : 'current'
+  )?.label || getDefaultStageLabel(run)
   const determinateKind = getDeterminateProgressKind(metrics)
 
   if (mode === 'determinate' && determinateKind === 'count_based') {
@@ -490,21 +650,22 @@ export function buildTaskRunCardPresentation(run = {}, {
     : run?.status === 'cancelled'
       ? {
           title: '这次处理已终止',
-          description: '已完成的结果已保留，可继续补剩余内容或重新运行。'
+          description: '已完成的结果已保留，可按当前建议操作继续处理。'
         }
       : null
 
   return {
     title: run?.display_name || getTaskTypeLabel(run?.task_type || run?.taskType),
-    summaryText: normalizeAdminUiText(run?.summary || ''),
+    summaryText: getTaskSummaryText(run),
     timelineText: getTaskTimelineText(run),
     statusLabel: getTaskStatusLabel(run, { nowTs, heartbeatStaleMs }),
     statusTone: getTaskStatusTone(run, { nowTs, heartbeatStaleMs }),
     surfaceTone: getTaskSurfaceTone(run, { nowTs, heartbeatStaleMs }),
     progressView,
     stageTitle: getTaskStageTitle(run),
+    stageTimelineItems: buildStageTimelineItems(run),
     stageFacts: buildTaskStageFacts(run, progressView, { nowTs }),
-    resultTitle: getTaskResultTitle(run, resultItems),
+    resultTitle: getTaskResultTitle(run),
     resultHint: getTaskResultHint(run, resultItems, { isStuck: progressView.isStuck }),
     resultItems,
     resultEmptyText: getTaskResultEmptyText(run, resultItems, { isStuck: progressView.isStuck }),
@@ -522,7 +683,7 @@ export function buildTaskRunCardPresentation(run = {}, {
           description: '这个任务超过 10 分钟没有新的阶段更新。先刷新状态；如果仍然没有变化，再决定是否重新提交。'
         }
       : null,
-    actionSummary: buildTaskActionSummary(actionGuide),
+    actionSummary: null,
     actionItems: actionGuide?.actions || []
   }
 }

@@ -212,7 +212,49 @@ class DuplicateServiceDatabaseTestCase(unittest.TestCase):
             self.assertEqual(events[0]["metrics"]["unit"], "percent")
             self.assertTrue(any(event["stage_key"] == "compare-candidates" for event in events))
             self.assertTrue(any(event["stage_key"] == "write-complete" for event in events))
+            count_remaining = next(event for event in events if event["stage_key"] == "count-remaining")
+            backfill_ready = next(event for event in events if event["stage_key"] == "backfill-ready")
+            self.assertEqual(count_remaining["stage"], "finalizing")
+            self.assertEqual(backfill_ready["stage"], "finalizing")
             self.assertGreaterEqual(events[-1]["metrics"]["completed"], 95)
+        finally:
+            db.close()
+
+    def test_backfill_unchecked_duplicate_posts_should_mark_empty_short_circuit_as_finalizing(self):
+        db = self.SessionLocal()
+        events = []
+        try:
+            backfill_unchecked_duplicate_posts(db, limit=100)
+
+            result = backfill_unchecked_duplicate_posts(
+                db,
+                limit=100,
+                progress_callback=lambda payload: events.append(payload),
+            )
+
+            empty_event = next(event for event in events if event["stage_key"] == "no-pending-posts")
+            self.assertEqual(result["selected"], 0)
+            self.assertEqual(empty_event["stage"], "finalizing")
+        finally:
+            db.close()
+
+    def test_run_duplicate_backfill_should_mark_empty_recheck_range_as_finalizing(self):
+        db = self.SessionLocal()
+        events = []
+        try:
+            db.query(Post).delete()
+            db.commit()
+
+            result = run_duplicate_backfill(
+                db,
+                limit=10,
+                scope_mode="recheck_recent",
+                progress_callback=lambda payload: events.append(payload),
+            )
+
+            empty_event = next(event for event in events if event["stage_key"] == "no-posts-in-range")
+            self.assertEqual(result["selected"], 0)
+            self.assertEqual(empty_event["stage"], "finalizing")
         finally:
             db.close()
 

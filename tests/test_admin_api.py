@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from starlette.middleware.sessions import SessionMiddleware
 
 from src.api import admin as admin_api
+from src.scheduler import jobs as scheduler_jobs
 from src.services.admin_task_service import TaskAlreadyRunningError
 
 
@@ -129,8 +130,11 @@ class AdminApiTestCase(unittest.TestCase):
                 "display_name": "手动抓取最新数据",
                 "status": "running",
                 "status_label": "执行中",
+                "stage": "persisting",
                 "progress_mode": "stage_only",
                 "stage_label": "正在抓取源站并写入数据库",
+                "live_metrics": {"posts_seen": 5},
+                "final_metrics": {},
                 "phase": "正在抓取源站并写入数据库",
                 "details": {
                     "progress_mode": "stage_only",
@@ -147,7 +151,9 @@ class AdminApiTestCase(unittest.TestCase):
         payload = response.json()["items"][0]
         self.assertEqual(payload["display_name"], "手动抓取最新数据")
         self.assertEqual(payload["progress_mode"], "stage_only")
+        self.assertEqual(payload["stage"], "persisting")
         self.assertIn("stage_label", payload)
+        self.assertEqual(payload["live_metrics"]["posts_seen"], 5)
         self.assertEqual(payload["phase"], "正在抓取源站并写入数据库")
         self.assertEqual(payload["details"]["posts_seen"], 5)
 
@@ -161,8 +167,11 @@ class AdminApiTestCase(unittest.TestCase):
                     "display_name": "手动抓取最新数据",
                     "status": "running",
                     "status_label": "执行中",
+                    "stage": "collecting",
                     "progress_mode": "stage_only",
                     "stage_label": "正在抓取源站并写入数据库",
+                    "live_metrics": {"posts_seen": 5},
+                    "final_metrics": {},
                     "phase": "正在抓取源站并写入数据库",
                     "details": {
                         "progress_mode": "stage_only",
@@ -177,8 +186,11 @@ class AdminApiTestCase(unittest.TestCase):
                     "display_name": "手动抓取最新数据",
                     "status": "success",
                     "status_label": "完成",
+                    "stage": "",
                     "progress_mode": "stage_only",
                     "stage_label": "抓取完成",
+                    "live_metrics": {},
+                    "final_metrics": {"posts_seen": 12},
                     "phase": "抓取完成",
                     "details": {
                         "progress_mode": "stage_only",
@@ -194,8 +206,11 @@ class AdminApiTestCase(unittest.TestCase):
                     "display_name": "手动抓取最新数据",
                     "status": "running",
                     "status_label": "执行中",
+                    "stage": "collecting",
                     "progress_mode": "stage_only",
                     "stage_label": "正在抓取源站并写入数据库",
+                    "live_metrics": {"posts_seen": 5},
+                    "final_metrics": {},
                     "phase": "正在抓取源站并写入数据库",
                     "details": {
                         "progress_mode": "stage_only",
@@ -214,8 +229,11 @@ class AdminApiTestCase(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["latest_success_run"]["status"], "success")
         self.assertEqual(payload["latest_success_run"]["display_name"], "手动抓取最新数据")
+        self.assertEqual(payload["latest_success_run"]["final_metrics"]["posts_seen"], 12)
         self.assertEqual(payload["latest_task_run"]["progress_mode"], "stage_only")
+        self.assertEqual(payload["latest_task_run"]["stage"], "collecting")
         self.assertEqual(payload["running_tasks"][0]["stage_label"], "正在抓取源站并写入数据库")
+        self.assertEqual(payload["running_tasks"][0]["live_metrics"]["posts_seen"], 5)
         self.assertEqual(payload["latest_task_run"]["phase"], "正在抓取源站并写入数据库")
         self.assertEqual(payload["latest_success_run"]["phase"], "抓取完成")
 
@@ -226,7 +244,7 @@ class AdminApiTestCase(unittest.TestCase):
             return_value={
                 "id": "run-ai-1",
                 "task_type": "ai_analysis",
-                "status": "running",
+                "status": "cancel_requested",
                 "details": {"cancel_requested_at": "2026-04-01T10:00:00+00:00"},
             },
         ), patch(
@@ -234,15 +252,20 @@ class AdminApiTestCase(unittest.TestCase):
             return_value={
                 "id": "run-ai-1",
                 "task_type": "ai_analysis",
-                "status": "running",
-                "status_label": "执行中",
+                "status": "cancel_requested",
+                "status_label": "正在终止",
+                "actions": [],
                 "details": {"cancel_requested_at": "2026-04-01T10:00:00+00:00"},
             },
         ):
             response = self.client.post("/api/admin/task-runs/run-ai-1/cancel")
 
         self.assertEqual(response.status_code, 202)
-        self.assertIn("终止请求已提交", response.json()["message"])
+        payload = response.json()
+        self.assertIn("终止请求已提交", payload["message"])
+        self.assertEqual(payload["task_run"]["status"], "cancel_requested")
+        self.assertEqual(payload["task_run"]["status_label"], "正在终止")
+        self.assertEqual(payload["task_run"]["actions"], [])
 
     def test_cancel_task_run_should_return_409_for_finished_task(self):
         self._login()
@@ -254,31 +277,41 @@ class AdminApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
 
-    def test_build_admin_progress_callback_should_forward_stage_key_and_metrics(self):
-        callback = admin_api.build_admin_progress_callback("run-dup-1")
+    def test_build_admin_progress_callback_should_forward_canonical_stage_contract(self):
+        callback = admin_api.build_admin_progress_callback("run-scrape-1")
 
-        with patch("src.api.admin.update_task_run") as mocked_update:
+        with patch("src.api.admin.update_task_run") as update_mock:
             callback({
-                "stage_key": "compare-candidates",
-                "stage_label": "正在比对重复候选",
+                "stage": "collecting",
+                "stage_key": "collect-pages",
+                "stage_label": "正在采集源站页面",
                 "progress_mode": "stage_only",
-                "metrics": {
-                    "completed": 46,
-                    "total": 100,
-                    "unit": "percent",
-                    "compared_pairs": 120,
-                    "total_comparisons": 300,
-                },
+                "metrics": {"pages_fetched": 2, "raw_items_collected": 11},
             })
 
-        mocked_update.assert_called_once()
-        kwargs = mocked_update.call_args.kwargs
-        self.assertEqual(kwargs["task_id"], "run-dup-1")
-        self.assertEqual(kwargs["phase"], "正在比对重复候选")
-        self.assertEqual(kwargs["details"]["progress_mode"], "stage_only")
-        self.assertEqual(kwargs["details"]["stage_key"], "compare-candidates")
-        self.assertEqual(kwargs["details"]["metrics"]["completed"], 46)
-        self.assertEqual(kwargs["details"]["metrics"]["compared_pairs"], 120)
+        kwargs = update_mock.call_args.kwargs
+        self.assertEqual(kwargs["status"], "running")
+        self.assertEqual(kwargs["details"]["stage"], "collecting")
+        self.assertEqual(kwargs["details"]["stage_label"], "正在采集源站页面")
+        self.assertEqual(kwargs["details"]["live_metrics"]["pages_fetched"], 2)
+
+    def test_build_scheduler_progress_callback_should_forward_canonical_stage_contract(self):
+        callback = scheduler_jobs.build_scheduler_progress_callback("run-scheduler-1")
+
+        with patch("src.scheduler.jobs.update_task_run") as update_mock:
+            callback({
+                "stage": "persisting",
+                "stage_key": "persist-posts",
+                "stage_label": "正在写入抓取结果",
+                "progress_mode": "stage_only",
+                "metrics": {"posts_seen": 12, "posts_updated": 3},
+            })
+
+        kwargs = update_mock.call_args.kwargs
+        self.assertEqual(kwargs["status"], "running")
+        self.assertEqual(kwargs["details"]["stage"], "persisting")
+        self.assertEqual(kwargs["details"]["stage_label"], "正在写入抓取结果")
+        self.assertEqual(kwargs["details"]["live_metrics"]["posts_seen"], 12)
 
     def test_get_sources_should_return_items(self):
         self.db.query.return_value.order_by.return_value.all.return_value = [
@@ -917,7 +950,7 @@ class AdminApiTestCase(unittest.TestCase):
         with patch("src.api.admin.is_openai_ready", return_value=True), patch(
             "src.api.admin.start_task_run",
             return_value={"id": "running-4", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
-        ), patch(
+        ) as mocked_start, patch(
             "src.api.admin._run_job_extraction_in_background",
             new=AsyncMock()
         ) as mocked_background:
@@ -931,6 +964,28 @@ class AdminApiTestCase(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["task_run"]["status"], "running")
         self.assertIn("已提交", payload["message"])
+        self.assertEqual(mocked_start.call_args.kwargs["task_type"], "ai_job_extraction")
+        mocked_background.assert_called_once()
+
+    def test_run_job_extraction_task_should_use_plain_task_type_when_ai_disabled(self):
+        with patch("src.api.admin.is_openai_ready", return_value=True), patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-plain-job-1", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"}
+        ) as mocked_start, patch(
+            "src.api.admin._run_job_extraction_in_background",
+            new=AsyncMock()
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-job-extraction",
+                json={"limit": 5, "only_unindexed": True, "use_ai": False}
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertEqual(payload["message"], "岗位级抽取任务已提交，后台执行中")
+        self.assertEqual(mocked_start.call_args.kwargs["task_type"], "job_extraction")
         mocked_background.assert_called_once()
 
     def test_run_job_extraction_task_should_forward_rerun_of_task_id(self):
@@ -1077,6 +1132,7 @@ class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(mocked_record.call_args.kwargs["status"], "failed")
+        self.assertEqual(mocked_record.call_args.kwargs["task_type"], "attachment_backfill")
         self.assertIn("失败", mocked_record.call_args.kwargs["summary"])
         fake_db.close.assert_called_once()
 
@@ -1106,7 +1162,7 @@ class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
             "src.api.admin.run_ai_analysis",
             new_callable=AsyncMock,
             return_value=result,
-        ), patch("src.api.admin.update_task_run"), patch(
+        ), patch("src.api.admin.update_task_run") as mocked_update, patch(
             "src.api.admin.record_task_run",
         ) as mocked_record:
             await admin_api._run_ai_analysis_in_background(
@@ -1117,6 +1173,10 @@ class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(mocked_record.call_args.kwargs["status"], "failed")
         self.assertIn("失败", mocked_record.call_args.kwargs["summary"])
+        self.assertTrue(any(
+            call.kwargs.get("details", {}).get("stage") == "finalizing"
+            for call in mocked_update.call_args_list
+        ))
         fake_db.close.assert_called_once()
 
     async def test_run_ai_analysis_in_background_should_record_cancelled_when_cancel_requested(self):
@@ -1145,6 +1205,8 @@ class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(mocked_record.call_args.kwargs["status"], "cancelled")
+        self.assertEqual(mocked_record.call_args.kwargs["details"]["stage"], "finalizing")
+        self.assertEqual(mocked_record.call_args.kwargs["details"]["stage_label"], "已终止")
         fake_db.close.assert_called_once()
 
     async def test_run_job_extraction_in_background_should_record_failed_when_result_contains_failures(self):

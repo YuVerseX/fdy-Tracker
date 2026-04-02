@@ -27,6 +27,7 @@ from src.scheduler.jobs import (
 )
 from src.services.admin_task_service import (
     TaskAlreadyRunningError,
+    build_runtime_task_details,
     get_task_summary_for_admin,
     is_task_run_cancel_requested,
     load_task_runs_for_admin,
@@ -145,7 +146,7 @@ TASK_TYPE_LABELS = {
     "base_analysis_backfill": "基础分析补齐",
     "ai_analysis": "OpenAI 分析",
     "job_extraction": "岗位级抽取",
-    "ai_job_extraction": "岗位级抽取",
+    "ai_job_extraction": "智能岗位识别",
 }
 CONTENT_MUTATION_TASK_TYPES = [
     "manual_scrape",
@@ -273,14 +274,20 @@ def build_progress_details(
     total: int | None = None,
     unit: str | None = None,
     metrics: dict | None = None,
+    stage: str | None = None,
     stage_key: str | None = None,
+    stage_label: str | None = None,
 ) -> dict:
     """统一生成任务进度元数据。"""
     details = {
         "progress_mode": progress_mode,
     }
+    if stage:
+        details["stage"] = stage
     if stage_key:
         details["stage_key"] = stage_key
+    if stage_label:
+        details["stage_label"] = stage_label
     if metrics is not None:
         details["metrics"] = metrics
     elif completed is not None or total is not None or unit:
@@ -301,10 +308,13 @@ def build_admin_progress_callback(task_id: str) -> ProgressCallback:
             status="running",
             phase=payload.get("stage_label") or "",
             progress=None,
-            details=build_progress_details(
-                payload.get("progress_mode") or "stage_only",
+            details=build_runtime_task_details(
+                stage=payload.get("stage") or payload.get("stage_key") or "submitted",
+                stage_label=payload.get("stage_label") or "",
+                progress_mode=payload.get("progress_mode") or "stage_only",
                 stage_key=payload.get("stage_key") or "",
-                metrics=metrics,
+                live_metrics=metrics,
+                stage_started_at=datetime.now(timezone.utc).isoformat(),
             ),
         )
 
@@ -372,7 +382,12 @@ def _record_cancelled_task_run(
             **params,
             **metrics,
             "cancel_reason": "user_requested",
-            **build_progress_details("stage_only", metrics=metrics),
+            **build_progress_details(
+                "stage_only",
+                metrics=metrics,
+                stage="finalizing",
+                stage_label="已终止",
+            ),
         },
         params=params,
         task_id=task_id,
@@ -385,6 +400,38 @@ def _record_cancelled_task_run(
 def _get_task_type_label(task_type: str) -> str:
     """把任务类型转成人看得懂的名字"""
     return TASK_TYPE_LABELS.get(task_type, task_type)
+
+
+def _get_job_extraction_runtime_copy(use_ai: bool) -> dict[str, str]:
+    """统一智能岗位识别与普通岗位抽取的运行态文案。"""
+    if use_ai:
+        return {
+            "task_type": "ai_job_extraction",
+            "running_summary": "智能岗位识别进行中",
+            "prepare_phase": "正在准备智能岗位识别任务",
+            "processing_phase": "正在识别岗位信息",
+            "finalizing_phase": "正在整理智能岗位识别结果",
+            "success_summary": "智能岗位识别完成",
+            "failure_summary": "智能岗位识别失败",
+            "phase_success": "智能岗位识别完成",
+            "phase_failed": "智能岗位识别失败",
+            "error_summary": "智能岗位识别失败",
+            "submit_message": "智能岗位识别任务已提交，后台执行中",
+        }
+
+    return {
+        "task_type": "job_extraction",
+        "running_summary": "岗位级抽取进行中",
+        "prepare_phase": "正在准备岗位级抽取任务",
+        "processing_phase": "正在抽取岗位数据",
+        "finalizing_phase": "正在整理岗位抽取结果",
+        "success_summary": "岗位级抽取完成",
+        "failure_summary": "岗位级抽取失败",
+        "phase_success": "岗位抽取完成",
+        "phase_failed": "岗位抽取失败",
+        "error_summary": "岗位级抽取失败",
+        "submit_message": "岗位级抽取任务已提交，后台执行中",
+    }
 
 
 def _start_task_or_raise_conflict(
@@ -760,12 +807,20 @@ async def _run_ai_analysis_in_background(
             status="running",
             phase="正在准备 AI 分析任务",
             progress=None,
-            details=build_progress_details("stage_only"),
+            details=build_progress_details(
+                "stage_only",
+                stage="collecting",
+                stage_label="正在准备 AI 分析任务",
+            ),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
             phase="正在批量执行 AI 分析",
-            details=build_progress_details("stage_only"),
+            details=build_progress_details(
+                "stage_only",
+                stage="persisting",
+                stage_label="正在批量执行 AI 分析",
+            ),
             awaitable=run_ai_analysis(
                 db,
                 source_id=params["source_id"],
@@ -781,7 +836,11 @@ async def _run_ai_analysis_in_background(
             status="running",
             phase="正在整理 AI 分析结果",
             progress=None,
-            details=build_progress_details("stage_only"),
+            details=build_progress_details(
+                "stage_only",
+                stage="finalizing",
+                stage_label="正在整理 AI 分析结果",
+            ),
         )
         failed = _has_result_failures(result, "failure_count", "insight_failed_count")
         outcome = _build_task_outcome(
@@ -798,7 +857,7 @@ async def _run_ai_analysis_in_background(
             details={
                 **params,
                 **result,
-                **build_progress_details("stage_only", metrics=result),
+                **build_progress_details("stage_only", metrics=result, stage="finalizing"),
             },
             failed=failed,
         )
@@ -854,12 +913,20 @@ async def _run_base_analysis_in_background(
             status="running",
             phase="正在准备基础分析补齐",
             progress=None,
-            details=build_progress_details("stage_only"),
+            details=build_progress_details(
+                "stage_only",
+                stage="collecting",
+                stage_label="正在准备基础分析补齐",
+            ),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
             phase="正在补齐基础 analysis / insight",
-            details=build_progress_details("stage_only"),
+            details=build_progress_details(
+                "stage_only",
+                stage="persisting",
+                stage_label="正在补齐基础 analysis / insight",
+            ),
             awaitable=asyncio.to_thread(
                 _run_base_analysis_with_new_session,
                 params,
@@ -871,7 +938,11 @@ async def _run_base_analysis_in_background(
             status="running",
             phase="正在整理基础分析结果",
             progress=None,
-            details=build_progress_details("stage_only"),
+            details=build_progress_details(
+                "stage_only",
+                stage="finalizing",
+                stage_label="正在整理基础分析结果",
+            ),
         )
         record_task_run(
             task_type="base_analysis_backfill",
@@ -884,7 +955,7 @@ async def _run_base_analysis_in_background(
             details={
                 **params,
                 **result,
-                **build_progress_details("stage_only", metrics=result),
+                **build_progress_details("stage_only", metrics=result, stage="finalizing"),
             },
             params=params,
             task_id=task_id,
@@ -945,18 +1016,27 @@ async def _run_job_extraction_in_background(
     db = SessionLocal()
     result: dict | None = None
     cancel_check = build_admin_cancel_check(task_id)
+    task_copy = _get_job_extraction_runtime_copy(bool(params.get("use_ai")))
     try:
         update_task_run(
             task_id=task_id,
             status="running",
-            phase="正在准备岗位级抽取任务",
+            phase=task_copy["prepare_phase"],
             progress=None,
-            details=build_progress_details("stage_only"),
+            details=build_progress_details(
+                "stage_only",
+                stage="collecting",
+                stage_label=task_copy["prepare_phase"],
+            ),
         )
         result = await _run_with_heartbeat(
             task_id=task_id,
-            phase="正在抽取岗位数据",
-            details=build_progress_details("stage_only"),
+            phase=task_copy["processing_phase"],
+            details=build_progress_details(
+                "stage_only",
+                stage="persisting",
+                stage_label=task_copy["processing_phase"],
+            ),
             awaitable=backfill_post_jobs(
                 db,
                 source_id=params["source_id"],
@@ -970,31 +1050,35 @@ async def _run_job_extraction_in_background(
         update_task_run(
             task_id=task_id,
             status="running",
-            phase="正在整理岗位抽取结果",
+            phase=task_copy["finalizing_phase"],
             progress=None,
-            details=build_progress_details("stage_only"),
+            details=build_progress_details(
+                "stage_only",
+                stage="finalizing",
+                stage_label=task_copy["finalizing_phase"],
+            ),
         )
         failed = _has_result_failures(result, "failures")
         outcome = _build_task_outcome(
             success_summary=(
-                f"岗位级抽取完成，更新 {result['posts_updated']} 条帖子，"
+                f"{task_copy['success_summary']}，更新 {result['posts_updated']} 条帖子，"
                 f"写入 {result['jobs_saved']} 条岗位，AI 参与 {result['ai_posts']} 条"
             ),
             failure_summary=(
-                f"岗位级抽取失败，已更新 {result['posts_updated']} 条帖子，"
+                f"{task_copy['failure_summary']}，已更新 {result['posts_updated']} 条帖子，"
                 f"写入 {result['jobs_saved']} 条岗位，失败 {result['failures']} 条"
             ),
-            phase_success="岗位抽取完成",
-            phase_failed="岗位抽取失败",
+            phase_success=task_copy["phase_success"],
+            phase_failed=task_copy["phase_failed"],
             details={
                 **params,
                 **result,
-                **build_progress_details("stage_only", metrics=result),
+                **build_progress_details("stage_only", metrics=result, stage="finalizing"),
             },
             failed=failed,
         )
         record_task_run(
-            task_type="job_extraction",
+            task_type=task_copy["task_type"],
             status=outcome["status"],
             summary=outcome["summary"],
             details=outcome["details"],
@@ -1006,7 +1090,7 @@ async def _run_job_extraction_in_background(
         )
     except TaskCancellationRequested as exc:
         _record_cancelled_task_run(
-            task_type="job_extraction",
+            task_type=task_copy["task_type"],
             task_id=task_id,
             started_at=started_at,
             params=params,
@@ -1014,9 +1098,9 @@ async def _run_job_extraction_in_background(
         )
     except Exception as exc:
         record_task_run(
-            task_type="job_extraction",
+            task_type=task_copy["task_type"],
             status="failed",
-            summary="岗位级抽取失败",
+            summary=task_copy["error_summary"],
             details={
                 **params,
                 "error": str(exc),
@@ -1025,7 +1109,7 @@ async def _run_job_extraction_in_background(
             params=params,
             task_id=task_id,
             started_at=started_at,
-            phase="岗位抽取失败",
+            phase=task_copy["phase_failed"],
             progress=100,
         )
     finally:
@@ -1334,9 +1418,10 @@ async def run_job_extraction_task(
         "use_ai": request.use_ai,
         "rerun_of_task_id": request.rerun_of_task_id,
     }
+    task_copy = _get_job_extraction_runtime_copy(request.use_ai)
     running_task = _start_task_or_raise_conflict(
-        task_type="job_extraction",
-        summary="岗位级抽取进行中",
+        task_type=task_copy["task_type"],
+        summary=task_copy["running_summary"],
         params=params,
         conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
     )
@@ -1347,7 +1432,7 @@ async def run_job_extraction_task(
         params,
     )
     return {
-        "message": "岗位级抽取任务已提交，后台执行中",
+        "message": task_copy["submit_message"],
         "task_run": running_task
     }
 

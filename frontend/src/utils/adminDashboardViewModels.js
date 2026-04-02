@@ -4,7 +4,8 @@ const EMPTY_LABEL = '--'
 const NOT_FETCHED_LABEL = '未获取'
 const DEFAULT_AI_DISABLED_REASON = '智能整理暂时不可用，基础处理仍可继续。'
 const DEFAULT_HEARTBEAT_STALE_MS = 10 * 60 * 1000
-const RUNNING_TASK_STATUSES = ['queued', 'pending', 'running', 'processing']
+const RUNNING_TASK_STATUSES = ['queued', 'pending', 'running', 'processing', 'cancel_requested']
+const FINAL_TASK_STATUSES = new Set(['success', 'failed', 'cancelled'])
 
 const TASK_TYPE_LABELS = {
   manual_scrape: '手动抓取最新数据',
@@ -119,10 +120,16 @@ export const isTaskRunPossiblyStuck = (run, nowTs = Date.now(), heartbeatStaleMs
 }
 
 const getRunMetricSource = (run = {}) => {
-  for (const source of [run?.details?.metrics, run?.metrics, run?.details, run]) {
-    if (source && typeof source === 'object') return source
+  const metricSources = FINAL_TASK_STATUSES.has(run?.status)
+    ? [run, run?.details, run?.details?.metrics, run?.metrics, run?.details?.final_metrics, run?.final_metrics]
+    : [run, run?.details, run?.details?.metrics, run?.metrics, run?.details?.live_metrics, run?.live_metrics]
+
+  const merged = {}
+  for (const source of metricSources) {
+    if (!source || typeof source !== 'object') continue
+    Object.assign(merged, source)
   }
-  return {}
+  return merged
 }
 
 const findLatestTaskByMatcher = (taskRuns = [], matcher) => (
@@ -269,7 +276,7 @@ export function buildTaskRunsPresentation({
   const historyRuns = taskRuns.filter((run) => !featuredRunKeys.has(getTaskRunKey(run)))
   const stuckCount = currentRunsAll.filter((run) => isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)).length
   const queuedCount = taskRuns.filter((run) => ['queued', 'pending'].includes(run?.status)).length
-  const processingCount = taskRuns.filter((run) => ['running', 'processing'].includes(run?.status)).length
+  const processingCount = taskRuns.filter((run) => ['running', 'processing', 'cancel_requested'].includes(run?.status)).length
 
   return {
     summaryCards: [

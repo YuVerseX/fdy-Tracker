@@ -19,20 +19,31 @@
         </div>
 
         <div class="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
-          <section class="task-run-card__panel">
+          <section class="task-run-card__panel space-y-3">
             <div class="flex flex-wrap items-start justify-between gap-3">
-              <div>
+              <div class="min-w-0">
                 <h4 class="text-sm font-semibold text-slate-900">{{ cardPresentation.stageTitle }}</h4>
-                <p class="mt-1 text-sm leading-6 text-slate-500">{{ cardPresentation.progressView.modeLabel }}</p>
+                <p class="mt-1 text-sm leading-6 text-slate-600">{{ cardPresentation.progressView.stageLabel }}</p>
               </div>
-              <div v-if="cardPresentation.progressView.progressPercentLabel" class="text-sm font-semibold text-slate-900">
-                {{ cardPresentation.progressView.progressPercentLabel }}
+              <div class="shrink-0 text-left lg:text-right">
+                <p class="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
+                  {{ cardPresentation.progressView.modeLabel }}
+                </p>
+                <p v-if="cardPresentation.progressView.progressPercentLabel" class="mt-1 text-sm font-semibold text-slate-900">
+                  {{ cardPresentation.progressView.progressPercentLabel }}
+                </p>
               </div>
             </div>
 
+            <AdminTaskStageTimeline :items="cardPresentation.stageTimelineItems" />
+
+            <p v-if="cardPresentation.progressView.progressLabel" class="text-sm leading-6 text-slate-600">
+              {{ cardPresentation.progressView.progressLabel }}
+            </p>
+
             <div
               v-if="cardPresentation.progressView.showProgressBar"
-              class="mt-3 h-2 rounded-full bg-slate-100"
+              class="h-2 rounded-full bg-slate-100"
               role="progressbar"
               :aria-valuemin="cardPresentation.progressView.mode === 'determinate' ? 0 : undefined"
               :aria-valuemax="cardPresentation.progressView.mode === 'determinate' ? 100 : undefined"
@@ -43,7 +54,6 @@
             </div>
 
             <AppFactList
-              class="mt-3"
               :items="cardPresentation.stageFacts"
               :columns="2"
               tone="muted"
@@ -51,11 +61,21 @@
             />
           </section>
 
-          <section class="task-run-card__panel">
-            <h4 class="text-sm font-semibold text-slate-900">{{ cardPresentation.resultTitle }}</h4>
-            <p class="mt-1 text-sm leading-6 text-slate-500">{{ cardPresentation.resultHint }}</p>
+          <section class="task-run-card__panel space-y-3">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <h4 class="text-sm font-semibold text-slate-900">{{ cardPresentation.resultTitle }}</h4>
+                <p v-if="showResultHint" class="mt-1 text-sm leading-6 text-slate-500">{{ cardPresentation.resultHint }}</p>
+              </div>
+              <AppMetricPill
+                v-if="primaryActionDefinition?.scopeLabel"
+                label="处理范围"
+                :value="primaryActionDefinition.scopeLabel"
+                tone="muted"
+              />
+            </div>
 
-            <div v-if="cardPresentation.resultItems.length > 0" class="mt-3 flex flex-wrap gap-2">
+            <div v-if="cardPresentation.resultItems.length > 0" class="flex flex-wrap gap-2">
               <AppMetricPill
                 v-for="item in cardPresentation.resultItems"
                 :key="item.key"
@@ -64,9 +84,22 @@
                 tone="muted"
               />
             </div>
-            <p v-else-if="cardPresentation.resultEmptyText" class="mt-3 text-sm leading-6 text-slate-500">
+            <p v-else-if="cardPresentation.resultEmptyText" class="text-sm leading-6 text-slate-500">
               {{ cardPresentation.resultEmptyText }}
             </p>
+
+            <div
+              v-if="primaryActionDefinition"
+              class="rounded-2xl border border-slate-200/80 bg-white/90 px-3 py-3"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">建议操作</span>
+                <AppStatusBadge :label="primaryActionDefinition.label" tone="neutral" />
+              </div>
+              <p v-if="primaryActionDefinition.description" class="mt-2 text-sm leading-6 text-slate-600">
+                {{ primaryActionDefinition.description }}
+              </p>
+            </div>
           </section>
         </div>
 
@@ -90,48 +123,18 @@
           :title="cardPresentation.failureNotice.title"
           :description="cardPresentation.failureNotice.description"
         />
-
-        <div v-if="cardPresentation.actionSummary || cardPresentation.actionItems.length > 0" class="space-y-3">
-          <AppNotice
-            v-if="cardPresentation.actionSummary"
-            :title="cardPresentation.actionSummary.title"
-            :description="cardPresentation.actionSummary.description"
-          />
-
-          <div v-if="cardPresentation.actionItems.length > 0" class="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <div
-              v-for="action in cardPresentation.actionItems"
-              :key="`${action.key}-guide`"
-              class="task-run-card__action-item"
-            >
-              <div class="flex flex-wrap items-center gap-2">
-                <AppStatusBadge :label="action.label" tone="neutral" />
-                <AppMetricPill
-                  v-if="action.scopeLabel"
-                  label="处理范围"
-                  :value="action.scopeLabel"
-                  tone="muted"
-                />
-              </div>
-              <p v-if="action.description" class="mt-2 text-sm leading-6 text-slate-600">
-                {{ action.description }}
-              </p>
-            </div>
-          </div>
-        </div>
       </div>
 
       <div class="flex shrink-0 flex-wrap items-center gap-2 lg:max-w-[320px] lg:justify-end">
         <AppActionButton
-          v-for="action in actionDefinitions"
-          :key="action.key"
-          :label="action.label"
-          :busy-label="action.busyLabel"
-          :busy="isActionSubmitting(action.key)"
+          v-if="primaryActionDefinition"
+          :label="primaryActionDefinition.label"
+          :busy-label="primaryActionDefinition.busyLabel"
+          :busy="isActionSubmitting(primaryActionDefinition.key)"
           :disabled="isAnyActionSubmitting"
-          :variant="getActionButtonVariant(action.key)"
+          :variant="getActionButtonVariant(primaryActionDefinition.key)"
           size="sm"
-          @click="handleTaskAction(action.key)"
+          @click="handleTaskAction(primaryActionDefinition.key)"
         />
         <AppActionButton
           v-if="hasDetailContent"
@@ -171,6 +174,7 @@ import AppMetricPill from '../../../components/ui/AppMetricPill.vue'
 import AppNotice from '../../../components/ui/AppNotice.vue'
 import AppStatusBadge from '../../../components/ui/AppStatusBadge.vue'
 import { buildTaskRunCardPresentation } from '../adminTaskRunPresentation.js'
+import AdminTaskStageTimeline from './AdminTaskStageTimeline.vue'
 
 const props = defineProps({
   run: { type: Object, required: true },
@@ -201,15 +205,21 @@ const cardPresentation = computed(() => buildTaskRunCardPresentation(props.run, 
   heartbeatStaleMs: props.heartbeatStaleMs
 }))
 
-const actionDefinitions = computed(() => (
+const primaryActionDefinition = computed(() => (
   props.canRetryTask(props.run.task_type || props.run.taskType)
-    ? cardPresentation.value.actionItems
-    : []
+    ? (cardPresentation.value.actionItems[0] || null)
+    : null
 ))
 const isAnyActionSubmitting = computed(() => (
   props.retryingTaskId === props.run.id || props.cancelingTaskId === props.run.id
 ))
 const hasDetailContent = computed(() => cardPresentation.value.detailSections.length > 0)
+const showResultHint = computed(() => {
+  const { resultHint, resultEmptyText, resultItems } = cardPresentation.value
+  if (!resultHint) return false
+  if (resultItems.length === 0 && resultHint === resultEmptyText) return false
+  return true
+})
 const surfaceToneClass = computed(() => toneClassMap[cardPresentation.value.surfaceTone] || toneClassMap.muted)
 const isTaskExpanded = (taskId) => props.expandedTaskIds.includes(taskId)
 

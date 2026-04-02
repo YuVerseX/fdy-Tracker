@@ -34,6 +34,7 @@ def raise_if_cancel_requested(
 def emit_progress(
     progress_callback: ProgressCallback | None,
     *,
+    stage: str | None = None,
     stage_key: str,
     stage_label: str,
     progress_mode: str,
@@ -44,8 +45,10 @@ def emit_progress(
         return
 
     progress_callback({
+        "stage": stage or stage_key,
         "stage_key": stage_key,
         "stage_label": stage_label,
         "progress_mode": progress_mode,
+        "live_metrics": metrics or {},
         "metrics": metrics or {},
     })

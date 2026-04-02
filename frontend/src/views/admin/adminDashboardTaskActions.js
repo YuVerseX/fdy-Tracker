@@ -308,19 +308,28 @@ const buildTaskContextBadge = (run = {}) => {
     : null
 }
 
-const getBaseActionDefinitions = (run = {}) => {
+const getPrimaryFinalActionKey = (run = {}) => {
   const taskType = run?.task_type || run?.taskType
-  const backendActions = Array.isArray(run.actions)
-    ? run.actions
-        .map((item) => resolveActionDefinition(taskType, item?.key, item?.label))
-        .filter(Boolean)
-    : []
-  if (backendActions.length > 0) return backendActions
-  if (run?.status === 'failed' || run?.status === 'cancelled') {
-    return [resolveActionDefinition(taskType, 'retry')].filter(Boolean)
+
+  if (run?.status === 'failed') return 'retry'
+  if (run?.status === 'success') return 'rerun'
+  if (run?.status === 'cancelled') {
+    return INCREMENTAL_ACTION_TASK_TYPES.has(taskType) ? 'incremental' : 'retry'
   }
-  if (run?.status === 'success') return [resolveActionDefinition(taskType, 'rerun')].filter(Boolean)
-  return []
+
+  return ''
+}
+
+const getBackendPrimaryActionDefinition = (run = {}) => {
+  const taskType = run?.task_type || run?.taskType
+  if (!Array.isArray(run.actions)) return null
+
+  for (const action of run.actions) {
+    const resolved = resolveActionDefinition(taskType, action?.key, action?.label)
+    if (resolved) return resolved
+  }
+
+  return null
 }
 
 const getJobActionError = (error) => {
@@ -427,29 +436,27 @@ export const getTaskRefreshOptions = (taskType) => ({ ...(TASK_REFRESH_OPTIONS[t
 export const getTaskActionDefinitions = (run = {}) => {
   const taskType = run?.task_type || run?.taskType
   if (!canRetryTask(taskType)) return []
+  if (run?.status === 'cancel_requested') return []
 
-  const actions = getBaseActionDefinitions(run)
-  const actionKeys = new Set(actions.map((item) => item.key))
+  const backendPrimaryAction = getBackendPrimaryActionDefinition(run)
+  if (backendPrimaryAction) {
+    return [backendPrimaryAction]
+  }
 
   if (
     CANCELABLE_TASK_TYPES.has(taskType)
     && ['queued', 'pending', 'running', 'processing'].includes(run?.status)
     && !run?.details?.cancel_requested_at
-    && !actionKeys.has('cancel')
   ) {
-    actions.push(resolveActionDefinition(taskType, 'cancel'))
-    actionKeys.add('cancel')
+    return [resolveActionDefinition(taskType, 'cancel')].filter(Boolean)
   }
 
-  if (
-    ['success', 'cancelled'].includes(run?.status)
-    && INCREMENTAL_ACTION_TASK_TYPES.has(taskType)
-    && !actionKeys.has('incremental')
-  ) {
-    actions.push(resolveActionDefinition(taskType, 'incremental'))
+  const primaryFinalActionKey = getPrimaryFinalActionKey(run)
+  if (primaryFinalActionKey) {
+    return [resolveActionDefinition(taskType, primaryFinalActionKey)].filter(Boolean)
   }
 
-  return actions.filter(Boolean)
+  return []
 }
 
 export const buildTaskActionGuide = (run = {}) => {

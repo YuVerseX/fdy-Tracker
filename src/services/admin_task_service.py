@@ -11,13 +11,14 @@ from loguru import logger
 from src.config import settings
 
 MAX_TASK_RUNS = 50
-RUNNING_STATUSES = {"queued", "pending", "running", "processing"}
+RUNNING_STATUSES = {"queued", "pending", "running", "processing", "cancel_requested"}
 DEFAULT_RUNNING_TASK_STALE_HOURS = 6
 RUNNING_TASK_STALE_HOURS = {
     "manual_scrape": 2,
     "scheduled_scrape": 2,
     "ai_analysis": 6,
     "job_extraction": 6,
+    "ai_job_extraction": 6,
     "attachment_backfill": 12,
     "duplicate_backfill": 12,
 }
@@ -29,17 +30,19 @@ TASK_TYPE_LABELS = {
     "base_analysis_backfill": "基础分析补齐",
     "ai_analysis": "OpenAI 分析",
     "job_extraction": "岗位级抽取",
-    "ai_job_extraction": "岗位级抽取",
+    "ai_job_extraction": "智能岗位识别",
 }
 TASK_STATUS_LABELS = {
     "queued": "排队中",
     "pending": "排队中",
-    "running": "执行中",
-    "processing": "执行中",
+    "running": "运行中",
+    "processing": "运行中",
+    "cancel_requested": "正在终止",
     "success": "完成",
     "failed": "失败",
     "cancelled": "已终止",
 }
+FINAL_STATUSES = {"success", "failed", "cancelled"}
 ADMIN_COMPATIBILITY_DETAIL_FIELDS = {
     "processed_records",
     "posts_updated",
@@ -53,6 +56,20 @@ CONTENT_MUTATION_TASK_TYPES = {
     "scheduled_scrape",
     "attachment_backfill",
     "duplicate_backfill",
+    "base_analysis_backfill",
+    "ai_analysis",
+    "job_extraction",
+    "ai_job_extraction",
+}
+TASK_CANCELABLE_TYPES = {
+    "attachment_backfill",
+    "duplicate_backfill",
+    "base_analysis_backfill",
+    "ai_analysis",
+    "job_extraction",
+    "ai_job_extraction",
+}
+TASK_INCREMENTAL_ACTION_TYPES = {
     "base_analysis_backfill",
     "ai_analysis",
     "job_extraction",
@@ -199,8 +216,13 @@ def _build_stale_task_run(task_run: Dict[str, Any], now: datetime) -> Dict[str, 
     finished_at_value = now.astimezone(timezone.utc).isoformat()
     duration_ms = _calculate_duration_ms(started_at_value, finished_at_value)
     details = dict(task_run.get("details") or {})
+    stale_phase = "状态过期，已自动结束"
     failure_reason = details.get("failure_reason") or "任务运行状态已过期，可能是服务重启或异常中断"
     details["failure_reason"] = failure_reason
+    details["stage_label"] = stale_phase
+    details["final_summary"] = details.get("final_summary") or (
+        task_run.get("summary") or "任务运行状态已过期"
+    )
 
     stale_summary = task_run.get("summary") or "任务运行状态已过期"
     if "状态过期" not in stale_summary:
@@ -210,7 +232,7 @@ def _build_stale_task_run(task_run: Dict[str, Any], now: datetime) -> Dict[str, 
         **task_run,
         "status": "failed",
         "summary": stale_summary,
-        "phase": "状态过期，已自动结束",
+        "phase": stale_phase,
         "details": details,
         "finished_at": finished_at_value,
         "heartbeat_at": finished_at_value,
@@ -331,9 +353,14 @@ def request_task_run_cancel(
             merged_details["cancel_reason"] = cancel_reason
             if cancel_requested_by:
                 merged_details["cancel_requested_by"] = cancel_requested_by
+            merged_details["stage"] = "finalizing"
+            merged_details["stage_label"] = "当前处理单元结束后会停止"
+            merged_details["stage_started_at"] = merged_details.get("cancel_requested_at")
 
             updated_run = {
                 **task_run,
+                "status": "cancel_requested",
+                "phase": "当前处理单元结束后会停止",
                 "details": merged_details,
                 "heartbeat_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -360,8 +387,25 @@ def build_task_actions(task_run: Dict[str, Any]) -> List[Dict[str, str]]:
     status = task_run.get("status")
     if task_type not in CONTENT_MUTATION_TASK_TYPES:
         return []
-    if status in {"failed", "cancelled"}:
+
+    if (
+        task_type in TASK_CANCELABLE_TYPES
+        and status in {"queued", "pending", "running", "processing"}
+        and not (task_run.get("details") or {}).get("cancel_requested_at")
+    ):
+        return [{"key": "cancel", "label": "提前终止"}]
+
+    if status == "cancel_requested":
+        return []
+
+    if status == "failed":
         return [{"key": "retry", "label": "按原条件重试"}]
+
+    if status == "cancelled":
+        action_key = "incremental" if task_type in TASK_INCREMENTAL_ACTION_TYPES else "retry"
+        action_label = "只补剩余" if action_key == "incremental" else "按原条件重试"
+        return [{"key": action_key, "label": action_label}]
+
     if status == "success":
         return [{"key": "rerun", "label": "再次运行"}]
     return []
@@ -372,18 +416,85 @@ def _normalize_admin_progress_mode(details: Dict[str, Any]) -> str:
     return "determinate" if details.get("progress_mode") == "determinate" else "stage_only"
 
 
+def build_runtime_task_details(
+    *,
+    stage: str,
+    stage_label: str,
+    progress_mode: str = "stage_only",
+    stage_key: str | None = None,
+    live_metrics: Dict[str, Any] | None = None,
+    stage_started_at: str | None = None,
+) -> Dict[str, Any]:
+    """构造运行态 canonical 任务详情。"""
+    metrics = dict(live_metrics or {})
+    details: Dict[str, Any] = {
+        "stage": stage,
+        "stage_label": stage_label,
+        "progress_mode": progress_mode,
+        "live_metrics": metrics,
+        "metrics": dict(metrics),
+    }
+    if stage_key:
+        details["stage_key"] = stage_key
+    if stage_started_at:
+        details["stage_started_at"] = stage_started_at
+    return details
+
+
+def _build_canonical_metrics(details: Dict[str, Any], status: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """按任务状态拆分运行态和完成态指标。"""
+    live_metrics = dict(details.get("live_metrics") or details.get("metrics") or {})
+    final_metrics = dict(details.get("final_metrics") or {})
+    if status in FINAL_STATUSES:
+        if not final_metrics:
+            final_metrics = dict(live_metrics or details.get("metrics") or {})
+        live_metrics = {}
+    return live_metrics, final_metrics
+
+
+def _infer_runtime_stage_from_phase(phase: str | None, existing_stage: str | None) -> str:
+    """为尚未迁移到 explicit stage 的 phase-only 更新兜底推导 canonical stage。"""
+    normalized_phase = (phase or "").strip()
+    normalized_existing_stage = (existing_stage or "").strip()
+    if any(token in normalized_phase for token in ("收尾", "整理", "终止", "停止")):
+        return "finalizing"
+    if normalized_existing_stage and normalized_existing_stage != "submitted":
+        return normalized_existing_stage
+    return "processing"
+
+
 def _build_admin_compatibility_details(
     *,
     raw_details: Dict[str, Any],
     progress_mode: str,
     metrics: Dict[str, Any],
     failure_reason: str | None,
+    stage: str,
+    stage_label: str,
+    stage_started_at: str,
+    live_metrics: Dict[str, Any],
+    final_metrics: Dict[str, Any],
+    final_summary: str,
 ) -> Dict[str, Any]:
     """为当前前端提供安全的兼容 details 结构。"""
     compatibility_details: Dict[str, Any] = {
         "progress_mode": progress_mode,
         "metrics": metrics,
     }
+    if stage:
+        compatibility_details["stage"] = stage
+    elif raw_details.get("stage"):
+        compatibility_details["stage"] = raw_details.get("stage")
+    if stage_label:
+        compatibility_details["stage_label"] = stage_label
+    if stage_started_at:
+        compatibility_details["stage_started_at"] = stage_started_at
+    if live_metrics:
+        compatibility_details["live_metrics"] = dict(live_metrics)
+    if final_metrics:
+        compatibility_details["final_metrics"] = dict(final_metrics)
+    if final_summary:
+        compatibility_details["final_summary"] = final_summary
     stage_key = raw_details.get("stage_key")
     if stage_key:
         compatibility_details["stage_key"] = stage_key
@@ -407,20 +518,33 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
     """把原始任务记录转成后台任务列表展示契约。"""
     normalized_task_run = dict(task_run or {})
     details = dict(normalized_task_run.get("details") or {})
+    status = normalized_task_run.get("status") or ""
     progress_mode = _normalize_admin_progress_mode(details)
-    metrics = dict(details.get("metrics") or {})
-    stage_label = normalized_task_run.get("phase") or ""
+    live_metrics, final_metrics = _build_canonical_metrics(details, status)
+    metrics = live_metrics if live_metrics else final_metrics
+    stage = details.get("stage") or ""
+    stage_label = details.get("stage_label") or normalized_task_run.get("phase") or ""
+    stage_started_at = details.get("stage_started_at") or ""
+    final_summary = details.get("final_summary") or (
+        normalized_task_run.get("summary")
+        if status in FINAL_STATUSES else ""
+    )
     failure_reason = normalized_task_run.get("failure_reason")
     stage_key = details.get("stage_key")
     return {
         "id": normalized_task_run.get("id"),
         "task_type": normalized_task_run.get("task_type"),
         "display_name": get_task_type_label(normalized_task_run.get("task_type") or ""),
-        "status": normalized_task_run.get("status"),
-        "status_label": TASK_STATUS_LABELS.get(normalized_task_run.get("status"), "未知"),
+        "status": status,
+        "status_label": TASK_STATUS_LABELS.get(status, "未知"),
+        "stage": "" if status in FINAL_STATUSES else stage,
         "progress_mode": progress_mode,
         "stage_key": stage_key,
         "stage_label": stage_label,
+        "stage_started_at": stage_started_at,
+        "live_metrics": live_metrics,
+        "final_metrics": final_metrics,
+        "final_summary": final_summary,
         "phase": stage_label,
         "metrics": metrics,
         "actions": build_task_actions(normalized_task_run),
@@ -438,6 +562,12 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
             progress_mode=progress_mode,
             metrics=metrics,
             failure_reason=failure_reason,
+            stage=stage,
+            stage_label=stage_label,
+            stage_started_at=stage_started_at,
+            live_metrics=live_metrics,
+            final_metrics=final_metrics,
+            final_summary=final_summary,
         ),
     }
 
@@ -454,7 +584,7 @@ def start_task_run(
     details: Dict[str, Any] | None = None,
     conflict_task_types: List[str] | None = None
 ) -> Dict[str, Any]:
-    """创建运行中的任务记录"""
+    """创建后台任务记录。"""
     with TASK_RUNS_LOCK:
         current_runs = _load_task_runs_with_cleanup()
         normalized_conflict_task_types = resolve_conflict_task_types(task_type, conflict_task_types)
@@ -476,12 +606,17 @@ def start_task_run(
         task_run = {
             "id": uuid4().hex,
             "task_type": task_type,
-            "status": "running",
+            "status": "queued",
             "summary": summary,
             "phase": "任务已提交，等待后台执行",
             "progress": 0,
             "params": normalized_params,
-            "details": normalized_details,
+            "details": build_runtime_task_details(
+                stage="submitted",
+                stage_label="任务已提交，等待后台执行",
+                progress_mode="stage_only",
+                stage_started_at=started_at_value,
+            ) | normalized_details,
             "started_at": started_at_value,
             "heartbeat_at": started_at_value,
             "finished_at": None,
@@ -512,15 +647,45 @@ def update_task_run(
                 next_runs.append(task_run)
                 continue
 
-            merged_details = dict(task_run.get("details") or {})
+            existing_details = dict(task_run.get("details") or {})
+            merged_details = dict(existing_details)
+            resolved_heartbeat = _normalize_datetime_value(heartbeat_at)
             if details:
+                incoming_stage = details.get("stage")
+                existing_stage = existing_details.get("stage")
+                if (
+                    incoming_stage
+                    and incoming_stage == existing_stage
+                    and existing_details.get("stage_started_at")
+                    and details.get("stage_started_at")
+                ):
+                    details = {
+                        **details,
+                        "stage_started_at": existing_details.get("stage_started_at"),
+                    }
                 merged_details.update(details)
+            else:
+                details = {}
+
+            if phase is not None and "stage_label" not in details:
+                previous_stage_label = (
+                    existing_details.get("stage_label")
+                    or task_run.get("phase")
+                    or ""
+                )
+                if "stage" not in details:
+                    merged_details["stage"] = _infer_runtime_stage_from_phase(
+                        phase,
+                        existing_details.get("stage"),
+                    )
+                merged_details["stage_label"] = phase
+                if phase != previous_stage_label and "stage_started_at" not in details:
+                    merged_details["stage_started_at"] = resolved_heartbeat
 
             normalized_progress = _normalize_progress_value(
                 progress,
                 fallback=_normalize_progress_value(task_run.get("progress"), fallback=0)
             )
-            resolved_heartbeat = _normalize_datetime_value(heartbeat_at)
 
             updated_run = {
                 **task_run,
@@ -581,6 +746,18 @@ def record_task_run(
             or normalized_params.get("rerun_of_task_id")
             or (existing_run or {}).get("rerun_of_task_id")
         )
+
+        if status in FINAL_STATUSES:
+            final_details.setdefault("final_summary", summary)
+            resolved_stage_label = phase or final_details.get("stage_label") or ""
+            if resolved_stage_label:
+                final_details["stage_label"] = resolved_stage_label
+            live_metrics, final_metrics = _build_canonical_metrics(final_details, status)
+            if final_metrics:
+                final_details["final_metrics"] = final_metrics
+            final_details["live_metrics"] = {}
+            if final_metrics:
+                final_details["metrics"] = dict(final_metrics)
 
         failure_reason = final_details.get("failure_reason") or final_details.get("error")
         if status == "success":
