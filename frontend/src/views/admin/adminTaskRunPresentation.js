@@ -71,6 +71,7 @@ const TASK_HEADLINE_LABEL_OVERRIDES = Object.freeze({
   ai_job_extraction: { posts_scanned: '检查公告' }
 })
 const RUNNING_HEADLINE_HIDDEN_KEYS = new Set(['posts_total', 'total_groups', 'total_comparisons', 'total'])
+const DELAYED_RESULT_TASK_TYPES = new Set(['scrape', 'manual_scrape', 'scheduled_scrape'])
 
 const toNumber = (value) => {
   const numeric = Number(value)
@@ -194,16 +195,35 @@ const getTaskStageTitle = (run = {}) => {
   return '当前阶段'
 }
 
-const getTaskResultTitle = (run = {}) => (
-  isRunningTaskStatus(run?.status) ? '当前结果' : '本次结果'
+const hasVisibleResultItems = (resultItems = []) => resultItems.length > 0
+
+const isDelayedScrapeResultState = (run = {}, resultItems = []) => (
+  isRunningTaskStatus(run?.status) &&
+  !['queued', 'pending'].includes(run?.status) &&
+  DELAYED_RESULT_TASK_TYPES.has(run?.task_type || run?.taskType) &&
+  !hasVisibleResultItems(resultItems)
 )
 
-const getTaskResultHint = (run = {}) => {
-  if (run?.status === 'cancelled') return '已完成的结果会保留，可以继续补剩余内容或重新运行当前范围。'
-  if (run?.status === 'failed') return '可以先查看失败原因，再决定是否重新处理当前范围。'
-  if (run?.status === 'success') return '这是本次任务的最终结果，可以据此决定是否继续处理当前范围。'
+const getTaskResultTitle = (run = {}, resultItems = []) => {
+  if (isDelayedScrapeResultState(run, resultItems)) return '结果将在写入阶段陆续出现'
+  return isRunningTaskStatus(run?.status) ? '当前结果' : '本次结果'
+}
+
+const getTaskResultHint = (run = {}, resultItems = []) => {
+  if (isDelayedScrapeResultState(run, resultItems)) return '正在采集源站，结果数会在写入阶段出现。'
+  if (run?.status === 'cancelled') return '任务已终止，已写入的结果会保留。'
+  if (run?.status === 'failed') return '这次处理没有完成，可先看失败原因再决定是否重试。'
+  if (run?.status === 'success') return '这里是本次任务的最终结果。'
   if (run?.status === 'queued' || run?.status === 'pending') return '任务开始后，这里的数量会按实际处理结果更新。'
   return '数量会继续变化，任务结束后再看最终结果。'
+}
+
+const getTaskResultEmptyText = (run = {}, resultItems = []) => {
+  if (hasVisibleResultItems(resultItems)) return ''
+  if (isDelayedScrapeResultState(run, resultItems)) return '当前阶段还没有可展示的结果数量。'
+  if (run?.status === 'queued' || run?.status === 'pending') return '任务开始后，这里会出现可核对的结果数量。'
+  if (isRunningTaskStatus(run?.status)) return '当前阶段还没有可展示的结果数量。'
+  return '这次任务没有留下额外的结果指标。'
 }
 
 const getTaskTimelineText = (run = {}) => {
@@ -455,6 +475,7 @@ export function buildTaskRunCardPresentation(run = {}, {
 } = {}) {
   const progressView = buildTaskProgressView(run, { nowTs, heartbeatStaleMs })
   const actionGuide = buildTaskActionGuide(run)
+  const resultItems = buildTaskHeadlineResultItems(run)
   const failureReason = normalizeAdminUiMessage(
     getTaskFailureReason(run),
     '这次处理没有完成，请稍后再试。'
@@ -481,9 +502,10 @@ export function buildTaskRunCardPresentation(run = {}, {
     progressView,
     stageTitle: getTaskStageTitle(run),
     stageFacts: buildTaskStageFacts(run, progressView, { nowTs }),
-    resultTitle: getTaskResultTitle(run),
-    resultHint: getTaskResultHint(run),
-    resultItems: buildTaskHeadlineResultItems(run),
+    resultTitle: getTaskResultTitle(run, resultItems),
+    resultHint: getTaskResultHint(run, resultItems),
+    resultItems,
+    resultEmptyText: getTaskResultEmptyText(run, resultItems),
     detailSections: buildTaskDetailSections(run, { sourceOptions, nowTs }),
     cancellationNotice,
     failureNotice: run?.status === 'failed'

@@ -11,7 +11,7 @@
 
       <AppNotice
         v-if="dashboard.feedback.message"
-        :tone="dashboard.feedback.type === 'success' ? 'success' : 'danger'"
+        :tone="dashboard.feedback.type === 'error' ? 'danger' : dashboard.feedback.type"
         :description="dashboard.feedback.message"
       />
 
@@ -125,6 +125,7 @@
           :now-ts="dashboard.taskRunsSection.nowTs"
           :source-options="dashboard.taskRunsSection.sourceOptions"
           :heartbeat-stale-ms="dashboard.taskRunsSection.heartbeatStaleMs"
+          :sync-status="dashboard.taskRunsSection.syncStatus"
           :refresh-task-status="dashboard.refreshTaskStatus"
           :retry-task-run="dashboard.retryTaskRun"
           :cancel-task-run="dashboard.cancelTaskRun"

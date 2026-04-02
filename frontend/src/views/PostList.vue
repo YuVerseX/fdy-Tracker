@@ -305,6 +305,7 @@ import {
   buildActiveFilterChips,
   buildPostCardView,
   buildPostListEmptyState,
+  buildPostListFreshnessNotice,
   buildPostListMetricCards,
   COUNSELOR_SCOPE_OPTIONS,
   getFilterCounselorScopeLabel
@@ -375,37 +376,14 @@ const freshnessHeadline = computed(() => {
   })
 })
 
-const freshnessNotice = computed(() => {
-  if (freshnessLoading.value) {
-    return {
-      tone: 'info',
-      title: '正在更新最近抓取记录',
-      description: '你可以先继续筛选和浏览当前结果。'
-    }
-  }
-
-  if (latestSuccessTask.value?.finishedAt) {
-    return {
-      tone: 'info',
-      title: freshnessHeadline.value,
-      description: `最近一次完成于 ${formatDateTime(latestSuccessTask.value.finishedAt)}（${getRelativeTimeLabel(latestSuccessTask.value.finishedAt)}）。`
-    }
-  }
-
-  if (freshnessUnavailable.value) {
-    return {
-      tone: 'warning',
-      title: '最近抓取记录暂时不可用',
-      description: '这不会影响继续浏览当前列表。'
-    }
-  }
-
-  return {
-    tone: 'warning',
-    title: '还没有可展示的抓取成功任务记录',
-    description: '稍后再来看看，或等待下一次抓取完成。'
-  }
-})
+const freshnessNotice = computed(() => buildPostListFreshnessNotice({
+  loading: freshnessLoading.value,
+  latestSuccessTask: latestSuccessTask.value,
+  unavailable: freshnessUnavailable.value,
+  freshnessHeadline: freshnessHeadline.value,
+  formatDateTime,
+  formatRelativeTime: getRelativeTimeLabel
+}))
 
 const clearFilterChip = (key) => {
   if (key === 'search') {

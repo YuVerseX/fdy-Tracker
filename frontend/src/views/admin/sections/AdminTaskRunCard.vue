@@ -64,8 +64,8 @@
                 tone="muted"
               />
             </div>
-            <p v-else class="mt-3 text-sm leading-6 text-slate-500">
-              开始处理后，这里会出现可核对的结果数量。
+            <p v-else-if="cardPresentation.resultEmptyText" class="mt-3 text-sm leading-6 text-slate-500">
+              {{ cardPresentation.resultEmptyText }}
             </p>
           </section>
         </div>

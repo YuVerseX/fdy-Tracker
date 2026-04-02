@@ -22,6 +22,23 @@
       />
     </div>
 
+    <div class="mt-4 rounded-3xl border border-slate-200 bg-slate-50/85 p-4">
+      <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div class="flex flex-wrap items-center gap-2">
+          <AppStatusBadge
+            :label="resolvedSyncStatus.badgeLabel"
+            :tone="resolvedSyncStatus.badgeTone"
+          />
+          <AppMetricPill label="同步频率" :value="resolvedSyncStatus.intervalLabel" tone="muted" />
+          <AppMetricPill label="最近同步" :value="resolvedSyncStatus.lastSyncedLabel" tone="muted" />
+          <AppMetricPill label="运行中任务" :value="resolvedSyncStatus.runningCountLabel" tone="muted" />
+        </div>
+        <p class="text-sm leading-6 text-slate-500">
+          {{ resolvedSyncStatus.summary }}
+        </p>
+      </div>
+    </div>
+
     <div v-if="loadingRuns || !taskRunsLoaded" class="py-10 text-center text-sm text-gray-500">正在加载任务记录...</div>
     <AppEmptyState
       v-else-if="taskRuns.length === 0"
@@ -49,7 +66,7 @@
           <div>
             <h3 class="text-base font-semibold text-slate-900">当前任务</h3>
             <p class="text-sm leading-6 text-slate-500">
-              这里显示正在排队或处理中的任务，数量会随着处理推进继续变化。
+              这里显示正在排队或处理中的任务，按当前同步状态刷新阶段和结果。
             </p>
           </div>
           <div class="flex flex-wrap gap-2">
@@ -64,7 +81,7 @@
           v-if="presentation.currentRuns.length === 0"
           title="当前没有进行中的任务"
           tone="info"
-          description="发起新的处理后，这里会显示排队状态、当前阶段和实时结果。"
+          description="发起新的处理后，这里会按当前同步状态显示排队状态、当前阶段和结果。"
         />
         <div v-else class="space-y-4">
           <AdminTaskRunCard
@@ -91,13 +108,14 @@
           <div>
             <h3 class="text-base font-semibold text-slate-900">最近结果</h3>
             <p class="text-sm leading-6 text-slate-500">
-              先在这里核对刚完成或未完成的任务结果，再决定是否重新处理当前范围。
+              查看刚结束任务的结果和状态。
             </p>
           </div>
           <div class="flex flex-wrap gap-2">
             <AppMetricPill label="最近结果" :value="`${presentation.counts.results} 条`" tone="muted" />
             <AppMetricPill v-if="presentation.counts.failed > 0" label="未完成" :value="`${presentation.counts.failed} 条`" tone="muted" />
             <AppMetricPill v-if="presentation.counts.success > 0" label="已完成" :value="`${presentation.counts.success} 条`" tone="muted" />
+            <AppMetricPill v-if="presentation.counts.cancelled > 0" label="已终止" :value="`${presentation.counts.cancelled} 条`" tone="muted" />
           </div>
         </div>
 
@@ -105,7 +123,7 @@
           v-if="presentation.recentResultRuns.length === 0"
           title="最近还没有结果记录"
           tone="info"
-          description="任务结束后，这里会显示最终结果、失败原因和下一步操作。"
+          description="任务结束后，这里会显示结果和状态。"
         />
         <div v-else class="space-y-4">
           <AdminTaskRunCard
@@ -182,12 +200,25 @@ const props = defineProps({
   nowTs: { type: Number, required: true },
   sourceOptions: { type: Array, required: true },
   heartbeatStaleMs: { type: Number, required: true },
+  syncStatus: { type: Object, required: true },
   refreshTaskStatus: { type: Function, required: true },
   retryTaskRun: { type: Function, required: true },
   cancelTaskRun: { type: Function, required: true },
   toggleTaskExpanded: { type: Function, required: true },
   canRetryTask: { type: Function, required: true }
 })
+
+const AUTO_REFRESH_BADGE_LABEL = '自动刷新中'
+const MANUAL_REFRESH_SUMMARY = '当前无自动刷新，仅支持手动刷新。'
+
+const resolvedSyncStatus = computed(() => ({
+  badgeLabel: props.syncStatus?.badgeLabel || (props.syncStatus?.autoRefreshActive ? AUTO_REFRESH_BADGE_LABEL : '手动刷新'),
+  badgeTone: props.syncStatus?.badgeTone || 'neutral',
+  intervalLabel: props.syncStatus?.intervalLabel || '15 秒',
+  lastSyncedLabel: props.syncStatus?.lastSyncedLabel || '尚未同步',
+  runningCountLabel: props.syncStatus?.runningCountLabel || '0 条',
+  summary: props.syncStatus?.summary || MANUAL_REFRESH_SUMMARY
+}))
 
 const presentation = computed(() => buildTaskRunsPresentation({
   taskRuns: props.taskRuns,

@@ -58,7 +58,8 @@ function createHarness({ adminApiOverrides = {} } = {}) {
     retryingTaskId: '',
     retryingTaskActionKey: '',
     cancelingTaskId: '',
-    jobsSummaryUnavailable: false
+    jobsSummaryUnavailable: false,
+    taskStatusLastSyncedAt: ''
   }
   const loading = {
     scheduler: false,
@@ -114,7 +115,7 @@ function createHarness({ adminApiOverrides = {} } = {}) {
     forms
   })
 
-  return { calls, service, state, loaded, forms }
+  return { calls, service, state, loaded, forms, feedback }
 }
 
 test('createAdminDashboardDataService should expose refresh aliases expected by AdminDashboard', async () => {
@@ -250,4 +251,202 @@ test('cancelTaskRun should submit cancel request and clear canceling state after
 
   assert.equal(cancelledTaskId, 'run-ai-1')
   assert.equal(state.cancelingTaskId, '')
+})
+
+test('runAiAnalysisTask should downgrade timeout into info feedback after refreshing task state', async () => {
+  const timeoutError = new Error('timeout')
+  timeoutError.code = 'ECONNABORTED'
+
+  const { service, feedback } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async () => { throw timeoutError }
+    }
+  })
+
+  await service.runAiAnalysisTask()
+
+  assert.equal(feedback.value.type, 'info')
+  assert.match(feedback.value.message, /后台已接收请求/)
+})
+
+test('runScrapeTask should convert 409 conflict into warning feedback instead of error copy', async () => {
+  const conflictError = new Error('conflict')
+  conflictError.response = {
+    status: 409,
+    data: { detail: '手动抓取最新数据已经在运行了，请先等当前任务结束后再试。若刚才页面超时了，先点“刷新记录”确认后台状态。' }
+  }
+
+  const { service, feedback } = createHarness({
+    adminApiOverrides: {
+      runScrape: async () => { throw conflictError }
+    }
+  })
+
+  await service.runScrapeTask()
+
+  assert.equal(feedback.value.type, 'warning')
+  assert.match(feedback.value.message, /已有同类任务在运行/)
+})
+
+test('retryTaskRun should downgrade timeout into info feedback in retry catch branch', async () => {
+  const timeoutError = new Error('timeout')
+  timeoutError.code = 'ECONNABORTED'
+
+  const { service, feedback } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async () => { throw timeoutError }
+    }
+  })
+
+  await service.retryTaskRun({
+    id: 'run-ai-timeout-1',
+    task_type: 'ai_analysis',
+    status: 'success',
+    params: {
+      source_id: '8',
+      limit: '50',
+      only_unanalyzed: false
+    }
+  }, 'incremental')
+
+  assert.equal(feedback.value.type, 'info')
+  assert.match(feedback.value.message, /后台已接收请求/)
+})
+
+test('runAiAnalysisTask should keep refresh error feedback when timeout refresh fails', async () => {
+  const timeoutError = new Error('timeout')
+  timeoutError.code = 'ECONNABORTED'
+  const refreshError = new Error('refresh-failed')
+
+  const { service, feedback } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async () => { throw timeoutError },
+      getTaskRuns: async () => { throw refreshError }
+    }
+  })
+
+  await service.runAiAnalysisTask()
+
+  assert.equal(feedback.value.type, 'error')
+  assert.match(feedback.value.message, /加载任务记录失败/)
+})
+
+test('runAiAnalysisTask should keep timeout info feedback when task summary falls back but task runs refresh succeeds', async () => {
+  const timeoutError = new Error('timeout')
+  timeoutError.code = 'ECONNABORTED'
+  const summaryError = new Error('summary-failed')
+
+  const originalWarn = console.warn
+  console.warn = () => {}
+  try {
+    const { service, feedback, state } = createHarness({
+      adminApiOverrides: {
+        runAiAnalysis: async () => { throw timeoutError },
+        getTaskSummary: async () => { throw summaryError },
+        getTaskRuns: async () => ({ data: { items: [{ id: 'run-1' }] } })
+      }
+    })
+
+    await service.runAiAnalysisTask()
+
+    assert.equal(state.taskSummaryUnavailable, true)
+    assert.equal(feedback.value.type, 'info')
+    assert.match(feedback.value.message, /后台已接收请求/)
+  } finally {
+    console.warn = originalWarn
+  }
+})
+
+test('retryTaskRun should keep conflict warning feedback when task summary falls back but task runs refresh succeeds', async () => {
+  const conflictError = new Error('conflict')
+  conflictError.response = {
+    status: 409,
+    data: { detail: '手动抓取最新数据已经在运行了，请先等当前任务结束后再试。若刚才页面超时了，先点“刷新记录”确认后台状态。' }
+  }
+  const summaryError = new Error('summary-failed')
+
+  const originalWarn = console.warn
+  console.warn = () => {}
+  try {
+    const { service, feedback, state } = createHarness({
+      adminApiOverrides: {
+        runAiAnalysis: async () => { throw conflictError },
+        getTaskSummary: async () => { throw summaryError },
+        getTaskRuns: async () => ({ data: { items: [{ id: 'run-2' }] } })
+      }
+    })
+
+    await service.retryTaskRun({
+      id: 'run-ai-conflict-1',
+      task_type: 'ai_analysis',
+      status: 'success',
+      params: {
+        source_id: '9',
+        limit: '20',
+        only_unanalyzed: true
+      }
+    }, 'incremental')
+
+    assert.equal(state.taskSummaryUnavailable, true)
+    assert.equal(feedback.value.type, 'warning')
+    assert.match(feedback.value.message, /已有同类任务在运行/)
+  } finally {
+    console.warn = originalWarn
+  }
+})
+
+test('retryTaskRun should use action-specific fallback copy for plain rerun failures', async () => {
+  const plainError = new Error('plain-failure')
+
+  const { service, feedback } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async () => { throw plainError }
+    }
+  })
+
+  await service.retryTaskRun({
+    id: 'run-ai-rerun-plain-1',
+    task_type: 'ai_analysis',
+    status: 'success',
+    params: {
+      source_id: '9',
+      limit: '20',
+      only_unanalyzed: true
+    }
+  }, 'rerun')
+
+  assert.equal(feedback.value.type, 'error')
+  assert.equal(feedback.value.message, '再次运行失败')
+})
+
+test('refreshTaskStatus should stamp the latest task-status sync time', async () => {
+  const { service, state } = createHarness()
+
+  await service.refreshTaskStatus()
+
+  assert.match(state.taskStatusLastSyncedAt, /^20\d\d-/)
+})
+
+test('refreshTaskStatus should not stamp sync time when task runs fail and task summary only falls back', async () => {
+  const taskRunsError = new Error('task-runs-failed')
+  const taskSummaryError = new Error('task-summary-failed')
+  const originalWarn = console.warn
+  console.warn = () => {}
+
+  try {
+    const { service, state } = createHarness({
+      adminApiOverrides: {
+        getTaskRuns: async () => { throw taskRunsError },
+        getTaskSummary: async () => { throw taskSummaryError }
+      }
+    })
+
+    const refreshSucceeded = await service.refreshTaskStatus()
+
+    assert.equal(refreshSucceeded, false)
+    assert.equal(state.taskSummaryUnavailable, true)
+    assert.equal(state.taskStatusLastSyncedAt, '')
+  } finally {
+    console.warn = originalWarn
+  }
 })

@@ -38,3 +38,37 @@ test('not found page should guide users back to browsing instead of exposing rou
   assert.doesNotMatch(source, /检查路由配置/)
   assert.doesNotMatch(source, /进入管理台/)
 })
+
+test('PostList freshness notice should keep AppNotice bindings and helper wiring complete', () => {
+  const source = readSource('views/PostList.vue')
+
+  assert.match(source, /<AppNotice[\s\S]*:tone="freshnessNotice\.tone"[\s\S]*:title="freshnessNotice\.title"[\s\S]*:description="freshnessNotice\.description"[\s\S]*\/>/)
+
+  assert.match(source, /const freshnessNotice = computed\(\(\) => buildPostListFreshnessNotice\(\s*\{[\s\S]*\}\)\)/)
+  assert.match(source, /loading:\s*freshnessLoading\.value/)
+  assert.match(source, /latestSuccessTask:\s*latestSuccessTask\.value/)
+  assert.match(source, /unavailable:\s*freshnessUnavailable\.value/)
+  assert.match(source, /freshnessHeadline:\s*freshnessHeadline\.value/)
+  assert.match(source, /formatDateTime\b/)
+  assert.match(source, /formatRelativeTime:\s*getRelativeTimeLabel/)
+})
+
+test('PostDetail freshness copy should use latest-success snapshot semantics', () => {
+  const source = readSource('views/PostDetail.vue')
+
+  assert.match(source, /return '正在读取最近抓取记录。'/)
+  assert.match(source, /return `\$\{freshnessHeadline\.value\}于 \$\{formatDateTime\(latestSuccessTask\.value\.finishedAt\)\}（\$\{getRelativeTimeLabel\(latestSuccessTask\.value\.finishedAt\)\}）。`/)
+})
+
+test('public freshness paths should not contain outdated realtime wording', () => {
+  const postListSource = readSource('views/PostList.vue')
+  const postListPresentationSource = readSource('utils/postListPresentation.js')
+  const postDetailSource = readSource('views/PostDetail.vue')
+
+  assert.doesNotMatch(postListSource, /正在更新最近抓取记录/)
+  assert.doesNotMatch(postListSource, /最近内容已更新/)
+  assert.doesNotMatch(postListPresentationSource, /正在更新最近抓取记录/)
+  assert.doesNotMatch(postListPresentationSource, /最近内容已更新/)
+  assert.doesNotMatch(postDetailSource, /正在更新最近抓取记录/)
+  assert.doesNotMatch(postDetailSource, /最近内容已更新/)
+})

@@ -56,3 +56,18 @@ test('admin task action cards should use compact disclosure controls for mobile 
   assert.match(styles, /app-input--compact/)
   assert.match(styles, /app-select--compact/)
 })
+
+test('admin task center should surface sync status instead of implying continuous realtime updates', () => {
+  const runsSectionSource = readSource('views/admin/sections/AdminTaskRunsSection.vue')
+
+  assert.match(runsSectionSource, /最近同步/)
+  assert.match(runsSectionSource, /当前无自动刷新，仅支持手动刷新/)
+  assert.match(runsSectionSource, /自动刷新中/)
+})
+
+test('admin task run card should bind result empty copy from presentation instead of hardcoded promise text', () => {
+  const runCardSource = readSource('views/admin/sections/AdminTaskRunCard.vue')
+
+  assert.match(runCardSource, /cardPresentation\.resultEmptyText/)
+  assert.doesNotMatch(runCardSource, /开始处理后，这里会出现可核对的结果数量/)
+})

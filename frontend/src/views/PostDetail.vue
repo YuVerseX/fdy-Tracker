@@ -139,7 +139,7 @@ const freshnessHeadline = computed(() => {
 
 const freshnessHint = computed(() => {
   if (latestSuccessTask.value?.finishedAt) {
-    return `${freshnessHeadline.value}，完成于 ${formatDateTime(latestSuccessTask.value.finishedAt)}（${getRelativeTimeLabel(latestSuccessTask.value.finishedAt)}）。`
+    return `${freshnessHeadline.value}于 ${formatDateTime(latestSuccessTask.value.finishedAt)}（${getRelativeTimeLabel(latestSuccessTask.value.finishedAt)}）。`
   }
   if (freshnessUnavailable.value) {
     return '最近抓取记录暂时不可用。'
@@ -149,7 +149,7 @@ const freshnessHint = computed(() => {
 
 const freshnessNote = computed(() => {
   if (freshnessLoading.value) {
-    return '正在更新最近抓取记录。'
+    return '正在读取最近抓取记录。'
   }
   if (latestSuccessTask.value?.finishedAt) {
     return freshnessHint.value

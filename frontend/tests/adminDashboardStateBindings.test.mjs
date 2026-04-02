@@ -41,3 +41,19 @@ test('normalizeProcessingMode should keep processing tabs inside base and ai mod
   assert.equal(normalizeProcessingMode('ai'), 'ai')
   assert.equal(normalizeProcessingMode('other'), 'base')
 })
+
+test('normalizeAdminDashboardBindings should preserve syncStatus on taskRunsSection', () => {
+  const dashboard = normalizeAdminDashboardBindings({
+    taskRunsSection: computed(() => ({
+      taskRuns: [],
+      taskRunsLoaded: true,
+      syncStatus: {
+        badgeLabel: '自动刷新中',
+        lastSyncedLabel: '2026/04/01 18:00'
+      }
+    }))
+  })
+
+  assert.equal(dashboard.taskRunsSection.syncStatus.badgeLabel, '自动刷新中')
+  assert.equal(dashboard.taskRunsSection.syncStatus.lastSyncedLabel, '2026/04/01 18:00')
+})

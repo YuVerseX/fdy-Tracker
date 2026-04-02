@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildPostListFreshnessNotice,
   buildPostCardView,
   buildPostListEmptyState,
   buildPostListMetricCards
@@ -99,4 +100,49 @@ test('buildPostListEmptyState should distinguish filtered results from first-loa
       description: '稍后再来看看，或等待下一次抓取完成。'
     }
   )
+})
+
+test('buildPostListFreshnessNotice should return loading notice model', () => {
+  const notice = buildPostListFreshnessNotice({ loading: true })
+
+  assert.deepEqual(notice, {
+    tone: 'info',
+    title: '正在读取最近抓取记录',
+    description: '你可以先继续筛选和浏览当前结果。'
+  })
+})
+
+test('buildPostListFreshnessNotice should return success notice model', () => {
+  const notice = buildPostListFreshnessNotice({
+    latestSuccessTask: { finishedAt: '2026-03-27T10:00:00+00:00' },
+    freshnessHeadline: '最近一次成功完成',
+    formatDateTime: () => '2026/03/27 18:00',
+    formatRelativeTime: () => '5 分钟前'
+  })
+
+  assert.deepEqual(notice, {
+    tone: 'info',
+    title: '最近抓取记录',
+    description: '最近一次成功完成于 2026/03/27 18:00（5 分钟前）。'
+  })
+})
+
+test('buildPostListFreshnessNotice should return unavailable notice model', () => {
+  const notice = buildPostListFreshnessNotice({ unavailable: true })
+
+  assert.deepEqual(notice, {
+    tone: 'warning',
+    title: '最近抓取记录暂时不可用',
+    description: '这不会影响继续浏览当前列表。'
+  })
+})
+
+test('buildPostListFreshnessNotice should return empty notice model', () => {
+  const notice = buildPostListFreshnessNotice()
+
+  assert.deepEqual(notice, {
+    tone: 'warning',
+    title: '还没有可展示的抓取成功任务记录',
+    description: '稍后再来看看，或等待下一次抓取完成。'
+  })
 })

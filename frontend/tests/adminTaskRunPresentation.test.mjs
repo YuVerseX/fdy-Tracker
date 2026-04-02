@@ -271,6 +271,50 @@ test('buildTaskRunCardPresentation should prioritize current phase and live resu
   assert.equal(card.failureNotice, null)
 })
 
+test('buildTaskRunCardPresentation should show collecting-state result copy when no live result metrics exist yet', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'manual_scrape',
+    status: 'running',
+    stage_label: '正在准备抓取任务',
+    summary: '正在准备抓取任务',
+    metrics: {}
+  })
+
+  assert.equal(card.resultTitle, '结果将在写入阶段陆续出现')
+  assert.equal(card.resultHint, '正在采集源站，结果数会在写入阶段出现。')
+  assert.equal(card.resultEmptyText, '当前阶段还没有可展示的结果数量。')
+})
+
+test('buildTaskRunCardPresentation should keep current-result copy once visible metrics exist', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'manual_scrape',
+    status: 'running',
+    stage_label: '正在整理抓取结果',
+    metrics: {
+      posts_seen: 18,
+      posts_created: 8,
+      posts_updated: 4
+    }
+  })
+
+  assert.equal(card.resultTitle, '当前结果')
+  assert.equal(card.resultHint, '数量会继续变化，任务结束后再看最终结果。')
+  assert.equal(card.resultEmptyText, '')
+})
+
+test('buildTaskRunCardPresentation should keep queued scrape runs on pre-start result copy', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'manual_scrape',
+    status: 'queued',
+    stage_label: '等待开始抓取',
+    metrics: {}
+  })
+
+  assert.equal(card.resultTitle, '当前结果')
+  assert.equal(card.resultHint, '任务开始后，这里的数量会按实际处理结果更新。')
+  assert.equal(card.resultEmptyText, '任务开始后，这里会出现可核对的结果数量。')
+})
+
 test('buildTaskRunCardPresentation should expose failure reason and action summary for failed tasks', () => {
   const card = buildTaskRunCardPresentation({
     id: 'run-ai-1',
@@ -292,7 +336,7 @@ test('buildTaskRunCardPresentation should expose failure reason and action summa
 
   assert.equal(card.stageTitle, '未完成位置')
   assert.equal(card.resultTitle, '本次结果')
-  assert.equal(card.resultHint, '可以先查看失败原因，再决定是否重新处理当前范围。')
+  assert.equal(card.resultHint, '这次处理没有完成，可先看失败原因再决定是否重试。')
   assert.equal(card.failureNotice.title, '这次处理未完成')
   assert.match(card.failureNotice.description, /智能服务暂时不可用/)
   assert.equal(card.actionSummary.title, '可执行操作')

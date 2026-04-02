@@ -312,7 +312,8 @@ export const buildTaskRunsSectionModel = ({
   expandedTaskIds,
   nowTs,
   sourceOptions,
-  heartbeatStaleMs
+  heartbeatStaleMs,
+  syncStatus
 } = {}) => ({
   taskRuns,
   taskRunsLoaded,
@@ -323,5 +324,6 @@ export const buildTaskRunsSectionModel = ({
   expandedTaskIds,
   nowTs,
   sourceOptions,
-  heartbeatStaleMs
+  heartbeatStaleMs,
+  syncStatus
 })

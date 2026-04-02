@@ -22,6 +22,8 @@ const TASK_ACTION_FEEDBACK = Object.freeze({
     error: '提交终止请求失败'
   }
 })
+const TASK_SUMMARY_FETCH_SUCCESS = 'success'
+const TASK_SUMMARY_FETCH_DEGRADED = 'degraded'
 
 const resolveTaskType = (run = {}) => run?.task_type || run?.taskType || ''
 
@@ -42,9 +44,22 @@ export function createAdminDashboardDataService({
   adminApi, adminAuthorized, adminAuthChecking, adminAuthError, adminAuthForm, feedback, sourceOptions, state, loading, loaded, requests, forms
 } = {}) {
   const setFeedback = (type, message) => { feedback.value = { type, message } }
+  const isTaskSummaryFetchSuccessful = (result) => result === TASK_SUMMARY_FETCH_SUCCESS
+  const isTaskSummaryFetchContinuable = (result) => (
+    result === TASK_SUMMARY_FETCH_SUCCESS || result === TASK_SUMMARY_FETCH_DEGRADED
+  )
+  const shouldMarkTaskStatusSync = (taskRunsResult, taskSummaryResult) => (
+    taskRunsResult === true || isTaskSummaryFetchSuccessful(taskSummaryResult)
+  )
+  const isTaskCenterRefreshSuccessful = (taskRunsResult, taskSummaryResult) => (
+    taskRunsResult === true && isTaskSummaryFetchContinuable(taskSummaryResult)
+  )
   const clearAdminRuntimeState = () => {
-    Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', retryingTaskActionKey: '', cancelingTaskId: '', jobsSummaryUnavailable: false })
+    Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', retryingTaskActionKey: '', cancelingTaskId: '', jobsSummaryUnavailable: false, taskStatusLastSyncedAt: '' })
     Object.keys(loaded).forEach((key) => { loaded[key] = false })
+  }
+  const markTaskStatusSynced = () => {
+    state.taskStatusLastSyncedAt = new Date().toISOString()
   }
   const handleAdminAccessError = (error) => {
     const status = error?.response?.status
@@ -62,6 +77,33 @@ export function createAdminDashboardDataService({
     if (error?.response?.status >= 500) return '任务处理失败，请稍后再试。'
     if (error?.code === 'ECONNABORTED') return '请求已发出，结果正在更新，请稍后刷新任务中心。'
     return normalizeAdminUiMessage(error?.response?.data?.detail, fallback)
+  }
+  const isTaskConflictError = (error) => {
+    const detail = normalizeAdminUiMessage(error?.response?.data?.detail, '')
+    return error?.response?.status === 409 && /已经在运行|刷新记录|确认后台状态/.test(detail)
+  }
+  const getTaskSubmissionFeedback = (error, fallback) => {
+    if (error?.code === 'ECONNABORTED') {
+      return {
+        type: 'info',
+        message: '后台已接收请求，状态稍后自动刷新。',
+        shouldRefresh: true
+      }
+    }
+
+    if (isTaskConflictError(error)) {
+      return {
+        type: 'warning',
+        message: '已有同类任务在运行，已为你刷新当前状态。',
+        shouldRefresh: true
+      }
+    }
+
+    return {
+      type: 'error',
+      message: getErrorMessage(error, fallback),
+      shouldRefresh: false
+    }
   }
   const applySchedulerConfig = (payload = {}) => {
     Object.assign(forms.scheduler, { enabled: payload.enabled ?? true, intervalSeconds: Number(payload.interval_seconds ?? payload.intervalSeconds ?? 7200), defaultSourceId: Number(payload.default_source_id ?? payload.defaultSourceId ?? forms.scrape.sourceId ?? 1), defaultMaxPages: Number(payload.default_max_pages ?? payload.defaultMaxPages ?? forms.scrape.maxPages ?? 5), nextRunAt: payload.next_run_at || payload.nextRunAt || '', updatedAt: payload.updated_at || payload.updatedAt || '' })
@@ -89,10 +131,12 @@ export function createAdminDashboardDataService({
       const response = await adminApi.getTaskRuns({ limit: 10 })
       state.taskRuns = response.data.items || []
       loaded.taskRuns = true
+      return true
     } catch (error) {
       state.taskRuns = []
       loaded.taskRuns = false
       if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载任务记录失败'))
+      return false
     } finally {
       loading.taskRuns = false
     }
@@ -104,12 +148,14 @@ export function createAdminDashboardDataService({
       state.taskSummary = response.data || null
       state.taskSummaryUnavailable = false
       loaded.taskSummary = true
+      return TASK_SUMMARY_FETCH_SUCCESS
     } catch (error) {
       state.taskSummary = null
       loaded.taskSummary = false
-      if (handleAdminAccessError(error)) return
+      if (handleAdminAccessError(error)) return false
       state.taskSummaryUnavailable = true
       console.warn('获取任务摘要失败，继续回退到任务记录:', error)
+      return TASK_SUMMARY_FETCH_DEGRADED
     } finally {
       loading.taskSummary = false
     }
@@ -135,9 +181,11 @@ export function createAdminDashboardDataService({
       const response = await adminApi.getSchedulerConfig()
       applySchedulerConfig(response.data || {})
       loaded.scheduler = true
+      return true
     } catch (error) {
       loaded.scheduler = false
       if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载定时抓取配置失败'))
+      return false
     } finally {
       loading.scheduler = false
     }
@@ -148,10 +196,12 @@ export function createAdminDashboardDataService({
       const response = await adminApi.getAnalysisSummary()
       state.analysisSummary = response.data || null
       loaded.analysis = true
+      return true
     } catch (error) {
       state.analysisSummary = null
       loaded.analysis = false
       if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载分析摘要失败'))
+      return false
     } finally {
       loading.analysis = false
     }
@@ -162,11 +212,13 @@ export function createAdminDashboardDataService({
       const response = await adminApi.getInsightSummary()
       state.insightSummary = response.data || null
       loaded.insight = true
+      return true
     } catch (error) {
       state.insightSummary = null
-      if (handleAdminAccessError(error)) return
+      if (handleAdminAccessError(error)) return false
       loaded.insight = error?.response?.status === 404 || error?.response?.status === 405
       if (!loaded.insight) setFeedback('error', getErrorMessage(error, '加载关键信息字段摘要失败'))
+      return loaded.insight
     } finally {
       loading.insight = false
     }
@@ -178,12 +230,14 @@ export function createAdminDashboardDataService({
       const response = await adminApi.getJobSummary()
       state.jobSummary = response.data || null
       loaded.jobs = true
+      return true
     } catch (error) {
       state.jobSummary = null
-      if (handleAdminAccessError(error)) return
+      if (handleAdminAccessError(error)) return false
       loaded.jobs = error?.response?.status === 404 || error?.response?.status === 405
       state.jobsSummaryUnavailable = loaded.jobs
       if (!loaded.jobs) setFeedback('error', getErrorMessage(error, '加载岗位摘要失败'))
+      return loaded.jobs
     } finally {
       loading.jobs = false
     }
@@ -194,31 +248,39 @@ export function createAdminDashboardDataService({
       const response = await adminApi.getDuplicateSummary()
       state.duplicateSummary = response.data || null
       loaded.duplicate = true
+      return true
     } catch (error) {
       state.duplicateSummary = null
       loaded.duplicate = false
       if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载重复整理概览失败'))
+      return false
     } finally {
       loading.duplicate = false
     }
   }
   const refreshOverview = async () => {
-    if (!adminAuthorized.value) return
+    if (!adminAuthorized.value) return false
     loading.overview = true
     try {
-      await Promise.all([fetchTaskSummary(), fetchTaskRuns(), fetchSchedulerConfig(), fetchAnalysisSummary(), fetchInsightSummary(), fetchJobSummary(), fetchDuplicateSummary()])
+      const results = await Promise.all([fetchTaskSummary(), fetchTaskRuns(), fetchSchedulerConfig(), fetchAnalysisSummary(), fetchInsightSummary(), fetchJobSummary(), fetchDuplicateSummary()])
+      const [taskSummaryResult, taskRunsResult, ...otherResults] = results
+      if (shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
+      return isTaskCenterRefreshSuccessful(taskRunsResult, taskSummaryResult) && otherResults.every((result) => result === true)
     } finally {
       loading.overview = false
     }
   }
   const refreshAfterTask = async ({ includeAnalysis = false, includeInsight = false, includeJobs = false, includeDuplicate = false } = {}) => {
-    if (!adminAuthorized.value) return
+    if (!adminAuthorized.value) return false
     const tasks = [fetchTaskRuns(), fetchTaskSummary()]
     if (includeAnalysis) tasks.push(fetchAnalysisSummary())
     if (includeInsight) tasks.push(fetchInsightSummary())
     if (includeJobs) tasks.push(fetchJobSummary())
     if (includeDuplicate) tasks.push(fetchDuplicateSummary())
-    await Promise.all(tasks)
+    const results = await Promise.all(tasks)
+    const [taskRunsResult, taskSummaryResult, ...otherResults] = results
+    if (shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
+    return isTaskCenterRefreshSuccessful(taskRunsResult, taskSummaryResult) && otherResults.every((result) => result === true)
   }
   const runNamedTask = async (taskType, busyKey, params = {}) => {
     const config = buildTaskRequestConfig(taskType, { params, forms })
@@ -230,8 +292,22 @@ export function createAdminDashboardDataService({
       await refreshAfterTask(config.refreshOptions)
     } catch (error) {
       if (handleAdminAccessError(error)) return
-      if (error?.code === 'ECONNABORTED' || error?.response?.status === 409) await refreshAfterTask(config.refreshOptions)
-      setFeedback('error', config.resolveError?.(error) || getErrorMessage(error, config.errorMessage))
+
+      const submissionFeedback = getTaskSubmissionFeedback(
+        error,
+        config.errorMessage
+      )
+
+      if (submissionFeedback.shouldRefresh) {
+        const refreshSucceeded = await refreshAfterTask(config.refreshOptions)
+        if (!refreshSucceeded) return
+      }
+
+      const feedbackMessage = submissionFeedback.type === 'error'
+        ? (config.resolveError?.(error) || submissionFeedback.message)
+        : submissionFeedback.message
+
+      setFeedback(submissionFeedback.type, feedbackMessage)
     } finally {
       requests[busyKey] = false
     }
@@ -258,8 +334,23 @@ export function createAdminDashboardDataService({
       await refreshAfterTask(config.refreshOptions)
     } catch (error) {
       if (handleAdminAccessError(error)) return
-      if (error?.code === 'ECONNABORTED' || error?.response?.status === 409) await refreshAfterTask(config.refreshOptions)
-      setFeedback('error', config.resolveError?.(error) || getErrorMessage(error, TASK_ACTION_FEEDBACK[actionKey]?.error || '任务提交失败'))
+
+      const retryErrorFallback = TASK_ACTION_FEEDBACK[actionKey]?.error || config.errorMessage || '任务提交失败'
+      const submissionFeedback = getTaskSubmissionFeedback(
+        error,
+        retryErrorFallback
+      )
+
+      if (submissionFeedback.shouldRefresh) {
+        const refreshSucceeded = await refreshAfterTask(config.refreshOptions)
+        if (!refreshSucceeded) return
+      }
+
+      const feedbackMessage = submissionFeedback.type === 'error'
+        ? (config.resolveError?.(error) || submissionFeedback.message)
+        : submissionFeedback.message
+
+      setFeedback(submissionFeedback.type, feedbackMessage)
     } finally {
       state.retryingTaskId = ''
       state.retryingTaskActionKey = ''
@@ -333,9 +424,10 @@ export function createAdminDashboardDataService({
     }
   }
   const refreshTaskStatus = async () => {
-    if (adminAuthorized.value) {
-      await Promise.all([fetchTaskRuns(), fetchTaskSummary()])
-    }
+    if (!adminAuthorized.value) return false
+    const [taskRunsResult, taskSummaryResult] = await Promise.all([fetchTaskRuns(), fetchTaskSummary()])
+    if (shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
+    return isTaskCenterRefreshSuccessful(taskRunsResult, taskSummaryResult)
   }
   return {
     verifyAdminAccess, fetchTaskRuns, fetchTaskSummary, fetchSources, fetchSchedulerConfig, fetchAnalysisSummary, fetchInsightSummary, fetchJobSummary, fetchDuplicateSummary,

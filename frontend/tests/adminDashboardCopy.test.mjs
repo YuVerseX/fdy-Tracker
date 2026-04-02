@@ -27,3 +27,10 @@ test('admin task and processing templates should not expose internal implementat
   assert.doesNotMatch(combined, /后端还没开放岗位摘要接口/)
   assert.doesNotMatch(combined, /任务摘要接口不可用/)
 })
+
+test('admin dashboard should not hardcode every non-success feedback to danger tone', () => {
+  const source = readSource('views/AdminDashboard.vue')
+
+  assert.match(source, /dashboard\.feedback\.type === 'error' \? 'danger' : dashboard\.feedback\.type/)
+  assert.doesNotMatch(source, /dashboard\.feedback\.type === 'success' \? 'success' : 'danger'/)
+})

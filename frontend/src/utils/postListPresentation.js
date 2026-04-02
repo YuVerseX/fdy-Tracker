@@ -278,28 +278,32 @@ export function buildPostListFreshnessNotice({
 } = {}) {
   if (loading) {
     return {
-      title: '最近抓取记录',
-      description: '正在更新最近抓取记录。'
+      tone: 'info',
+      title: '正在读取最近抓取记录',
+      description: '你可以先继续筛选和浏览当前结果。'
     }
   }
 
   if (latestSuccessTask?.finishedAt) {
     return {
+      tone: 'info',
       title: '最近抓取记录',
-      description: `${freshnessHeadline}，完成于 ${formatDateTime(latestSuccessTask.finishedAt)}（${formatRelativeTime(latestSuccessTask.finishedAt)}）。这能帮助你判断列表最近是否更新。`
+      description: `${freshnessHeadline}于 ${formatDateTime(latestSuccessTask.finishedAt)}（${formatRelativeTime(latestSuccessTask.finishedAt)}）。`
     }
   }
 
   if (unavailable) {
     return {
-      title: '最近抓取记录',
-      description: '最近抓取记录暂时不可用，不影响继续筛选和浏览。'
+      tone: 'warning',
+      title: '最近抓取记录暂时不可用',
+      description: '这不会影响继续浏览当前列表。'
     }
   }
 
   return {
-    title: '最近抓取记录',
-    description: '还没有可展示的抓取成功任务记录。'
+    tone: 'warning',
+    title: '还没有可展示的抓取成功任务记录',
+    description: '稍后再来看看，或等待下一次抓取完成。'
   }
 }
 

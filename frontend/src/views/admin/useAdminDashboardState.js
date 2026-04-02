@@ -64,7 +64,8 @@ export function useAdminDashboardState() {
     pollingInFlight: false,
     pollingTimerId: null,
     nowTs: Date.now(),
-    jobsSummaryUnavailable: false
+    jobsSummaryUnavailable: false,
+    taskStatusLastSyncedAt: ''
   })
   const loading = reactive({ scheduler: false, schedulerSaving: false, analysis: false, insight: false, jobs: false, duplicate: false, taskSummary: false, taskRuns: false, overview: false })
   const loaded = reactive({ scheduler: false, analysis: false, insight: false, jobs: false, duplicate: false, taskSummary: false, taskRuns: false })
@@ -137,6 +138,12 @@ export function useAdminDashboardState() {
       return true
     })
   })
+  const taskSyncStatus = computed(() => ({
+    autoRefreshActive: adminAuthorized.value && backendRunningTasks.value.length > 0,
+    pollIntervalMs: TASK_POLL_INTERVAL_MS,
+    lastSyncedAt: state.taskStatusLastSyncedAt,
+    runningCount: backendRunningTasks.value.length
+  }))
   const isTaskTypeRunning = (...taskTypes) => backendRunningTasks.value.some((run) => taskTypes.includes(run?.task_type || run?.taskType))
   const taskBusy = computed(() => ({
     scrape: requests.scrape || isTaskTypeRunning('manual_scrape', 'scheduled_scrape'),
@@ -243,7 +250,37 @@ export function useAdminDashboardState() {
     aiSection: aiEnhancementSection.value
   }))
   const systemSection = computed(() => buildSystemSectionModel({ schedulerForm: forms.scheduler, schedulerLoaded: loaded.scheduler, schedulerLoading: loading.scheduler, schedulerSaving: loading.schedulerSaving, sourceOptions: sourceOptions.value }))
-  const taskRunsSection = computed(() => buildTaskRunsSectionModel({ taskRuns: state.taskRuns, taskRunsLoaded: loaded.taskRuns, loadingRuns: loading.taskRuns, retryingTaskId: state.retryingTaskId, retryingTaskActionKey: state.retryingTaskActionKey, cancelingTaskId: state.cancelingTaskId, expandedTaskIds: state.expandedTaskIds, nowTs: state.nowTs, sourceOptions: sourceOptions.value, heartbeatStaleMs: TASK_HEARTBEAT_STALE_MS }))
+  const taskRunsSection = computed(() => {
+    const syncStatus = taskSyncStatus.value
+    const intervalLabel = `${Math.round(syncStatus.pollIntervalMs / 1000)} 秒`
+
+    return buildTaskRunsSectionModel({
+      taskRuns: state.taskRuns,
+      taskRunsLoaded: loaded.taskRuns,
+      loadingRuns: loading.taskRuns,
+      retryingTaskId: state.retryingTaskId,
+      retryingTaskActionKey: state.retryingTaskActionKey,
+      cancelingTaskId: state.cancelingTaskId,
+      expandedTaskIds: state.expandedTaskIds,
+      nowTs: state.nowTs,
+      sourceOptions: sourceOptions.value,
+      heartbeatStaleMs: TASK_HEARTBEAT_STALE_MS,
+      syncStatus: {
+        autoRefreshActive: syncStatus.autoRefreshActive,
+        pollIntervalMs: syncStatus.pollIntervalMs,
+        lastSyncedAt: syncStatus.lastSyncedAt,
+        runningCount: syncStatus.runningCount,
+        badgeLabel: syncStatus.autoRefreshActive ? '自动刷新中' : '手动刷新',
+        badgeTone: syncStatus.autoRefreshActive ? 'info' : 'neutral',
+        intervalLabel,
+        lastSyncedLabel: syncStatus.lastSyncedAt ? formatAdminDateTime(syncStatus.lastSyncedAt) : '尚未同步',
+        runningCountLabel: `${syncStatus.runningCount} 条`,
+        summary: syncStatus.autoRefreshActive
+          ? `每 ${intervalLabel} 自动同步一次任务状态。`
+          : '当前无自动刷新，仅支持手动刷新。'
+      }
+    })
+  })
 
   const setActiveSection = (value) => {
     const normalizedValue = normalizeAdminSection(value)
@@ -289,6 +326,7 @@ export function useAdminDashboardState() {
     dataProcessingSection,
     aiEnhancementSection,
     systemSection,
+    taskSyncStatus,
     taskRunsSection,
     canRetryTask,
     ...dataService

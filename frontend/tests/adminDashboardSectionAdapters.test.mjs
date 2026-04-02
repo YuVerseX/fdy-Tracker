@@ -235,3 +235,30 @@ test('buildSystemSectionModel should expose concise schedule summary and save im
   assert.match(section.helperNotice.description, /保存后会在下一次自动抓取时生效/)
   assert.doesNotMatch(section.helperNotice.description, /环境变量|接口/)
 })
+
+test('buildTaskRunsSectionModel should expose sync status metadata for the task center header', () => {
+  const section = buildTaskRunsSectionModel({
+    taskRuns: [],
+    taskRunsLoaded: true,
+    loadingRuns: false,
+    retryingTaskId: '',
+    retryingTaskActionKey: '',
+    cancelingTaskId: '',
+    expandedTaskIds: [],
+    nowTs: Date.now(),
+    sourceOptions: [],
+    heartbeatStaleMs: 600000,
+    syncStatus: {
+      badgeLabel: '自动刷新中',
+      badgeTone: 'info',
+      intervalLabel: '15 秒',
+      lastSyncedLabel: '2026/04/01 18:00',
+      runningCountLabel: '2 条',
+      summary: '每 15 秒自动同步一次任务状态。'
+    }
+  })
+
+  assert.equal(section.syncStatus.badgeLabel, '自动刷新中')
+  assert.equal(section.syncStatus.intervalLabel, '15 秒')
+  assert.match(section.syncStatus.summary, /15 秒/)
+})

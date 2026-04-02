@@ -281,3 +281,21 @@ test('buildTaskRunsPresentation should separate current tasks, recent results, a
   assert.match(presentation.summaryCards[0].description, /排队|处理/)
   assert.match(String(presentation.summaryCards[1].meta), /1 条未完成/)
 })
+
+test('buildTaskRunsPresentation should include cancelled runs inside recent results', () => {
+  const presentation = buildTaskRunsPresentation({
+    nowTs: Date.parse('2026-04-01T10:20:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000,
+    taskRuns: [
+      { id: 'running-1', task_type: 'manual_scrape', status: 'running', heartbeat_at: '2026-04-01T10:18:00Z' },
+      { id: 'cancelled-1', task_type: 'ai_analysis', status: 'cancelled', finished_at: '2026-04-01T10:10:00Z' },
+      { id: 'success-1', task_type: 'attachment_backfill', status: 'success', finished_at: '2026-04-01T09:50:00Z' }
+    ]
+  })
+
+  assert.deepEqual(
+    presentation.recentResultRuns.map((run) => run.id),
+    ['cancelled-1', 'success-1']
+  )
+  assert.equal(presentation.counts.cancelled, 1)
+})
