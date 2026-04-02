@@ -27,11 +27,9 @@ test('admin task cards should use shared action, stat, and metric primitives', (
 test('admin task run card should show user-facing guidance for task actions', () => {
   const runCardSource = readSource('views/admin/sections/AdminTaskRunCard.vue')
 
-  assert.match(runCardSource, /AppNotice/)
-  assert.match(runCardSource, /cardPresentation\.actionSummary/)
-  assert.match(runCardSource, /cardPresentation\.actionItems/)
-  assert.match(runCardSource, /action\.description/)
-  assert.match(runCardSource, /action\.scopeLabel/)
+  assert.match(runCardSource, /primaryActionDefinition/)
+  assert.match(runCardSource, /AppActionButton/)
+  assert.doesNotMatch(runCardSource, /cardPresentation\.actionSummary/)
 })
 
 test('admin task center should keep empty sections lightweight and switch run cards to denser desktop layouts at lg', () => {
@@ -75,4 +73,12 @@ test('admin task run card should bind result empty copy from presentation instea
 
   assert.match(runCardSource, /cardPresentation\.resultEmptyText/)
   assert.doesNotMatch(runCardSource, /开始处理后，这里会出现可核对的结果数量/)
+})
+
+test('admin task stage timeline should use semantic ordered list and dynamic aria-current', () => {
+  const source = readSource('views/admin/sections/AdminTaskStageTimeline.vue')
+
+  assert.match(source, /<ol/)
+  assert.match(source, /<li/)
+  assert.match(source, /:aria-current=/)
 })

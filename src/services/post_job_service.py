@@ -861,6 +861,7 @@ async def backfill_post_jobs(
         finally:
             emit_progress(
                 progress_callback,
+                stage="persisting",
                 stage_key="extract-post-jobs",
                 stage_label="正在抽取岗位数据",
                 progress_mode="stage_only",

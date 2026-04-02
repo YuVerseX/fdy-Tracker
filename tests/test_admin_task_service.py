@@ -256,6 +256,25 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(payloads[0]["live_metrics"]["posts_seen"], 5)
         self.assertEqual(payloads[0]["metrics"]["posts_total"], 18)
 
+    def test_serialize_task_run_should_expose_cancel_action_for_running_cancelable_task(self):
+        task_run = admin_task_service.record_task_run(
+            task_type="ai_analysis",
+            status="running",
+            summary="AI 分析进行中",
+            details={
+                "stage": "persisting",
+                "stage_label": "正在批量执行 AI 分析",
+                "progress_mode": "stage_only",
+            },
+            params={"limit": 50, "only_unanalyzed": True},
+            phase="正在批量执行 AI 分析",
+            progress=55,
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(task_run)
+
+        self.assertEqual(serialized["actions"][0]["key"], "cancel")
+
     def test_serialize_task_run_should_expose_labels_and_stage_only_mode(self):
         task_run = admin_task_service.record_task_run(
             task_type="manual_scrape",
@@ -583,6 +602,7 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(cancelled["status"], "cancel_requested")
         self.assertEqual(serialized["status_label"], "正在终止")
         self.assertEqual(serialized["stage"], "finalizing")
+        self.assertEqual(serialized["actions"], [])
         self.assertEqual(serialized["details"]["cancel_reason"], "user_requested")
 
     def test_record_task_run_should_promote_live_metrics_to_final_metrics(self):
@@ -666,7 +686,7 @@ class AdminTaskServiceTestCase(unittest.TestCase):
 
     def test_serialize_task_run_should_expose_cancelled_status_and_cancel_request_flag(self):
         task_run = admin_task_service.record_task_run(
-            task_type="job_extraction",
+            task_type="ai_job_extraction",
             status="cancelled",
             summary="用户已提前终止，已处理 4 条，已写入 12 条岗位",
             details={
@@ -684,9 +704,10 @@ class AdminTaskServiceTestCase(unittest.TestCase):
 
         self.assertEqual(serialized["status"], "cancelled")
         self.assertEqual(serialized["status_label"], "已终止")
+        self.assertEqual(serialized["display_name"], "智能岗位识别")
         self.assertEqual(serialized["details"]["cancel_reason"], "user_requested")
         self.assertEqual(serialized["metrics"]["jobs_saved"], 12)
-        self.assertEqual(serialized["actions"][0]["key"], "retry")
+        self.assertEqual(serialized["actions"][0]["key"], "incremental")
 
 
 if __name__ == "__main__":

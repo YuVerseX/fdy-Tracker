@@ -128,6 +128,21 @@ function createHarness({ adminApiOverrides = {} } = {}) {
   return { calls, service, state, loaded, forms, feedback, adminAuthorized, adminAuthError, adminAuthForm }
 }
 
+function createCancelledIncrementalRun(overrides = {}) {
+  return {
+    id: 'run-ai-cancelled-1',
+    task_type: 'ai_analysis',
+    status: 'cancelled',
+    actions: [{ key: 'incremental', label: '只补未补充内容' }],
+    params: {
+      source_id: '8',
+      limit: '50',
+      only_unanalyzed: false
+    },
+    ...overrides
+  }
+}
+
 test('createAdminDashboardDataService should expose refresh aliases expected by AdminDashboard', async () => {
   const { calls, service, state, loaded, forms } = createHarness()
 
@@ -161,16 +176,9 @@ test('retryTaskRun should submit action-specific rerun payloads and clear retry 
     }
   })
 
-  await service.retryTaskRun({
-    id: 'run-ai-9',
-    task_type: 'ai_analysis',
-    status: 'success',
-    params: {
-      source_id: '8',
-      limit: '50',
-      only_unanalyzed: false
-    }
-  }, 'incremental')
+  await service.retryTaskRun(createCancelledIncrementalRun({
+    id: 'run-ai-9'
+  }), 'incremental')
 
   assert.deepEqual(receivedPayload, {
     source_id: 8,
@@ -224,9 +232,12 @@ test('retryTaskRun should reuse legacy task shape params for rerun payloads', as
   })
 
   await service.retryTaskRun({
-    id: 'run-ai-legacy-1',
-    taskType: 'ai_analysis',
-    status: 'success',
+    ...createCancelledIncrementalRun({
+      id: 'run-ai-legacy-1',
+      taskType: 'ai_analysis'
+    }),
+    task_type: undefined,
+    params: undefined,
     details: {
       params: {
         source_id: '6',
@@ -309,16 +320,9 @@ test('retryTaskRun should downgrade timeout into warning feedback in retry catch
     }
   })
 
-  await service.retryTaskRun({
-    id: 'run-ai-timeout-1',
-    task_type: 'ai_analysis',
-    status: 'success',
-    params: {
-      source_id: '8',
-      limit: '50',
-      only_unanalyzed: false
-    }
-  }, 'incremental')
+  await service.retryTaskRun(createCancelledIncrementalRun({
+    id: 'run-ai-timeout-1'
+  }), 'incremental')
 
   assert.equal(feedback.value.type, 'warning')
   assert.match(feedback.value.message, /已刷新当前状态/)
@@ -411,16 +415,14 @@ test('retryTaskRun should keep conflict warning feedback when task summary falls
       }
     })
 
-    await service.retryTaskRun({
+    await service.retryTaskRun(createCancelledIncrementalRun({
       id: 'run-ai-conflict-1',
-      task_type: 'ai_analysis',
-      status: 'success',
       params: {
         source_id: '9',
         limit: '20',
         only_unanalyzed: true
       }
-    }, 'incremental')
+    }), 'incremental')
 
     assert.equal(state.taskSummaryUnavailable, true)
     assert.equal(feedback.value.type, 'warning')
@@ -447,16 +449,14 @@ test('retryTaskRun should keep conflict warning feedback when supplemental summa
     }
   })
 
-  await service.retryTaskRun({
+  await service.retryTaskRun(createCancelledIncrementalRun({
     id: 'run-ai-conflict-2',
-    task_type: 'ai_analysis',
-    status: 'success',
     params: {
       source_id: '9',
       limit: '20',
       only_unanalyzed: true
     }
-  }, 'incremental')
+  }), 'incremental')
 
   assert.match(state.taskStatusLastSyncedAt, /^20\d\d-/)
   assert.equal(feedback.value.type, 'warning')
@@ -485,6 +485,34 @@ test('retryTaskRun should use action-specific fallback copy for plain rerun fail
 
   assert.equal(feedback.value.type, 'error')
   assert.equal(feedback.value.message, '再次运行失败')
+})
+
+test('retryTaskRun should reject action keys that current run does not expose', async () => {
+  let apiCalled = false
+  const { service, feedback } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async () => {
+        apiCalled = true
+        return { data: { message: '智能整理任务已提交' } }
+      }
+    }
+  })
+
+  await service.retryTaskRun({
+    id: 'run-ai-unsupported-1',
+    task_type: 'ai_analysis',
+    status: 'success',
+    actions: [{ key: 'rerun', label: '重新整理当前范围' }],
+    params: {
+      source_id: '8',
+      limit: '50',
+      only_unanalyzed: false
+    }
+  }, 'incremental')
+
+  assert.equal(apiCalled, false)
+  assert.equal(feedback.value.type, 'error')
+  assert.equal(feedback.value.message, '当前记录暂不支持这个操作。')
 })
 
 test('refreshTaskStatus should stamp the latest task-status sync time', async () => {

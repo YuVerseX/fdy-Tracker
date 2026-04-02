@@ -48,6 +48,7 @@ def _build_progress_metrics(progress: int, metrics: dict[str, Any] | None = None
 def _emit_progress(
     progress_callback: ProgressCallback | None,
     *,
+    stage: str | None = None,
     stage_key: str,
     stage_label: str,
     progress: int,
@@ -59,6 +60,7 @@ def _emit_progress(
     try:
         emit_progress(
             progress_callback,
+            stage=stage,
             stage_key=stage_key,
             stage_label=stage_label,
             progress_mode="stage_only",
@@ -622,6 +624,7 @@ def backfill_unchecked_duplicate_posts(
     if not post_ids:
         _emit_progress(
             progress_callback,
+            stage="finalizing",
             stage_key="no-pending-posts",
             stage_label="没有待补齐的帖子",
             progress=100,
@@ -655,6 +658,7 @@ def backfill_unchecked_duplicate_posts(
 
     _emit_progress(
         progress_callback,
+        stage="finalizing",
         stage_key="count-remaining",
         stage_label="正在统计剩余未检查数量",
         progress=95,
@@ -668,6 +672,7 @@ def backfill_unchecked_duplicate_posts(
     remaining_unchecked = _count_remaining_unchecked_posts(db)
     _emit_progress(
         progress_callback,
+        stage="finalizing",
         stage_key="backfill-ready",
         stage_label="重复补齐统计完成",
         progress=99,
@@ -720,6 +725,7 @@ def run_duplicate_backfill(
         remaining_unchecked = _count_remaining_unchecked_posts(db)
         _emit_progress(
             progress_callback,
+            stage="finalizing",
             stage_key="no-posts-in-range",
             stage_label="当前范围内没有可重新检查的帖子",
             progress=100,
@@ -753,6 +759,7 @@ def run_duplicate_backfill(
 
     _emit_progress(
         progress_callback,
+        stage="finalizing",
         stage_key="count-remaining",
         stage_label="正在统计剩余未检查数量",
         progress=95,
@@ -766,6 +773,7 @@ def run_duplicate_backfill(
     remaining_unchecked = _count_remaining_unchecked_posts(db)
     _emit_progress(
         progress_callback,
+        stage="finalizing",
         stage_key="backfill-ready",
         stage_label="重复检查统计完成",
         progress=99,

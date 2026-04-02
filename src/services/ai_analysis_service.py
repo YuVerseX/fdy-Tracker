@@ -1943,6 +1943,7 @@ async def run_ai_analysis(
         finally:
             emit_progress(
                 progress_callback,
+                stage="persisting",
                 stage_key="analyze-posts",
                 stage_label="正在批量执行 AI 分析",
                 progress_mode="stage_only",

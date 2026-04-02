@@ -18,6 +18,7 @@ RUNNING_TASK_STALE_HOURS = {
     "scheduled_scrape": 2,
     "ai_analysis": 6,
     "job_extraction": 6,
+    "ai_job_extraction": 6,
     "attachment_backfill": 12,
     "duplicate_backfill": 12,
 }
@@ -29,7 +30,7 @@ TASK_TYPE_LABELS = {
     "base_analysis_backfill": "基础分析补齐",
     "ai_analysis": "OpenAI 分析",
     "job_extraction": "岗位级抽取",
-    "ai_job_extraction": "岗位级抽取",
+    "ai_job_extraction": "智能岗位识别",
 }
 TASK_STATUS_LABELS = {
     "queued": "排队中",
@@ -55,6 +56,20 @@ CONTENT_MUTATION_TASK_TYPES = {
     "scheduled_scrape",
     "attachment_backfill",
     "duplicate_backfill",
+    "base_analysis_backfill",
+    "ai_analysis",
+    "job_extraction",
+    "ai_job_extraction",
+}
+TASK_CANCELABLE_TYPES = {
+    "attachment_backfill",
+    "duplicate_backfill",
+    "base_analysis_backfill",
+    "ai_analysis",
+    "job_extraction",
+    "ai_job_extraction",
+}
+TASK_INCREMENTAL_ACTION_TYPES = {
     "base_analysis_backfill",
     "ai_analysis",
     "job_extraction",
@@ -372,8 +387,25 @@ def build_task_actions(task_run: Dict[str, Any]) -> List[Dict[str, str]]:
     status = task_run.get("status")
     if task_type not in CONTENT_MUTATION_TASK_TYPES:
         return []
-    if status in {"failed", "cancelled"}:
+
+    if (
+        task_type in TASK_CANCELABLE_TYPES
+        and status in {"queued", "pending", "running", "processing"}
+        and not (task_run.get("details") or {}).get("cancel_requested_at")
+    ):
+        return [{"key": "cancel", "label": "提前终止"}]
+
+    if status == "cancel_requested":
+        return []
+
+    if status == "failed":
         return [{"key": "retry", "label": "按原条件重试"}]
+
+    if status == "cancelled":
+        action_key = "incremental" if task_type in TASK_INCREMENTAL_ACTION_TYPES else "retry"
+        action_label = "只补剩余" if action_key == "incremental" else "按原条件重试"
+        return [{"key": action_key, "label": action_label}]
+
     if status == "success":
         return [{"key": "rerun", "label": "再次运行"}]
     return []
