@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from starlette.middleware.sessions import SessionMiddleware
 
 from src.api import admin as admin_api
+from src.scheduler import jobs as scheduler_jobs
 from src.services.admin_task_service import TaskAlreadyRunningError
 
 
@@ -254,31 +255,41 @@ class AdminApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
 
-    def test_build_admin_progress_callback_should_forward_stage_key_and_metrics(self):
-        callback = admin_api.build_admin_progress_callback("run-dup-1")
+    def test_build_admin_progress_callback_should_forward_canonical_stage_contract(self):
+        callback = admin_api.build_admin_progress_callback("run-scrape-1")
 
-        with patch("src.api.admin.update_task_run") as mocked_update:
+        with patch("src.api.admin.update_task_run") as update_mock:
             callback({
-                "stage_key": "compare-candidates",
-                "stage_label": "正在比对重复候选",
+                "stage": "collecting",
+                "stage_key": "collect-pages",
+                "stage_label": "正在采集源站页面",
                 "progress_mode": "stage_only",
-                "metrics": {
-                    "completed": 46,
-                    "total": 100,
-                    "unit": "percent",
-                    "compared_pairs": 120,
-                    "total_comparisons": 300,
-                },
+                "metrics": {"pages_fetched": 2, "raw_items_collected": 11},
             })
 
-        mocked_update.assert_called_once()
-        kwargs = mocked_update.call_args.kwargs
-        self.assertEqual(kwargs["task_id"], "run-dup-1")
-        self.assertEqual(kwargs["phase"], "正在比对重复候选")
-        self.assertEqual(kwargs["details"]["progress_mode"], "stage_only")
-        self.assertEqual(kwargs["details"]["stage_key"], "compare-candidates")
-        self.assertEqual(kwargs["details"]["metrics"]["completed"], 46)
-        self.assertEqual(kwargs["details"]["metrics"]["compared_pairs"], 120)
+        kwargs = update_mock.call_args.kwargs
+        self.assertEqual(kwargs["status"], "running")
+        self.assertEqual(kwargs["details"]["stage"], "collecting")
+        self.assertEqual(kwargs["details"]["stage_label"], "正在采集源站页面")
+        self.assertEqual(kwargs["details"]["live_metrics"]["pages_fetched"], 2)
+
+    def test_build_scheduler_progress_callback_should_forward_canonical_stage_contract(self):
+        callback = scheduler_jobs.build_scheduler_progress_callback("run-scheduler-1")
+
+        with patch("src.scheduler.jobs.update_task_run") as update_mock:
+            callback({
+                "stage": "persisting",
+                "stage_key": "persist-posts",
+                "stage_label": "正在写入抓取结果",
+                "progress_mode": "stage_only",
+                "metrics": {"posts_seen": 12, "posts_updated": 3},
+            })
+
+        kwargs = update_mock.call_args.kwargs
+        self.assertEqual(kwargs["status"], "running")
+        self.assertEqual(kwargs["details"]["stage"], "persisting")
+        self.assertEqual(kwargs["details"]["stage_label"], "正在写入抓取结果")
+        self.assertEqual(kwargs["details"]["live_metrics"]["posts_seen"], 12)
 
     def test_get_sources_should_return_items(self):
         self.db.query.return_value.order_by.return_value.all.return_value = [

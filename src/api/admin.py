@@ -27,6 +27,7 @@ from src.scheduler.jobs import (
 )
 from src.services.admin_task_service import (
     TaskAlreadyRunningError,
+    build_runtime_task_details,
     get_task_summary_for_admin,
     is_task_run_cancel_requested,
     load_task_runs_for_admin,
@@ -301,10 +302,13 @@ def build_admin_progress_callback(task_id: str) -> ProgressCallback:
             status="running",
             phase=payload.get("stage_label") or "",
             progress=None,
-            details=build_progress_details(
-                payload.get("progress_mode") or "stage_only",
+            details=build_runtime_task_details(
+                stage=payload.get("stage") or payload.get("stage_key") or "submitted",
+                stage_label=payload.get("stage_label") or "",
+                progress_mode=payload.get("progress_mode") or "stage_only",
                 stage_key=payload.get("stage_key") or "",
-                metrics=metrics,
+                live_metrics=metrics,
+                stage_started_at=datetime.now(timezone.utc).isoformat(),
             ),
         )
 

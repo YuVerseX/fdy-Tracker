@@ -1,6 +1,7 @@
 """定时任务"""
 import asyncio
 from contextlib import suppress
+from datetime import datetime, timezone
 
 from sqlalchemy import inspect
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -11,6 +12,7 @@ from src.database.database import SessionLocal, engine
 from src.database.models import SchedulerConfig, Source
 from src.services.admin_task_service import (
     TaskAlreadyRunningError,
+    build_runtime_task_details,
     record_task_run,
     resolve_conflict_task_types,
     start_task_run,
@@ -50,10 +52,13 @@ def build_scheduler_progress_callback(task_id: str) -> ProgressCallback:
             status="running",
             phase=payload.get("stage_label") or "",
             progress=None,
-            details=build_progress_details(
-                payload.get("progress_mode") or "stage_only",
+            details=build_runtime_task_details(
+                stage=payload.get("stage") or payload.get("stage_key") or "submitted",
+                stage_label=payload.get("stage_label") or "",
+                progress_mode=payload.get("progress_mode") or "stage_only",
                 stage_key=payload.get("stage_key") or "",
-                metrics=metrics,
+                live_metrics=metrics,
+                stage_started_at=datetime.now(timezone.utc).isoformat(),
             ),
         )
 
