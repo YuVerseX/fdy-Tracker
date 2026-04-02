@@ -19,8 +19,8 @@ export const ADMIN_SECTION_LEGACY_ALIASES = Object.freeze({
 const RUNTIME_COPY = {
   unknown: {
     badge: '状态更新中',
-    description: '当前能力信息正在更新，稍后刷新后再查看最新结果。',
-    emphasis: '如果刚完成设置或提交任务，稍后刷新会显示最新状态。'
+    description: '当前能力信息正在更新，可以先继续查看现有概览。',
+    emphasis: '如果刚完成设置或提交任务，相关状态会在后续同步后更新。'
   },
   disabled: {
     badge: '智能整理已关闭',

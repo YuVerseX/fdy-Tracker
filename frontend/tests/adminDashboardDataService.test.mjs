@@ -3,6 +3,16 @@ import assert from 'node:assert/strict'
 
 import { createAdminDashboardDataService } from '../src/views/admin/adminDashboardDataService.js'
 
+function createDeferred() {
+  let resolve
+  let reject
+  const promise = new Promise((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 function createHarness({ adminApiOverrides = {} } = {}) {
   const calls = []
   const adminApi = {
@@ -115,7 +125,7 @@ function createHarness({ adminApiOverrides = {} } = {}) {
     forms
   })
 
-  return { calls, service, state, loaded, forms, feedback }
+  return { calls, service, state, loaded, forms, feedback, adminAuthorized, adminAuthError, adminAuthForm }
 }
 
 test('createAdminDashboardDataService should expose refresh aliases expected by AdminDashboard', async () => {
@@ -253,7 +263,7 @@ test('cancelTaskRun should submit cancel request and clear canceling state after
   assert.equal(state.cancelingTaskId, '')
 })
 
-test('runAiAnalysisTask should downgrade timeout into info feedback after refreshing task state', async () => {
+test('runAiAnalysisTask should downgrade timeout into warning feedback after refreshing task state', async () => {
   const timeoutError = new Error('timeout')
   timeoutError.code = 'ECONNABORTED'
 
@@ -265,8 +275,9 @@ test('runAiAnalysisTask should downgrade timeout into info feedback after refres
 
   await service.runAiAnalysisTask()
 
-  assert.equal(feedback.value.type, 'info')
-  assert.match(feedback.value.message, /后台已接收请求/)
+  assert.equal(feedback.value.type, 'warning')
+  assert.match(feedback.value.message, /已刷新当前状态/)
+  assert.match(feedback.value.message, /确认是否已受理/)
 })
 
 test('runScrapeTask should convert 409 conflict into warning feedback instead of error copy', async () => {
@@ -288,7 +299,7 @@ test('runScrapeTask should convert 409 conflict into warning feedback instead of
   assert.match(feedback.value.message, /已有同类任务在运行/)
 })
 
-test('retryTaskRun should downgrade timeout into info feedback in retry catch branch', async () => {
+test('retryTaskRun should downgrade timeout into warning feedback in retry catch branch', async () => {
   const timeoutError = new Error('timeout')
   timeoutError.code = 'ECONNABORTED'
 
@@ -309,8 +320,9 @@ test('retryTaskRun should downgrade timeout into info feedback in retry catch br
     }
   }, 'incremental')
 
-  assert.equal(feedback.value.type, 'info')
-  assert.match(feedback.value.message, /后台已接收请求/)
+  assert.equal(feedback.value.type, 'warning')
+  assert.match(feedback.value.message, /已刷新当前状态/)
+  assert.match(feedback.value.message, /确认是否已受理/)
 })
 
 test('runAiAnalysisTask should keep refresh error feedback when timeout refresh fails', async () => {
@@ -331,7 +343,7 @@ test('runAiAnalysisTask should keep refresh error feedback when timeout refresh 
   assert.match(feedback.value.message, /加载任务记录失败/)
 })
 
-test('runAiAnalysisTask should keep timeout info feedback when task summary falls back but task runs refresh succeeds', async () => {
+test('runAiAnalysisTask should keep timeout warning feedback when task summary falls back but task runs refresh succeeds', async () => {
   const timeoutError = new Error('timeout')
   timeoutError.code = 'ECONNABORTED'
   const summaryError = new Error('summary-failed')
@@ -350,11 +362,34 @@ test('runAiAnalysisTask should keep timeout info feedback when task summary fall
     await service.runAiAnalysisTask()
 
     assert.equal(state.taskSummaryUnavailable, true)
-    assert.equal(feedback.value.type, 'info')
-    assert.match(feedback.value.message, /后台已接收请求/)
+    assert.equal(feedback.value.type, 'warning')
+    assert.match(feedback.value.message, /已刷新当前状态/)
+    assert.match(feedback.value.message, /确认是否已受理/)
   } finally {
     console.warn = originalWarn
   }
+})
+
+test('runAiAnalysisTask should keep timeout warning feedback when supplemental summaries fail after task center refresh succeeds', async () => {
+  const timeoutError = new Error('timeout')
+  timeoutError.code = 'ECONNABORTED'
+  const analysisError = new Error('analysis-failed')
+
+  const { service, feedback, state } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async () => { throw timeoutError },
+      getTaskRuns: async () => ({ data: { items: [{ id: 'run-3' }] } }),
+      getTaskSummary: async () => ({ data: { running_tasks: [{ id: 'run-3', task_type: 'ai_analysis' }] } }),
+      getAnalysisSummary: async () => { throw analysisError }
+    }
+  })
+
+  await service.runAiAnalysisTask()
+
+  assert.match(state.taskStatusLastSyncedAt, /^20\d\d-/)
+  assert.equal(feedback.value.type, 'warning')
+  assert.match(feedback.value.message, /已刷新当前状态/)
+  assert.match(feedback.value.message, /确认是否已受理/)
 })
 
 test('retryTaskRun should keep conflict warning feedback when task summary falls back but task runs refresh succeeds', async () => {
@@ -393,6 +428,39 @@ test('retryTaskRun should keep conflict warning feedback when task summary falls
   } finally {
     console.warn = originalWarn
   }
+})
+
+test('retryTaskRun should keep conflict warning feedback when supplemental summaries fail after task center refresh succeeds', async () => {
+  const conflictError = new Error('conflict')
+  conflictError.response = {
+    status: 409,
+    data: { detail: '手动抓取最新数据已经在运行了，请先等当前任务结束后再试。若刚才页面超时了，先点“刷新记录”确认后台状态。' }
+  }
+  const analysisError = new Error('analysis-failed')
+
+  const { service, feedback, state } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async () => { throw conflictError },
+      getTaskRuns: async () => ({ data: { items: [{ id: 'run-4' }] } }),
+      getTaskSummary: async () => ({ data: { running_tasks: [{ id: 'run-4', task_type: 'ai_analysis' }] } }),
+      getAnalysisSummary: async () => { throw analysisError }
+    }
+  })
+
+  await service.retryTaskRun({
+    id: 'run-ai-conflict-2',
+    task_type: 'ai_analysis',
+    status: 'success',
+    params: {
+      source_id: '9',
+      limit: '20',
+      only_unanalyzed: true
+    }
+  }, 'incremental')
+
+  assert.match(state.taskStatusLastSyncedAt, /^20\d\d-/)
+  assert.equal(feedback.value.type, 'warning')
+  assert.match(feedback.value.message, /已有同类任务在运行/)
 })
 
 test('retryTaskRun should use action-specific fallback copy for plain rerun failures', async () => {
@@ -449,4 +517,274 @@ test('refreshTaskStatus should not stamp sync time when task runs fail and task 
   } finally {
     console.warn = originalWarn
   }
+})
+
+test('fetchTaskRuns should keep contextual fallback copy for 500 responses', async () => {
+  const serverError = new Error('server-error')
+  serverError.response = { status: 500, data: {} }
+
+  const { service, feedback } = createHarness({
+    adminApiOverrides: {
+      getTaskRuns: async () => { throw serverError }
+    }
+  })
+
+  const succeeded = await service.fetchTaskRuns()
+
+  assert.equal(succeeded, false)
+  assert.equal(feedback.value.type, 'error')
+  assert.equal(feedback.value.message, '加载任务记录失败')
+})
+
+test('verifyAdminAccess should keep timeout feedback contextual when session check times out', async () => {
+  const timeoutError = new Error('timeout')
+  timeoutError.code = 'ECONNABORTED'
+
+  const { service, feedback } = createHarness({
+    adminApiOverrides: {
+      getSession: async () => { throw timeoutError }
+    }
+  })
+
+  const succeeded = await service.verifyAdminAccess()
+
+  assert.equal(succeeded, false)
+  assert.equal(feedback.value.type, 'error')
+  assert.equal(feedback.value.message, '验证登录状态失败')
+})
+
+test('submitAdminLogin should keep timeout feedback contextual when login request times out', async () => {
+  const timeoutError = new Error('timeout')
+  timeoutError.code = 'ECONNABORTED'
+
+  const { service, adminAuthError, adminAuthForm } = createHarness({
+    adminApiOverrides: {
+      login: async () => { throw timeoutError }
+    }
+  })
+  adminAuthForm.username = 'admin'
+  adminAuthForm.password = 'secret'
+
+  await service.submitAdminLogin()
+
+  assert.equal(adminAuthError.value, '登录失败')
+})
+
+test('refreshTaskStatus should not stamp sync time when task runs fail but task summary succeeds', async () => {
+  const taskRunsError = new Error('task-runs-failed')
+
+  const { service, state } = createHarness({
+    adminApiOverrides: {
+      getTaskRuns: async () => { throw taskRunsError },
+      getTaskSummary: async () => ({ data: { running_tasks: [{ id: 'run-summary-only', task_type: 'manual_scrape' }] } })
+    }
+  })
+
+  const refreshSucceeded = await service.refreshTaskStatus()
+
+  assert.equal(refreshSucceeded, false)
+  assert.equal(state.taskSummaryUnavailable, false)
+  assert.deepEqual(state.taskSummary, { running_tasks: [{ id: 'run-summary-only', task_type: 'manual_scrape' }] })
+  assert.equal(state.taskStatusLastSyncedAt, '')
+})
+
+test('refreshTaskStatus should ignore stale task-center responses from older refreshes', async () => {
+  const originalDate = global.Date
+  const timestamps = [
+    '2026-04-01T10:00:01.000Z',
+    '2026-04-01T10:00:09.000Z'
+  ]
+  let stampIndex = 0
+
+  class FakeDate extends originalDate {
+    constructor(...args) {
+      super(...(args.length ? args : [timestamps[Math.min(stampIndex, timestamps.length - 1)]]))
+    }
+
+    static now() {
+      return originalDate.parse(timestamps[Math.min(stampIndex, timestamps.length - 1)])
+    }
+
+    static parse(value) {
+      return originalDate.parse(value)
+    }
+
+    static UTC(...args) {
+      return originalDate.UTC(...args)
+    }
+  }
+
+  global.Date = FakeDate
+
+  const runsFirst = createDeferred()
+  const runsSecond = createDeferred()
+  const summaryFirst = createDeferred()
+  const summarySecond = createDeferred()
+  let runsCallIndex = 0
+  let summaryCallIndex = 0
+
+  try {
+    const { service, state } = createHarness({
+      adminApiOverrides: {
+        getTaskRuns: async () => (runsCallIndex++ === 0 ? runsFirst.promise : runsSecond.promise),
+        getTaskSummary: async () => (summaryCallIndex++ === 0 ? summaryFirst.promise : summarySecond.promise)
+      }
+    })
+
+    const firstRefresh = service.refreshTaskStatus()
+    const secondRefresh = service.refreshTaskStatus()
+
+    runsSecond.resolve({ data: { items: [{ id: 'fresh-run' }] } })
+    summarySecond.resolve({ data: { running_tasks: [{ id: 'fresh-run', task_type: 'manual_scrape' }] } })
+
+    await secondRefresh
+
+    const syncedAfterFreshRefresh = state.taskStatusLastSyncedAt
+
+    assert.deepEqual(state.taskRuns, [{ id: 'fresh-run' }])
+    assert.deepEqual(state.taskSummary, { running_tasks: [{ id: 'fresh-run', task_type: 'manual_scrape' }] })
+    assert.equal(syncedAfterFreshRefresh, '2026-04-01T10:00:01.000Z')
+
+    stampIndex = 1
+    runsFirst.resolve({ data: { items: [{ id: 'stale-run' }] } })
+    summaryFirst.resolve({ data: { running_tasks: [{ id: 'stale-run', task_type: 'manual_scrape' }] } })
+
+    await firstRefresh
+
+    assert.deepEqual(state.taskRuns, [{ id: 'fresh-run' }])
+    assert.deepEqual(state.taskSummary, { running_tasks: [{ id: 'fresh-run', task_type: 'manual_scrape' }] })
+    assert.equal(state.taskStatusLastSyncedAt, syncedAfterFreshRefresh)
+  } finally {
+    global.Date = originalDate
+  }
+})
+
+test('runAiAnalysisTask should stop timeout info feedback when supplemental refresh loses auth', async () => {
+  const timeoutError = new Error('timeout')
+  timeoutError.code = 'ECONNABORTED'
+  const authError = new Error('auth-lost')
+  authError.response = {
+    status: 503,
+    data: { detail: '管理会话暂不可用。' }
+  }
+
+  const { service, feedback, state, adminAuthorized, adminAuthError } = createHarness({
+    adminApiOverrides: {
+      runAiAnalysis: async () => { throw timeoutError },
+      getTaskRuns: async () => ({ data: { items: [{ id: 'run-auth-refresh' }] } }),
+      getTaskSummary: async () => ({ data: { running_tasks: [{ id: 'run-auth-refresh', task_type: 'ai_analysis' }] } }),
+      getAnalysisSummary: async () => { throw authError }
+    }
+  })
+
+  await service.runAiAnalysisTask()
+
+  assert.equal(adminAuthorized.value, false)
+  assert.match(adminAuthError.value, /暂不可用|重新登录/)
+  assert.equal(feedback.value.message, '')
+  assert.equal(state.taskStatusLastSyncedAt, '')
+})
+
+test('refreshTaskStatus should not stamp sync time after auth loss even when task runs succeed', async () => {
+  const authError = new Error('auth-lost')
+  authError.response = {
+    status: 503,
+    data: { detail: '管理会话暂不可用。' }
+  }
+
+  const { service, state, adminAuthorized, adminAuthError } = createHarness({
+    adminApiOverrides: {
+      getTaskRuns: async () => ({ data: { items: [{ id: 'run-auth-1' }] } }),
+      getTaskSummary: async () => { throw authError }
+    }
+  })
+
+  const refreshSucceeded = await service.refreshTaskStatus()
+
+  assert.equal(refreshSucceeded, false)
+  assert.equal(adminAuthorized.value, false)
+  assert.match(adminAuthError.value, /暂不可用|重新登录/)
+  assert.equal(state.taskStatusLastSyncedAt, '')
+})
+
+test('refreshOverview should not stamp sync time after auth loss even when task runs succeed', async () => {
+  const authError = new Error('auth-lost')
+  authError.response = {
+    status: 503,
+    data: { detail: '管理会话暂不可用。' }
+  }
+
+  const { service, state, adminAuthorized, adminAuthError } = createHarness({
+    adminApiOverrides: {
+      getTaskRuns: async () => ({ data: { items: [{ id: 'run-auth-2' }] } }),
+      getTaskSummary: async () => { throw authError }
+    }
+  })
+
+  const refreshSucceeded = await service.refreshOverview()
+
+  assert.equal(refreshSucceeded, false)
+  assert.equal(adminAuthorized.value, false)
+  assert.match(adminAuthError.value, /暂不可用|重新登录/)
+  assert.equal(state.taskStatusLastSyncedAt, '')
+})
+
+test('refreshOverview should ignore late responses after logout clears admin runtime state', async () => {
+  const taskRuns = createDeferred()
+  const taskSummary = createDeferred()
+  const scheduler = createDeferred()
+  const analysis = createDeferred()
+  const insight = createDeferred()
+  const jobs = createDeferred()
+  const duplicate = createDeferred()
+
+  const { service, state, loaded, adminAuthorized, feedback } = createHarness({
+    adminApiOverrides: {
+      getTaskRuns: async () => taskRuns.promise,
+      getTaskSummary: async () => taskSummary.promise,
+      getSchedulerConfig: async () => scheduler.promise,
+      getAnalysisSummary: async () => analysis.promise,
+      getInsightSummary: async () => insight.promise,
+      getJobSummary: async () => jobs.promise,
+      getDuplicateSummary: async () => duplicate.promise,
+      logout: async () => ({})
+    }
+  })
+
+  const refreshPromise = service.refreshOverview()
+  await service.logoutAdmin()
+
+  taskSummary.resolve({ data: { running_tasks: [{ id: 'stale-summary-run', task_type: 'manual_scrape' }] } })
+  taskRuns.resolve({ data: { items: [{ id: 'stale-run', task_type: 'manual_scrape', status: 'running' }] } })
+  scheduler.resolve({
+    data: {
+      enabled: true,
+      interval_seconds: 7200,
+      default_source_id: 1,
+      default_max_pages: 5
+    }
+  })
+  analysis.resolve({ data: { runtime: { mode: 'basic' }, overview: { total_posts: 3 } } })
+  insight.resolve({ data: { overview: { insight_posts: 2 } } })
+  jobs.resolve({ data: { overview: { total_jobs: 8 } } })
+  duplicate.resolve({ data: { overview: { duplicate_posts: 1 } } })
+
+  await refreshPromise
+
+  assert.equal(adminAuthorized.value, false)
+  assert.deepEqual(state.taskRuns, [])
+  assert.equal(state.taskSummary, null)
+  assert.equal(state.analysisSummary, null)
+  assert.equal(state.insightSummary, null)
+  assert.equal(state.jobSummary, null)
+  assert.equal(state.duplicateSummary, null)
+  assert.equal(loaded.taskRuns, false)
+  assert.equal(loaded.taskSummary, false)
+  assert.equal(loaded.analysis, false)
+  assert.equal(loaded.insight, false)
+  assert.equal(loaded.jobs, false)
+  assert.equal(loaded.duplicate, false)
+  assert.equal(state.taskStatusLastSyncedAt, '')
+  assert.equal(feedback.value.type, 'success')
+  assert.equal(feedback.value.message, '已退出登录')
 })

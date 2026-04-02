@@ -97,7 +97,7 @@ test('buildPostListEmptyState should distinguish filtered results from first-loa
     buildPostListEmptyState({ hasFilters: false }),
     {
       title: '暂时还没有可浏览的招聘公告',
-      description: '稍后再来看看，或等待下一次抓取完成。'
+      description: '稍后再来看看。'
     }
   )
 })
@@ -143,6 +143,6 @@ test('buildPostListFreshnessNotice should return empty notice model', () => {
   assert.deepEqual(notice, {
     tone: 'warning',
     title: '还没有可展示的抓取成功任务记录',
-    description: '稍后再来看看，或等待下一次抓取完成。'
+    description: '稍后再来看看。'
   })
 })

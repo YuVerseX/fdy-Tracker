@@ -263,7 +263,7 @@ export function buildTaskRunsPresentation({
   const failedRunsAll = taskRuns.filter((run) => run?.status === 'failed')
   const successRunsAll = taskRuns.filter((run) => run?.status === 'success')
   const resultRunsAll = taskRuns.filter((run) => ['failed', 'success', 'cancelled'].includes(run?.status))
-  const currentRuns = currentRunsAll.slice(0, maxCurrentRuns)
+  const currentRuns = currentRunsAll
   const recentResultRuns = resultRunsAll.slice(0, maxRecentResultRuns)
   const featuredRunKeys = new Set([...currentRuns, ...recentResultRuns].map((run) => getTaskRunKey(run)))
   const historyRuns = taskRuns.filter((run) => !featuredRunKeys.has(getTaskRunKey(run)))

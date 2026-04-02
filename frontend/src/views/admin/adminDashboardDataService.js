@@ -43,18 +43,46 @@ const resolveTaskParams = (run = {}) => {
 export function createAdminDashboardDataService({
   adminApi, adminAuthorized, adminAuthChecking, adminAuthError, adminAuthForm, feedback, sourceOptions, state, loading, loaded, requests, forms
 } = {}) {
+  const latestRequestIds = {
+    taskRuns: 0,
+    taskSummary: 0,
+    scheduler: 0,
+    analysis: 0,
+    insight: 0,
+    jobs: 0,
+    duplicate: 0
+  }
+  let latestTaskCenterRefreshId = 0
+  let runtimeGeneration = 0
   const setFeedback = (type, message) => { feedback.value = { type, message } }
   const isTaskSummaryFetchSuccessful = (result) => result === TASK_SUMMARY_FETCH_SUCCESS
   const isTaskSummaryFetchContinuable = (result) => (
     result === TASK_SUMMARY_FETCH_SUCCESS || result === TASK_SUMMARY_FETCH_DEGRADED
   )
   const shouldMarkTaskStatusSync = (taskRunsResult, taskSummaryResult) => (
-    taskRunsResult === true || isTaskSummaryFetchSuccessful(taskSummaryResult)
+    adminAuthorized.value && taskRunsResult === true && isTaskSummaryFetchContinuable(taskSummaryResult)
   )
   const isTaskCenterRefreshSuccessful = (taskRunsResult, taskSummaryResult) => (
-    taskRunsResult === true && isTaskSummaryFetchContinuable(taskSummaryResult)
+    adminAuthorized.value && taskRunsResult === true && isTaskSummaryFetchContinuable(taskSummaryResult)
   )
+  const createTaskCenterRefreshGuard = () => {
+    const refreshId = ++latestTaskCenterRefreshId
+    const generation = runtimeGeneration
+    return () => generation === runtimeGeneration && refreshId === latestTaskCenterRefreshId
+  }
+  const createRequestGuard = (key, externalGuard = () => true) => {
+    const requestId = ++latestRequestIds[key]
+    const generation = runtimeGeneration
+    return () => generation === runtimeGeneration && externalGuard() && requestId === latestRequestIds[key]
+  }
+  const getCurrentTaskRunsResult = () => loaded.taskRuns === true
+  const getCurrentTaskSummaryResult = () => {
+    if (loaded.taskSummary) return TASK_SUMMARY_FETCH_SUCCESS
+    if (state.taskSummaryUnavailable) return TASK_SUMMARY_FETCH_DEGRADED
+    return false
+  }
   const clearAdminRuntimeState = () => {
+    runtimeGeneration += 1
     Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', retryingTaskActionKey: '', cancelingTaskId: '', jobsSummaryUnavailable: false, taskStatusLastSyncedAt: '' })
     Object.keys(loaded).forEach((key) => { loaded[key] = false })
   }
@@ -73,11 +101,7 @@ export function createAdminDashboardDataService({
     )
     return true
   }
-  const getErrorMessage = (error, fallback) => {
-    if (error?.response?.status >= 500) return '任务处理失败，请稍后再试。'
-    if (error?.code === 'ECONNABORTED') return '请求已发出，结果正在更新，请稍后刷新任务中心。'
-    return normalizeAdminUiMessage(error?.response?.data?.detail, fallback)
-  }
+  const getErrorMessage = (error, fallback) => normalizeAdminUiMessage(error?.response?.data?.detail, fallback)
   const isTaskConflictError = (error) => {
     const detail = normalizeAdminUiMessage(error?.response?.data?.detail, '')
     return error?.response?.status === 409 && /已经在运行|刷新记录|确认后台状态/.test(detail)
@@ -85,8 +109,8 @@ export function createAdminDashboardDataService({
   const getTaskSubmissionFeedback = (error, fallback) => {
     if (error?.code === 'ECONNABORTED') {
       return {
-        type: 'info',
-        message: '后台已接收请求，状态稍后自动刷新。',
+        type: 'warning',
+        message: '请求超时，已刷新当前状态，请在任务中心确认是否已受理。',
         shouldRefresh: true
       }
     }
@@ -125,31 +149,37 @@ export function createAdminDashboardDataService({
       adminAuthChecking.value = false
     }
   }
-  const fetchTaskRuns = async () => {
+  const fetchTaskRuns = async ({ isCurrentRequest = () => true } = {}) => {
+    const isCurrent = createRequestGuard('taskRuns', isCurrentRequest)
     loading.taskRuns = true
     try {
       const response = await adminApi.getTaskRuns({ limit: 10 })
+      if (!isCurrent()) return getCurrentTaskRunsResult()
       state.taskRuns = response.data.items || []
       loaded.taskRuns = true
       return true
     } catch (error) {
+      if (!isCurrent()) return getCurrentTaskRunsResult()
       state.taskRuns = []
       loaded.taskRuns = false
       if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载任务记录失败'))
       return false
     } finally {
-      loading.taskRuns = false
+      if (isCurrent()) loading.taskRuns = false
     }
   }
-  const fetchTaskSummary = async () => {
+  const fetchTaskSummary = async ({ isCurrentRequest = () => true } = {}) => {
+    const isCurrent = createRequestGuard('taskSummary', isCurrentRequest)
     loading.taskSummary = true
     try {
       const response = await adminApi.getTaskSummary()
+      if (!isCurrent()) return getCurrentTaskSummaryResult()
       state.taskSummary = response.data || null
       state.taskSummaryUnavailable = false
       loaded.taskSummary = true
       return TASK_SUMMARY_FETCH_SUCCESS
     } catch (error) {
+      if (!isCurrent()) return getCurrentTaskSummaryResult()
       state.taskSummary = null
       loaded.taskSummary = false
       if (handleAdminAccessError(error)) return false
@@ -157,7 +187,7 @@ export function createAdminDashboardDataService({
       console.warn('获取任务摘要失败，继续回退到任务记录:', error)
       return TASK_SUMMARY_FETCH_DEGRADED
     } finally {
-      loading.taskSummary = false
+      if (isCurrent()) loading.taskSummary = false
     }
   }
   const fetchSources = async () => {
@@ -175,96 +205,120 @@ export function createAdminDashboardDataService({
       if (!handleAdminAccessError(error)) console.warn('获取数据源列表失败，继续使用默认选项:', error)
     }
   }
-  const fetchSchedulerConfig = async () => {
+  const fetchSchedulerConfig = async ({ isCurrentRequest = () => true } = {}) => {
+    const isCurrent = createRequestGuard('scheduler', isCurrentRequest)
     loading.scheduler = true
     try {
       const response = await adminApi.getSchedulerConfig()
+      if (!isCurrent()) return loaded.scheduler === true
       applySchedulerConfig(response.data || {})
       loaded.scheduler = true
       return true
     } catch (error) {
+      if (!isCurrent()) return loaded.scheduler === true
       loaded.scheduler = false
       if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载定时抓取配置失败'))
       return false
     } finally {
-      loading.scheduler = false
+      if (isCurrent()) loading.scheduler = false
     }
   }
-  const fetchAnalysisSummary = async () => {
+  const fetchAnalysisSummary = async ({ suppressFeedback = false, isCurrentRequest = () => true } = {}) => {
+    const isCurrent = createRequestGuard('analysis', isCurrentRequest)
     loading.analysis = true
     try {
       const response = await adminApi.getAnalysisSummary()
+      if (!isCurrent()) return loaded.analysis === true
       state.analysisSummary = response.data || null
       loaded.analysis = true
       return true
     } catch (error) {
+      if (!isCurrent()) return loaded.analysis === true
       state.analysisSummary = null
       loaded.analysis = false
-      if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载分析摘要失败'))
+      if (!handleAdminAccessError(error) && !suppressFeedback) setFeedback('error', getErrorMessage(error, '加载分析摘要失败'))
       return false
     } finally {
-      loading.analysis = false
+      if (isCurrent()) loading.analysis = false
     }
   }
-  const fetchInsightSummary = async () => {
+  const fetchInsightSummary = async ({ suppressFeedback = false, isCurrentRequest = () => true } = {}) => {
+    const isCurrent = createRequestGuard('insight', isCurrentRequest)
     loading.insight = true
     try {
       const response = await adminApi.getInsightSummary()
+      if (!isCurrent()) return loaded.insight === true
       state.insightSummary = response.data || null
       loaded.insight = true
       return true
     } catch (error) {
+      if (!isCurrent()) return loaded.insight === true
       state.insightSummary = null
       if (handleAdminAccessError(error)) return false
       loaded.insight = error?.response?.status === 404 || error?.response?.status === 405
-      if (!loaded.insight) setFeedback('error', getErrorMessage(error, '加载关键信息字段摘要失败'))
+      if (!loaded.insight && !suppressFeedback) setFeedback('error', getErrorMessage(error, '加载关键信息字段摘要失败'))
       return loaded.insight
     } finally {
-      loading.insight = false
+      if (isCurrent()) loading.insight = false
     }
   }
-  const fetchJobSummary = async () => {
+  const fetchJobSummary = async ({ suppressFeedback = false, isCurrentRequest = () => true } = {}) => {
+    const isCurrent = createRequestGuard('jobs', isCurrentRequest)
     loading.jobs = true
     state.jobsSummaryUnavailable = false
     try {
       const response = await adminApi.getJobSummary()
+      if (!isCurrent()) return loaded.jobs === true
       state.jobSummary = response.data || null
       loaded.jobs = true
       return true
     } catch (error) {
+      if (!isCurrent()) return loaded.jobs === true
       state.jobSummary = null
       if (handleAdminAccessError(error)) return false
       loaded.jobs = error?.response?.status === 404 || error?.response?.status === 405
       state.jobsSummaryUnavailable = loaded.jobs
-      if (!loaded.jobs) setFeedback('error', getErrorMessage(error, '加载岗位摘要失败'))
+      if (!loaded.jobs && !suppressFeedback) setFeedback('error', getErrorMessage(error, '加载岗位摘要失败'))
       return loaded.jobs
     } finally {
-      loading.jobs = false
+      if (isCurrent()) loading.jobs = false
     }
   }
-  const fetchDuplicateSummary = async () => {
+  const fetchDuplicateSummary = async ({ suppressFeedback = false, isCurrentRequest = () => true } = {}) => {
+    const isCurrent = createRequestGuard('duplicate', isCurrentRequest)
     loading.duplicate = true
     try {
       const response = await adminApi.getDuplicateSummary()
+      if (!isCurrent()) return loaded.duplicate === true
       state.duplicateSummary = response.data || null
       loaded.duplicate = true
       return true
     } catch (error) {
+      if (!isCurrent()) return loaded.duplicate === true
       state.duplicateSummary = null
       loaded.duplicate = false
-      if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载重复整理概览失败'))
+      if (!handleAdminAccessError(error) && !suppressFeedback) setFeedback('error', getErrorMessage(error, '加载重复整理概览失败'))
       return false
     } finally {
-      loading.duplicate = false
+      if (isCurrent()) loading.duplicate = false
     }
   }
   const refreshOverview = async () => {
     if (!adminAuthorized.value) return false
     loading.overview = true
     try {
-      const results = await Promise.all([fetchTaskSummary(), fetchTaskRuns(), fetchSchedulerConfig(), fetchAnalysisSummary(), fetchInsightSummary(), fetchJobSummary(), fetchDuplicateSummary()])
+      const isCurrentTaskCenterRequest = createTaskCenterRefreshGuard()
+      const results = await Promise.all([
+        fetchTaskSummary({ isCurrentRequest: isCurrentTaskCenterRequest }),
+        fetchTaskRuns({ isCurrentRequest: isCurrentTaskCenterRequest }),
+        fetchSchedulerConfig(),
+        fetchAnalysisSummary(),
+        fetchInsightSummary(),
+        fetchJobSummary(),
+        fetchDuplicateSummary()
+      ])
       const [taskSummaryResult, taskRunsResult, ...otherResults] = results
-      if (shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
+      if (isCurrentTaskCenterRequest() && shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
       return isTaskCenterRefreshSuccessful(taskRunsResult, taskSummaryResult) && otherResults.every((result) => result === true)
     } finally {
       loading.overview = false
@@ -272,15 +326,19 @@ export function createAdminDashboardDataService({
   }
   const refreshAfterTask = async ({ includeAnalysis = false, includeInsight = false, includeJobs = false, includeDuplicate = false } = {}) => {
     if (!adminAuthorized.value) return false
-    const tasks = [fetchTaskRuns(), fetchTaskSummary()]
-    if (includeAnalysis) tasks.push(fetchAnalysisSummary())
-    if (includeInsight) tasks.push(fetchInsightSummary())
-    if (includeJobs) tasks.push(fetchJobSummary())
-    if (includeDuplicate) tasks.push(fetchDuplicateSummary())
+    const isCurrentTaskCenterRequest = createTaskCenterRefreshGuard()
+    const tasks = [
+      fetchTaskRuns({ isCurrentRequest: isCurrentTaskCenterRequest }),
+      fetchTaskSummary({ isCurrentRequest: isCurrentTaskCenterRequest })
+    ]
+    if (includeAnalysis) tasks.push(fetchAnalysisSummary({ suppressFeedback: true }))
+    if (includeInsight) tasks.push(fetchInsightSummary({ suppressFeedback: true }))
+    if (includeJobs) tasks.push(fetchJobSummary({ suppressFeedback: true }))
+    if (includeDuplicate) tasks.push(fetchDuplicateSummary({ suppressFeedback: true }))
     const results = await Promise.all(tasks)
-    const [taskRunsResult, taskSummaryResult, ...otherResults] = results
-    if (shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
-    return isTaskCenterRefreshSuccessful(taskRunsResult, taskSummaryResult) && otherResults.every((result) => result === true)
+    const [taskRunsResult, taskSummaryResult] = results
+    if (isCurrentTaskCenterRequest() && shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
+    return isTaskCenterRefreshSuccessful(taskRunsResult, taskSummaryResult)
   }
   const runNamedTask = async (taskType, busyKey, params = {}) => {
     const config = buildTaskRequestConfig(taskType, { params, forms })
@@ -425,8 +483,12 @@ export function createAdminDashboardDataService({
   }
   const refreshTaskStatus = async () => {
     if (!adminAuthorized.value) return false
-    const [taskRunsResult, taskSummaryResult] = await Promise.all([fetchTaskRuns(), fetchTaskSummary()])
-    if (shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
+    const isCurrentTaskCenterRequest = createTaskCenterRefreshGuard()
+    const [taskRunsResult, taskSummaryResult] = await Promise.all([
+      fetchTaskRuns({ isCurrentRequest: isCurrentTaskCenterRequest }),
+      fetchTaskSummary({ isCurrentRequest: isCurrentTaskCenterRequest })
+    ])
+    if (isCurrentTaskCenterRequest() && shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
     return isTaskCenterRefreshSuccessful(taskRunsResult, taskSummaryResult)
   }
   return {

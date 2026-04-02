@@ -127,7 +127,7 @@ export function useAdminDashboardState() {
     taskRunsLoaded: loaded.taskRuns
   }))
   const backendRunningTasks = computed(() => {
-    if (!adminAuthorized.value) return []
+    if (!adminAuthorized.value || !loaded.taskRuns) return []
     const combined = [...(Array.isArray(state.taskSummary?.running_tasks) ? state.taskSummary.running_tasks : []), ...state.taskRuns.filter((run) => ['queued', 'pending', 'running', 'processing'].includes(run?.status))]
     const seen = new Set()
     return combined.filter((run) => {
@@ -138,11 +138,18 @@ export function useAdminDashboardState() {
       return true
     })
   })
+  const hasTaskStatusSnapshot = computed(() => (
+    loaded.taskRuns ||
+    loaded.taskSummary ||
+    state.taskSummaryUnavailable ||
+    Boolean(state.taskStatusLastSyncedAt)
+  ))
   const taskSyncStatus = computed(() => ({
-    autoRefreshActive: adminAuthorized.value && backendRunningTasks.value.length > 0,
+    pending: adminAuthorized.value && !hasTaskStatusSnapshot.value,
+    autoRefreshActive: adminAuthorized.value && hasTaskStatusSnapshot.value && backendRunningTasks.value.length > 0,
     pollIntervalMs: TASK_POLL_INTERVAL_MS,
     lastSyncedAt: state.taskStatusLastSyncedAt,
-    runningCount: backendRunningTasks.value.length
+    runningCount: hasTaskStatusSnapshot.value ? backendRunningTasks.value.length : null
   }))
   const isTaskTypeRunning = (...taskTypes) => backendRunningTasks.value.some((run) => taskTypes.includes(run?.task_type || run?.taskType))
   const taskBusy = computed(() => ({
@@ -154,6 +161,11 @@ export function useAdminDashboardState() {
     jobIndex: requests.jobExtraction || isTaskTypeRunning('job_extraction', 'ai_job_extraction')
   }))
   const activeTaskHints = computed(() => {
+    const activeTaskLabels = [...new Set(
+      backendRunningTasks.value.map((run) => `任务活跃：${getTaskTypeLabel(run.task_type || run.taskType)}`)
+    )]
+    if (activeTaskLabels.length > 0) return activeTaskLabels
+
     const hints = []
     if (taskBusy.value.scrape) hints.push('立即抓取最新数据')
     if (taskBusy.value.backfill) hints.push('补处理历史附件')
@@ -161,7 +173,6 @@ export function useAdminDashboardState() {
     if (taskBusy.value.baseAnalysis) hints.push('补齐关键信息整理')
     if (taskBusy.value.aiAnalysis) hints.push('补充智能摘要整理')
     if (taskBusy.value.jobIndex) hints.push('补齐岗位整理 / 补充智能岗位识别')
-    backendRunningTasks.value.forEach((run) => hints.push(`正在处理：${getTaskTypeLabel(run.task_type || run.taskType)}`))
     return [...new Set(hints)]
   })
   const overviewReady = computed(() => loaded.scheduler && loaded.analysis && loaded.insight && loaded.jobs && loaded.duplicate && recentTaskState.value.recentTaskLoaded)
@@ -266,16 +277,19 @@ export function useAdminDashboardState() {
       sourceOptions: sourceOptions.value,
       heartbeatStaleMs: TASK_HEARTBEAT_STALE_MS,
       syncStatus: {
+        pending: syncStatus.pending,
         autoRefreshActive: syncStatus.autoRefreshActive,
         pollIntervalMs: syncStatus.pollIntervalMs,
         lastSyncedAt: syncStatus.lastSyncedAt,
         runningCount: syncStatus.runningCount,
-        badgeLabel: syncStatus.autoRefreshActive ? '自动刷新中' : '手动刷新',
-        badgeTone: syncStatus.autoRefreshActive ? 'info' : 'neutral',
+        badgeLabel: syncStatus.pending ? '同步状态更新中' : (syncStatus.autoRefreshActive ? '自动刷新中' : '手动刷新'),
+        badgeTone: syncStatus.pending ? 'neutral' : (syncStatus.autoRefreshActive ? 'info' : 'neutral'),
         intervalLabel,
-        lastSyncedLabel: syncStatus.lastSyncedAt ? formatAdminDateTime(syncStatus.lastSyncedAt) : '尚未同步',
-        runningCountLabel: `${syncStatus.runningCount} 条`,
-        summary: syncStatus.autoRefreshActive
+        lastSyncedLabel: syncStatus.lastSyncedAt ? formatAdminDateTime(syncStatus.lastSyncedAt) : (syncStatus.pending ? '读取中' : '尚未同步'),
+        runningCountLabel: syncStatus.pending ? '--' : `${syncStatus.runningCount} 条`,
+        summary: syncStatus.pending
+          ? '正在获取任务中心状态。'
+          : syncStatus.autoRefreshActive
           ? `每 ${intervalLabel} 自动同步一次任务状态。`
           : '当前无自动刷新，仅支持手动刷新。'
       }

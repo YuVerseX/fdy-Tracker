@@ -38,7 +38,8 @@ test('admin task center should keep empty sections lightweight and switch run ca
   const runsSectionSource = readSource('views/admin/sections/AdminTaskRunsSection.vue')
   const runCardSource = readSource('views/admin/sections/AdminTaskRunCard.vue')
 
-  assert.match(runsSectionSource, /title="当前没有进行中的任务"/)
+  assert.match(runsSectionSource, /title="当前没有活跃任务"/)
+  assert.doesNotMatch(runsSectionSource, /title="当前没有进行中的任务"/)
   assert.match(runsSectionSource, /title="最近还没有结果记录"/)
   assert.match(runsSectionSource, /tone="info"/)
   assert.match(runCardSource, /lg:flex-row/)
@@ -63,6 +64,10 @@ test('admin task center should surface sync status instead of implying continuou
   assert.match(runsSectionSource, /最近同步/)
   assert.match(runsSectionSource, /当前无自动刷新，仅支持手动刷新/)
   assert.match(runsSectionSource, /自动刷新中/)
+  assert.match(runsSectionSource, /活跃任务/)
+  assert.match(runsSectionSource, /项活跃/)
+  assert.doesNotMatch(runsSectionSource, /运行中任务/)
+  assert.doesNotMatch(runsSectionSource, /项进行中/)
 })
 
 test('admin task run card should bind result empty copy from presentation instead of hardcoded promise text', () => {

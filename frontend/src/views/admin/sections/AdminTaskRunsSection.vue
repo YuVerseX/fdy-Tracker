@@ -31,7 +31,7 @@
           />
           <AppMetricPill label="同步频率" :value="resolvedSyncStatus.intervalLabel" tone="muted" />
           <AppMetricPill label="最近同步" :value="resolvedSyncStatus.lastSyncedLabel" tone="muted" />
-          <AppMetricPill label="运行中任务" :value="resolvedSyncStatus.runningCountLabel" tone="muted" />
+          <AppMetricPill label="活跃任务" :value="resolvedSyncStatus.runningCountLabel" tone="muted" />
         </div>
         <p class="text-sm leading-6 text-slate-500">
           {{ resolvedSyncStatus.summary }}
@@ -43,7 +43,7 @@
     <AppEmptyState
       v-else-if="taskRuns.length === 0"
       title="还没有任务记录"
-      description="先运行一次任务，这里会显示最新进度和结果。"
+      description="先运行一次任务，这里会按当前记录展示进度和结果。"
     />
 
     <div v-else class="mt-5 space-y-5 lg:space-y-6">
@@ -79,9 +79,9 @@
 
         <AppNotice
           v-if="presentation.currentRuns.length === 0"
-          title="当前没有进行中的任务"
+          title="当前没有活跃任务"
           tone="info"
-          description="发起新的处理后，这里会按当前同步状态显示排队状态、当前阶段和结果。"
+          description="发起新的处理后，这里会按当前同步状态展示排队状态、当前阶段和结果。"
         />
         <div v-else class="space-y-4">
           <AdminTaskRunCard
@@ -123,7 +123,7 @@
           v-if="presentation.recentResultRuns.length === 0"
           title="最近还没有结果记录"
           tone="info"
-          description="任务结束后，这里会显示结果和状态。"
+          description="有新的完成记录后，这里会展示结果和状态。"
         />
         <div v-else class="space-y-4">
           <AdminTaskRunCard
@@ -228,7 +228,7 @@ const presentation = computed(() => buildTaskRunsPresentation({
 
 const headerBadge = computed(() => {
   if (presentation.value.counts.current > 0) {
-    return { label: `${presentation.value.counts.current} 项进行中`, tone: 'warning' }
+    return { label: `${presentation.value.counts.current} 项活跃`, tone: 'warning' }
   }
   if (presentation.value.counts.failed > 0) {
     return { label: `${presentation.value.counts.failed} 项未完成`, tone: 'danger' }

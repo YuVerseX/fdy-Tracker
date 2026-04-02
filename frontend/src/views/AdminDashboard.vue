@@ -18,8 +18,8 @@
       <AppNotice
         v-if="dashboard.adminAuthorized && dashboard.activeTaskHints.length > 0"
         tone="warning"
-        title="有任务正在处理"
-        :description="`${dashboard.activeTaskHints.join('、')}。你可以先继续查看页面，稍后刷新任务中心获取最新结果。`"
+        title="有活跃任务"
+        :description="`${dashboard.activeTaskHints.join('、')}。你可以先继续查看页面，任务中心会按当前同步状态更新。`"
       />
 
       <section v-if="!dashboard.adminAuthorized" class="app-surface app-surface--padding-lg">

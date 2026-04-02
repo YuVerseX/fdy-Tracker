@@ -299,3 +299,27 @@ test('buildTaskRunsPresentation should include cancelled runs inside recent resu
   )
   assert.equal(presentation.counts.cancelled, 1)
 })
+
+test('buildTaskRunsPresentation should keep all active runs out of history even when there are more than four', () => {
+  const presentation = buildTaskRunsPresentation({
+    nowTs: Date.parse('2026-04-01T10:20:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000,
+    taskRuns: [
+      { id: 'running-1', task_type: 'manual_scrape', status: 'running', heartbeat_at: '2026-04-01T10:18:00Z' },
+      { id: 'running-2', task_type: 'ai_analysis', status: 'running', heartbeat_at: '2026-04-01T10:18:00Z' },
+      { id: 'running-3', task_type: 'job_extraction', status: 'running', heartbeat_at: '2026-04-01T10:18:00Z' },
+      { id: 'running-4', task_type: 'duplicate_backfill', status: 'running', heartbeat_at: '2026-04-01T10:18:00Z' },
+      { id: 'running-5', task_type: 'attachment_backfill', status: 'pending', heartbeat_at: '2026-04-01T10:18:00Z' },
+      { id: 'success-1', task_type: 'attachment_backfill', status: 'success', finished_at: '2026-04-01T09:50:00Z' }
+    ]
+  })
+
+  assert.deepEqual(
+    presentation.currentRuns.map((run) => run.id),
+    ['running-1', 'running-2', 'running-3', 'running-4', 'running-5']
+  )
+  assert.deepEqual(
+    presentation.historyRuns.map((run) => run.id),
+    []
+  )
+})

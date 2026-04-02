@@ -259,7 +259,7 @@ test('buildTaskRunCardPresentation should prioritize current phase and live resu
 
   assert.equal(card.stageTitle, '当前阶段')
   assert.equal(card.resultTitle, '当前结果')
-  assert.equal(card.resultHint, '数量会继续变化，任务结束后再看最终结果。')
+  assert.equal(card.resultHint, '数量会继续变化，可稍后再回来查看。')
   assert.deepEqual(
     card.stageFacts.map((item) => item.label),
     ['当前阶段', '进度说明', '最近更新', '已运行']
@@ -280,8 +280,8 @@ test('buildTaskRunCardPresentation should show collecting-state result copy when
     metrics: {}
   })
 
-  assert.equal(card.resultTitle, '结果将在写入阶段陆续出现')
-  assert.equal(card.resultHint, '正在采集源站，结果数会在写入阶段出现。')
+  assert.equal(card.resultTitle, '当前结果会在后续阶段逐步补充')
+  assert.equal(card.resultHint, '当前还在采集源站，结果数会随处理进度逐步补充。')
   assert.equal(card.resultEmptyText, '当前阶段还没有可展示的结果数量。')
 })
 
@@ -298,7 +298,7 @@ test('buildTaskRunCardPresentation should keep current-result copy once visible 
   })
 
   assert.equal(card.resultTitle, '当前结果')
-  assert.equal(card.resultHint, '数量会继续变化，任务结束后再看最终结果。')
+  assert.equal(card.resultHint, '数量会继续变化，可稍后再回来查看。')
   assert.equal(card.resultEmptyText, '')
 })
 
@@ -311,8 +311,27 @@ test('buildTaskRunCardPresentation should keep queued scrape runs on pre-start r
   })
 
   assert.equal(card.resultTitle, '当前结果')
-  assert.equal(card.resultHint, '任务开始后，这里的数量会按实际处理结果更新。')
-  assert.equal(card.resultEmptyText, '任务开始后，这里会出现可核对的结果数量。')
+  assert.equal(card.resultHint, '开始处理后，会逐步更新可核对的结果数量。')
+  assert.equal(card.resultEmptyText, '开始处理后，会逐步出现可核对的结果数量。')
+})
+
+test('buildTaskRunCardPresentation should stop implying live result changes when a task is stuck', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'manual_scrape',
+    status: 'running',
+    stage_label: '正在抓取源站',
+    heartbeat_at: '2026-03-31T09:00:00Z',
+    metrics: {
+      posts_seen: 18,
+      posts_created: 8
+    }
+  }, {
+    nowTs: Date.parse('2026-03-31T09:20:01Z'),
+    heartbeatStaleMs: 10 * 60 * 1000
+  })
+
+  assert.equal(card.statusLabel, '进度停滞')
+  assert.equal(card.resultHint, '结果暂未继续更新，请先刷新状态确认任务是否仍在处理。')
 })
 
 test('buildTaskRunCardPresentation should expose failure reason and action summary for failed tasks', () => {
