@@ -41,7 +41,7 @@ npm run build
 - [ ] AI 岗位任务提交与重试后仍保持 `ai_job_extraction / 智能岗位识别` 展示口径
 - [ ] `finalizing` 中间态和 `cancelled` 归档都显式携带 canonical stage，不依赖前端猜测
 - [ ] collecting 阶段只显示采集指标，不伪造结果数
-- [ ] 每个可操作状态最多一个主动作，`cancel_requested` 不再展示主动作
+- [ ] 运行态每个可操作状态最多一个主动作，终态只保留少量高价值后续动作，`cancel_requested` 不再展示主动作
 - [ ] 前台 freshness 仍保持最近一次成功快照语义
 
 ## 5. 发布动作
