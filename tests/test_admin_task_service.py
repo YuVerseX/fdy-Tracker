@@ -371,6 +371,8 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["details"]["stage"], "persisting")
 
     def test_load_task_runs_for_admin_should_drop_legacy_duration_ms_from_running_records(self):
+        started_at = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        heartbeat_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         self.write_task_runs([
             {
                 "id": "running-legacy-duration-1",
@@ -386,8 +388,8 @@ class AdminTaskServiceTestCase(unittest.TestCase):
                     "progress_mode": "stage_only",
                     "metrics": {"posts_seen": 5},
                 },
-                "started_at": "2026-04-03T02:41:00+00:00",
-                "heartbeat_at": "2026-04-03T02:53:00+00:00",
+                "started_at": started_at,
+                "heartbeat_at": heartbeat_at,
                 "finished_at": None,
                 "duration_ms": 0,
             }
