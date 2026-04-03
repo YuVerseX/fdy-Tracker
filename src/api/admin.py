@@ -48,6 +48,7 @@ from src.services.post_job_service import backfill_post_jobs, get_job_index_summ
 from src.services.task_progress import (
     ProgressCallback,
     TaskCancellationRequested,
+    resolve_canonical_stage,
 )
 from src.services.scraper_service import (
     ScrapeSourceError,
@@ -309,7 +310,10 @@ def build_admin_progress_callback(task_id: str) -> ProgressCallback:
             phase=payload.get("stage_label") or "",
             progress=None,
             details=build_runtime_task_details(
-                stage=payload.get("stage") or payload.get("stage_key") or "submitted",
+                stage=resolve_canonical_stage(
+                    payload.get("stage"),
+                    payload.get("stage_key"),
+                ),
                 stage_label=payload.get("stage_label") or "",
                 progress_mode=payload.get("progress_mode") or "stage_only",
                 stage_key=payload.get("stage_key") or "",

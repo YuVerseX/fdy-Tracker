@@ -62,17 +62,9 @@
           </section>
 
           <section class="task-run-card__panel space-y-3">
-            <div class="flex flex-wrap items-start justify-between gap-3">
-              <div class="min-w-0">
-                <h4 class="text-sm font-semibold text-slate-900">{{ cardPresentation.resultTitle }}</h4>
-                <p v-if="showResultHint" class="mt-1 text-sm leading-6 text-slate-500">{{ cardPresentation.resultHint }}</p>
-              </div>
-              <AppMetricPill
-                v-if="primaryActionDefinition?.scopeLabel"
-                label="处理范围"
-                :value="primaryActionDefinition.scopeLabel"
-                tone="muted"
-              />
+            <div class="min-w-0">
+              <h4 class="text-sm font-semibold text-slate-900">{{ cardPresentation.resultTitle }}</h4>
+              <p v-if="showResultHint" class="mt-1 text-sm leading-6 text-slate-500">{{ cardPresentation.resultHint }}</p>
             </div>
 
             <div v-if="cardPresentation.resultItems.length > 0" class="flex flex-wrap gap-2">
@@ -87,19 +79,6 @@
             <p v-else-if="cardPresentation.resultEmptyText" class="text-sm leading-6 text-slate-500">
               {{ cardPresentation.resultEmptyText }}
             </p>
-
-            <div
-              v-if="primaryActionDefinition"
-              class="rounded-2xl border border-slate-200/80 bg-white/90 px-3 py-3"
-            >
-              <div class="flex flex-wrap items-center gap-2">
-                <span class="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">建议操作</span>
-                <AppStatusBadge :label="primaryActionDefinition.label" tone="neutral" />
-              </div>
-              <p v-if="primaryActionDefinition.description" class="mt-2 text-sm leading-6 text-slate-600">
-                {{ primaryActionDefinition.description }}
-              </p>
-            </div>
           </section>
         </div>
 
@@ -127,18 +106,22 @@
 
       <div class="flex shrink-0 flex-wrap items-center gap-2 lg:max-w-[320px] lg:justify-end">
         <AppActionButton
-          v-if="primaryActionDefinition"
-          :label="primaryActionDefinition.label"
-          :busy-label="primaryActionDefinition.busyLabel"
-          :busy="isActionSubmitting(primaryActionDefinition.key)"
+          v-for="action in actionDefinitions"
+          :key="action.key"
+          :label="action.label"
+          :busy-label="action.busyLabel"
+          :busy="isActionSubmitting(action.key)"
           :disabled="isAnyActionSubmitting"
-          :variant="getActionButtonVariant(primaryActionDefinition.key)"
+          :variant="getActionButtonVariant(action.key)"
           size="sm"
-          @click="handleTaskAction(primaryActionDefinition.key)"
+          @click="handleTaskAction(action.key)"
         />
         <AppActionButton
           v-if="hasDetailContent"
+          :id="detailButtonId"
           :label="isTaskExpanded(run.id) ? '收起详情' : '查看详情'"
+          :aria-expanded="isTaskExpanded(run.id) ? 'true' : 'false'"
+          :aria-controls="detailPanelId"
           variant="neutral"
           size="sm"
           @click="toggleTaskExpanded(run.id)"
@@ -146,7 +129,13 @@
       </div>
     </div>
 
-    <div v-if="isTaskExpanded(run.id) && hasDetailContent" class="mt-4 space-y-4">
+    <div
+      v-if="isTaskExpanded(run.id) && hasDetailContent"
+      :id="detailPanelId"
+      class="mt-4 space-y-4"
+      role="region"
+      :aria-labelledby="detailButtonId"
+    >
       <section v-for="section in cardPresentation.detailSections" :key="section.id" class="space-y-3">
         <div class="flex items-center justify-between gap-3">
           <h4 class="text-sm font-semibold text-slate-900">{{ section.title }}</h4>
@@ -205,15 +194,17 @@ const cardPresentation = computed(() => buildTaskRunCardPresentation(props.run, 
   heartbeatStaleMs: props.heartbeatStaleMs
 }))
 
-const primaryActionDefinition = computed(() => (
+const actionDefinitions = computed(() => (
   props.canRetryTask(props.run.task_type || props.run.taskType)
-    ? (cardPresentation.value.actionItems[0] || null)
-    : null
+    ? cardPresentation.value.actionItems
+    : []
 ))
 const isAnyActionSubmitting = computed(() => (
   props.retryingTaskId === props.run.id || props.cancelingTaskId === props.run.id
 ))
 const hasDetailContent = computed(() => cardPresentation.value.detailSections.length > 0)
+const detailPanelId = computed(() => `task-run-details-${props.run.id || 'unknown'}`)
+const detailButtonId = computed(() => `task-run-details-toggle-${props.run.id || 'unknown'}`)
 const showResultHint = computed(() => {
   const { resultHint, resultEmptyText, resultItems } = cardPresentation.value
   if (!resultHint) return false

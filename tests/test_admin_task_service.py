@@ -233,7 +233,7 @@ class AdminTaskServiceTestCase(unittest.TestCase):
 
         serialized = admin_task_service.serialize_task_run_for_admin(updated)
 
-        self.assertEqual(serialized["stage"], "processing")
+        self.assertEqual(serialized["stage"], "collecting")
         self.assertEqual(serialized["stage_label"], "正在准备基础分析补齐")
         self.assertEqual(serialized["phase"], "正在准备基础分析补齐")
         self.assertEqual(serialized["stage_started_at"], "2026-04-02T09:15:00+00:00")
@@ -249,12 +249,23 @@ class AdminTaskServiceTestCase(unittest.TestCase):
             progress_mode="stage_only",
             metrics={"posts_seen": 5, "posts_total": 18},
         )
+        emit_progress(
+            payloads.append,
+            stage_key="compare-candidates",
+            stage_label="正在比对重复候选",
+            progress_mode="stage_only",
+            metrics={"candidate_posts": 3},
+        )
 
-        self.assertEqual(payloads[0]["stage"], "persist-posts")
+        self.assertEqual(payloads[0]["stage"], "persisting")
         self.assertEqual(payloads[0]["stage_key"], "persist-posts")
         self.assertEqual(payloads[0]["stage_label"], "正在写入抓取结果")
         self.assertEqual(payloads[0]["live_metrics"]["posts_seen"], 5)
         self.assertEqual(payloads[0]["metrics"]["posts_total"], 18)
+        self.assertEqual(payloads[1]["stage"], "collecting")
+        self.assertEqual(payloads[1]["stage_key"], "compare-candidates")
+        self.assertEqual(payloads[1]["stage_label"], "正在比对重复候选")
+        self.assertEqual(payloads[1]["live_metrics"]["candidate_posts"], 3)
 
     def test_serialize_task_run_should_expose_cancel_action_for_running_cancelable_task(self):
         task_run = admin_task_service.record_task_run(
@@ -438,6 +449,89 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(success_view["actions"][0]["key"], "rerun")
         self.assertEqual(failed_view["details"]["failure_reason"], "network timeout")
 
+    def test_serialize_task_run_should_canonicalize_legacy_runtime_stage_on_read(self):
+        serialized = admin_task_service.serialize_task_run_for_admin({
+            "id": "running-legacy-stage-1",
+            "task_type": "manual_scrape",
+            "status": "running",
+            "summary": "手动抓取进行中",
+            "phase": "正在抓取源站并写入数据库",
+            "progress": 40,
+            "params": {"source_id": 1, "max_pages": 3},
+            "details": {
+                "stage": "processing",
+                "stage_label": "正在抓取源站并写入数据库",
+                "progress_mode": "stage_only",
+                "metrics": {"posts_seen": 5},
+            },
+            "started_at": "2026-04-02T09:00:00+00:00",
+            "heartbeat_at": "2026-04-02T09:10:00+00:00",
+            "finished_at": None,
+        })
+
+        self.assertEqual(serialized["stage"], "collecting")
+        self.assertEqual(serialized["details"]["stage"], "collecting")
+        self.assertEqual(serialized["stage_label"], "正在抓取源站并写入数据库")
+
+    def test_serialize_task_run_should_infer_canonical_stage_from_phase_when_stage_missing(self):
+        serialized = admin_task_service.serialize_task_run_for_admin({
+            "id": "running-legacy-phase-1",
+            "task_type": "base_analysis_backfill",
+            "status": "running",
+            "summary": "基础分析补齐进行中",
+            "phase": "正在准备基础分析补齐",
+            "progress": 15,
+            "params": {"limit": 100, "only_pending": True},
+            "details": {
+                "progress_mode": "stage_only",
+                "metrics": {"posts_scanned": 3},
+            },
+            "started_at": "2026-04-02T09:00:00+00:00",
+            "heartbeat_at": "2026-04-02T09:05:00+00:00",
+            "finished_at": None,
+        })
+
+        self.assertEqual(serialized["stage"], "collecting")
+        self.assertEqual(serialized["details"]["stage"], "collecting")
+        self.assertEqual(serialized["stage_label"], "正在准备基础分析补齐")
+
+    def test_serialize_task_run_should_keep_submitted_stage_for_queued_phase_only_record(self):
+        serialized = admin_task_service.serialize_task_run_for_admin({
+            "id": "queued-legacy-phase-1",
+            "task_type": "manual_scrape",
+            "status": "queued",
+            "summary": "手动抓取等待开始",
+            "phase": "等待开始抓取",
+            "progress": 0,
+            "params": {"source_id": 1, "max_pages": 3},
+            "details": {
+                "progress_mode": "stage_only",
+                "metrics": {},
+            },
+            "started_at": None,
+            "heartbeat_at": None,
+            "finished_at": None,
+        })
+
+        self.assertEqual(serialized["stage"], "submitted")
+        self.assertEqual(serialized["details"]["stage"], "submitted")
+        self.assertEqual(serialized["stage_label"], "等待开始抓取")
+
+    def test_serialize_task_run_should_expose_incremental_follow_up_for_successful_incremental_task(self):
+        success_run = admin_task_service.record_task_run(
+            task_type="ai_analysis",
+            status="success",
+            summary="AI 分析完成，处理 8 条，OpenAI 成功 5 条",
+            details={"progress_mode": "stage_only", "metrics": {"posts_analyzed": 8, "success_count": 5}},
+            params={"limit": 50, "only_unanalyzed": False},
+            phase="AI 分析完成",
+            progress=100,
+        )
+
+        success_view = admin_task_service.serialize_task_run_for_admin(success_run)
+
+        self.assertEqual([action["key"] for action in success_view["actions"]], ["rerun", "incremental"])
+
     def test_load_task_runs_for_admin_should_return_serialized_display_contract(self):
         self.write_task_runs([
             {
@@ -533,6 +627,8 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized_runs[0]["stage"], "")
         self.assertEqual(serialized_runs[0]["stage_label"], "状态过期，已自动结束")
         self.assertEqual(serialized_runs[0]["phase"], "状态过期，已自动结束")
+        self.assertIn("状态过期", serialized_runs[0]["final_summary"])
+        self.assertNotEqual(serialized_runs[0]["final_summary"], "定时抓取进行中")
 
     def test_load_task_runs_should_keep_running_when_heartbeat_is_fresh(self):
         self.write_task_runs([
@@ -605,6 +701,43 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["actions"], [])
         self.assertEqual(serialized["details"]["cancel_reason"], "user_requested")
 
+    def test_update_task_run_should_keep_cancel_requested_absorbing_after_progress_update(self):
+        created = admin_task_service.start_task_run(
+            task_type="ai_analysis",
+            summary="AI 分析进行中",
+            params={"limit": 100},
+        )
+        admin_task_service.request_task_run_cancel(
+            task_id=created["id"],
+            cancel_reason="user_requested",
+            cancel_requested_by="admin",
+        )
+
+        updated = admin_task_service.update_task_run(
+            task_id=created["id"],
+            status="running",
+            phase="正在批量执行 AI 分析",
+            details={
+                "stage": "persisting",
+                "stage_label": "正在批量执行 AI 分析",
+                "stage_started_at": "2026-04-02T09:25:00+00:00",
+                "live_metrics": {"posts_scanned": 3},
+                "progress_mode": "stage_only",
+                "metrics": {"posts_scanned": 3},
+            },
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(updated)
+
+        self.assertEqual(updated["status"], "cancel_requested")
+        self.assertEqual(updated["phase"], "当前处理单元结束后会停止")
+        self.assertEqual(updated["details"]["stage"], "finalizing")
+        self.assertEqual(updated["details"]["stage_label"], "当前处理单元结束后会停止")
+        self.assertEqual(serialized["status_label"], "正在终止")
+        self.assertEqual(serialized["stage"], "finalizing")
+        self.assertEqual(serialized["live_metrics"]["posts_scanned"], 3)
+        self.assertEqual(serialized["actions"], [])
+
     def test_record_task_run_should_promote_live_metrics_to_final_metrics(self):
         task_run = admin_task_service.record_task_run(
             task_type="manual_scrape",
@@ -631,6 +764,26 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["final_summary"], "手动抓取完成，新增或更新 12 条记录")
         self.assertEqual(serialized["final_metrics"]["posts_seen"], 18)
         self.assertEqual(serialized["live_metrics"], {})
+
+    def test_record_task_run_should_replace_stale_final_summary_with_top_level_summary(self):
+        task_run = admin_task_service.record_task_run(
+            task_type="scheduled_scrape",
+            status="failed",
+            summary="定时抓取进行中（状态过期，已自动结束）",
+            details={
+                "progress_mode": "stage_only",
+                "final_summary": "定时抓取进行中",
+                "failure_reason": "任务运行状态已过期，可能是服务重启或异常中断",
+            },
+            params={"source_id": 1, "max_pages": 5},
+            phase="状态过期，已自动结束",
+            progress=95,
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(task_run)
+
+        self.assertEqual(task_run["details"]["final_summary"], "定时抓取进行中（状态过期，已自动结束）")
+        self.assertEqual(serialized["final_summary"], "定时抓取进行中（状态过期，已自动结束）")
 
     def test_record_task_run_should_use_final_phase_as_finished_stage_label(self):
         created = admin_task_service.start_task_run(
@@ -707,7 +860,7 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["display_name"], "智能岗位识别")
         self.assertEqual(serialized["details"]["cancel_reason"], "user_requested")
         self.assertEqual(serialized["metrics"]["jobs_saved"], 12)
-        self.assertEqual(serialized["actions"][0]["key"], "incremental")
+        self.assertEqual([action["key"] for action in serialized["actions"]], ["retry", "incremental"])
 
 
 if __name__ == "__main__":

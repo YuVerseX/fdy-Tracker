@@ -3,7 +3,7 @@
     <li
       v-for="item in items"
       :key="item.key"
-      :aria-current="item.state === 'current' ? 'step' : undefined"
+      :aria-current="['current', 'failed', 'cancelled'].includes(item.state) ? 'step' : undefined"
       class="rounded-2xl border px-3 py-3 transition-colors duration-200"
       :class="getItemClass(item.state)"
     >
@@ -37,18 +37,24 @@ const props = defineProps({
 
 const getItemClass = (state) => {
   if (state === 'done') return 'border-emerald-200 bg-emerald-50/80'
+  if (state === 'failed') return 'border-rose-200 bg-rose-50/85'
+  if (state === 'cancelled') return 'border-amber-200 bg-amber-50/85'
   if (state === 'current') return 'border-sky-200 bg-sky-50/85 shadow-sm'
   return 'border-slate-200 bg-slate-50/85'
 }
 
 const getDotClass = (state) => {
   if (state === 'done') return 'bg-emerald-500'
+  if (state === 'failed') return 'bg-rose-500'
+  if (state === 'cancelled') return 'bg-amber-500'
   if (state === 'current') return 'bg-sky-500'
   return 'bg-slate-300'
 }
 
 const getEyebrowClass = (state) => {
   if (state === 'done') return 'text-emerald-700'
+  if (state === 'failed') return 'text-rose-700'
+  if (state === 'cancelled') return 'text-amber-700'
   if (state === 'current') return 'text-sky-700'
   return 'text-slate-400'
 }

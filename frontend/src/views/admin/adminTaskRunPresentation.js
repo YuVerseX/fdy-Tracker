@@ -321,9 +321,30 @@ const getCanonicalStage = (run = {}) => {
   return 'collecting'
 }
 
-const getStageTimelineItemCopy = (key, state) => {
+const getStageTimelineItemCopy = (key, state, run = {}) => {
   const baseCopy = STAGE_TIMELINE_COPY[key] || { key, eyebrow: key, label: key, description: '' }
+  if (state === 'failed') {
+    return {
+      ...baseCopy,
+      label: '处理失败',
+      description: '任务在这里结束，可先查看失败原因。'
+    }
+  }
+  if (state === 'cancelled') {
+    return {
+      ...baseCopy,
+      label: '已终止',
+      description: '任务在这里结束，已完成结果会保留。'
+    }
+  }
   if (key !== 'finalizing') return baseCopy
+  if (state === 'current' && run?.status === 'cancel_requested') {
+    return {
+      ...baseCopy,
+      label: '正在终止',
+      description: '正在等待当前处理单元结束后停止。'
+    }
+  }
   if (state === 'current') {
     return {
       ...baseCopy,
@@ -331,7 +352,7 @@ const getStageTimelineItemCopy = (key, state) => {
       description: '正在结束本轮任务并整理状态'
     }
   }
-  if (state === 'done') {
+  if (state === 'done' && run?.status === 'success') {
     return {
       ...baseCopy,
       label: '收尾完成',
@@ -345,15 +366,18 @@ const buildStageTimelineItems = (run = {}) => {
   const currentStage = getCanonicalStage(run)
   const currentIndex = Math.max(STAGE_TIMELINE.indexOf(currentStage), 0)
   const allDone = run?.status === 'success'
-  const terminalAtFinalizing = FINAL_TASK_STATUSES.has(run?.status) && currentStage === 'finalizing'
+  const terminalState = run?.status === 'failed'
+    ? 'failed'
+    : (run?.status === 'cancelled' ? 'cancelled' : '')
 
   return STAGE_TIMELINE.map((key, index) => {
     let state = 'upcoming'
-    if (allDone || terminalAtFinalizing || index < currentIndex) state = 'done'
+    if (allDone || index < currentIndex) state = 'done'
+    else if (terminalState && index === currentIndex) state = terminalState
     else if (index === currentIndex) state = 'current'
 
     return {
-      ...getStageTimelineItemCopy(key, state),
+      ...getStageTimelineItemCopy(key, state, run),
       state
     }
   })
@@ -385,6 +409,7 @@ const getTaskTimelineText = (run = {}) => {
   const timestamp = run?.finished_at || run?.finishedAt || run?.started_at || run?.startedAt || getTaskHeartbeatAt(run)
   const label = formatAdminDateTime(timestamp)
   if ((run?.finished_at || run?.finishedAt) && run?.status === 'cancelled') return `终止于 ${label}`
+  if ((run?.finished_at || run?.finishedAt) && run?.status === 'failed') return `失败于 ${label}`
   if (run?.finished_at || run?.finishedAt) return `完成于 ${label}`
   if (run?.started_at || run?.startedAt) return `开始于 ${label}`
   return label
@@ -392,7 +417,7 @@ const getTaskTimelineText = (run = {}) => {
 
 const getTaskSummaryText = (run = {}) => {
   const summary = FINAL_TASK_STATUSES.has(run?.status)
-    ? (run?.final_summary || run?.details?.final_summary || run?.summary || run?.details?.summary || '')
+    ? (run?.summary || run?.details?.summary || run?.final_summary || run?.details?.final_summary || '')
     : (run?.summary || run?.details?.summary || '')
 
   return normalizeAdminUiText(summary)
@@ -401,7 +426,9 @@ const getTaskSummaryText = (run = {}) => {
 const buildTaskStageFacts = (run = {}, progressView = {}, { nowTs = Date.now() } = {}) => {
   const timeLabel = run?.status === 'cancelled'
     ? '终止时间'
-    : (run?.finished_at || run?.finishedAt ? '完成时间' : '最近更新')
+    : (run?.status === 'failed'
+        ? '失败时间'
+        : (run?.finished_at || run?.finishedAt ? '完成时间' : '最近更新'))
   const durationLabel = FINAL_TASK_STATUSES.has(run?.status) ? '耗时' : '已运行'
 
   return [
@@ -515,7 +542,12 @@ export function buildTaskProgressView(run = {}, { nowTs = Date.now(), heartbeatS
     || ''
   ).trim() || getStageTimelineItemCopy(
     currentStage,
-    FINAL_TASK_STATUSES.has(run?.status) ? 'done' : 'current'
+    run?.status === 'failed'
+      ? 'failed'
+      : (run?.status === 'cancelled'
+          ? 'cancelled'
+          : (run?.status === 'success' ? 'done' : 'current')),
+    run
   )?.label || getDefaultStageLabel(run)
   const determinateKind = getDeterminateProgressKind(metrics)
 

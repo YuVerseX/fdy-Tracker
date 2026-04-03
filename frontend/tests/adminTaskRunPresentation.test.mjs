@@ -394,7 +394,13 @@ test('buildTaskRunCardPresentation should expose failure reason and action summa
   assert.match(card.failureNotice.description, /智能服务暂时不可用/)
   assert.equal(card.actionSummary, null)
   assert.deepEqual(card.actionItems.map((item) => item.key), ['retry'])
-  assert.equal(card.stageTimelineItems.find((item) => item.key === 'finalizing')?.state, 'done')
+  assert.equal(card.stageTimelineItems.find((item) => item.key === 'finalizing')?.state, 'failed')
+  assert.equal(card.stageTimelineItems.find((item) => item.key === 'finalizing')?.label, '处理失败')
+  assert.match(card.timelineText, /^失败于 /)
+  assert.deepEqual(
+    card.stageFacts.map((item) => item.label),
+    ['失败时间', '耗时']
+  )
   assert.deepEqual(
     card.resultItems.map((item) => item.label),
     ['完成分析', '成功完成', '失败']
@@ -412,7 +418,7 @@ test('buildTaskRunCardPresentation should surface cancelling notice while reques
 
   assert.equal(card.statusLabel, '正在终止')
   assert.equal(card.cancellationNotice.title, '终止请求已提交')
-  assert.equal(card.stageTimelineItems.find((item) => item.key === 'finalizing')?.label, '正在收尾')
+  assert.equal(card.stageTimelineItems.find((item) => item.key === 'finalizing')?.label, '正在终止')
   assert.deepEqual(card.actionItems, [])
 })
 
@@ -433,9 +439,20 @@ test('buildTaskRunCardPresentation should treat cancelled run as non-failure fin
       ['submitted', 'done', '已提交'],
       ['collecting', 'done', '处理中'],
       ['persisting', 'done', '写入结果'],
-      ['finalizing', 'done', '收尾完成']
+      ['finalizing', 'cancelled', '已终止']
     ]
   )
+})
+
+test('buildTaskRunCardPresentation should prefer final status summary over stale final_summary copy', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'scheduled_scrape',
+    status: 'failed',
+    summary: '定时抓取进行中（状态过期，已自动结束）',
+    final_summary: '定时抓取进行中'
+  })
+
+  assert.equal(card.summaryText, '定时抓取进行中（状态过期，已自动结束）')
 })
 
 test('buildTaskRunCardPresentation should use final metrics for finished runs', () => {

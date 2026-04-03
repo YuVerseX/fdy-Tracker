@@ -165,7 +165,7 @@ test('buildTaskRequestConfig should keep duplicate retry scoped to unchecked rec
   })
 })
 
-test('getTaskActionDefinitions should keep one primary action per task status', () => {
+test('getTaskActionDefinitions should expose follow-up actions for each task status', () => {
   const failedActions = getTaskActionDefinitions({
     task_type: 'attachment_backfill',
     status: 'failed',
@@ -190,8 +190,8 @@ test('getTaskActionDefinitions should keep one primary action per task status', 
 
   assert.deepEqual(failedActions.map((item) => item.key), ['retry'])
   assert.deepEqual(runningActions.map((item) => item.key), ['cancel'])
-  assert.deepEqual(successActions.map((item) => item.key), ['rerun'])
-  assert.deepEqual(cancelledActions.map((item) => item.key), ['incremental'])
+  assert.deepEqual(successActions.map((item) => item.key), ['rerun', 'incremental'])
+  assert.deepEqual(cancelledActions.map((item) => item.key), ['retry', 'incremental'])
 })
 
 test('getTaskActionDefinitions should expose cancel for running task without cancel request', () => {
@@ -223,18 +223,35 @@ test('getTaskActionDefinitions should keep retry and incremental for cancelled i
     params: { limit: 100, only_unanalyzed: true }
   })
 
-  assert.deepEqual(actions.map((item) => item.key), ['incremental'])
+  assert.deepEqual(actions.map((item) => item.key), ['retry', 'incremental'])
 })
 
 test('getTaskActionDefinitions should prefer backend action contract over local fallback', () => {
   const actions = getTaskActionDefinitions({
     task_type: 'ai_analysis',
     status: 'cancelled',
-    actions: [{ key: 'retry', label: '按原条件重试' }],
+    actions: [
+      { key: 'retry', label: '按原条件重试' },
+      { key: 'incremental', label: '只补未补充内容' }
+    ],
     params: { limit: 100, only_unanalyzed: true }
   })
 
-  assert.deepEqual(actions.map((item) => item.key), ['retry'])
+  assert.deepEqual(actions.map((item) => item.key), ['retry', 'incremental'])
+})
+
+test('getTaskActionDefinitions should preserve successful backend action contract for incremental tasks', () => {
+  const actions = getTaskActionDefinitions({
+    task_type: 'ai_analysis',
+    status: 'success',
+    actions: [
+      { key: 'rerun', label: '再次运行' },
+      { key: 'incremental', label: '只补未补充内容' }
+    ],
+    params: { limit: 50, only_unanalyzed: false }
+  })
+
+  assert.deepEqual(actions.map((item) => item.key), ['rerun', 'incremental'])
 })
 
 test('getTaskActionDefinitions should expose user-facing semantics for retry, rerun, and incremental actions', () => {
@@ -254,6 +271,8 @@ test('getTaskActionDefinitions should expose user-facing semantics for retry, re
   assert.equal(failedActions[0].scopeLabel, '沿用当前补处理范围')
   assert.equal(successActions[0].description, '按这次范围重新补充智能摘要，并刷新已有结果。')
   assert.equal(successActions[0].scopeLabel, '重新整理当前范围')
+  assert.equal(successActions[1].description, '只补这次范围里还没做智能整理的内容。')
+  assert.equal(successActions[1].scopeLabel, '仅补未补充内容')
 })
 
 test('buildTaskActionGuide should describe action context for continued tasks without exposing internal ids', () => {
@@ -272,7 +291,7 @@ test('buildTaskActionGuide should describe action context for continued tasks wi
   })
   assert.deepEqual(
     guide.actions.map((item) => item.key),
-    ['rerun']
+    ['rerun', 'incremental']
   )
   assert.doesNotMatch(guide.contextBadge.value, /run-prev-9/)
 })

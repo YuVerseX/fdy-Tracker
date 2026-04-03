@@ -308,28 +308,38 @@ const buildTaskContextBadge = (run = {}) => {
     : null
 }
 
-const getPrimaryFinalActionKey = (run = {}) => {
+const getFinalActionDefinitions = (run = {}) => {
   const taskType = run?.task_type || run?.taskType
+  const actions = []
 
-  if (run?.status === 'failed') return 'retry'
-  if (run?.status === 'success') return 'rerun'
+  if (run?.status === 'failed') {
+    actions.push(resolveActionDefinition(taskType, 'retry'))
+    return actions.filter(Boolean)
+  }
+  if (run?.status === 'success') {
+    actions.push(resolveActionDefinition(taskType, 'rerun'))
+    if (INCREMENTAL_ACTION_TASK_TYPES.has(taskType)) {
+      actions.push(resolveActionDefinition(taskType, 'incremental'))
+    }
+    return actions.filter(Boolean)
+  }
   if (run?.status === 'cancelled') {
-    return INCREMENTAL_ACTION_TASK_TYPES.has(taskType) ? 'incremental' : 'retry'
+    actions.push(resolveActionDefinition(taskType, 'retry'))
+    if (INCREMENTAL_ACTION_TASK_TYPES.has(taskType)) {
+      actions.push(resolveActionDefinition(taskType, 'incremental'))
+    }
+    return actions.filter(Boolean)
   }
 
-  return ''
+  return []
 }
 
-const getBackendPrimaryActionDefinition = (run = {}) => {
+const getBackendActionDefinitions = (run = {}) => {
   const taskType = run?.task_type || run?.taskType
-  if (!Array.isArray(run.actions)) return null
-
-  for (const action of run.actions) {
-    const resolved = resolveActionDefinition(taskType, action?.key, action?.label)
-    if (resolved) return resolved
-  }
-
-  return null
+  if (!Array.isArray(run.actions)) return []
+  return run.actions
+    .map((action) => resolveActionDefinition(taskType, action?.key, action?.label))
+    .filter(Boolean)
 }
 
 const getJobActionError = (error) => {
@@ -438,9 +448,9 @@ export const getTaskActionDefinitions = (run = {}) => {
   if (!canRetryTask(taskType)) return []
   if (run?.status === 'cancel_requested') return []
 
-  const backendPrimaryAction = getBackendPrimaryActionDefinition(run)
-  if (backendPrimaryAction) {
-    return [backendPrimaryAction]
+  const backendActions = getBackendActionDefinitions(run)
+  if (backendActions.length > 0) {
+    return backendActions
   }
 
   if (
@@ -451,12 +461,7 @@ export const getTaskActionDefinitions = (run = {}) => {
     return [resolveActionDefinition(taskType, 'cancel')].filter(Boolean)
   }
 
-  const primaryFinalActionKey = getPrimaryFinalActionKey(run)
-  if (primaryFinalActionKey) {
-    return [resolveActionDefinition(taskType, primaryFinalActionKey)].filter(Boolean)
-  }
-
-  return []
+  return getFinalActionDefinitions(run)
 }
 
 export const buildTaskActionGuide = (run = {}) => {

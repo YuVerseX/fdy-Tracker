@@ -282,25 +282,26 @@ class AdminApiTestCase(unittest.TestCase):
 
         with patch("src.api.admin.update_task_run") as update_mock:
             callback({
-                "stage": "collecting",
-                "stage_key": "collect-pages",
-                "stage_label": "正在采集源站页面",
+                "stage": "processing",
+                "stage_key": "compare-candidates",
+                "stage_label": "正在比对重复候选",
                 "progress_mode": "stage_only",
-                "metrics": {"pages_fetched": 2, "raw_items_collected": 11},
+                "metrics": {"candidate_posts": 11},
             })
 
         kwargs = update_mock.call_args.kwargs
         self.assertEqual(kwargs["status"], "running")
         self.assertEqual(kwargs["details"]["stage"], "collecting")
-        self.assertEqual(kwargs["details"]["stage_label"], "正在采集源站页面")
-        self.assertEqual(kwargs["details"]["live_metrics"]["pages_fetched"], 2)
+        self.assertEqual(kwargs["details"]["stage_label"], "正在比对重复候选")
+        self.assertEqual(kwargs["details"]["stage_key"], "compare-candidates")
+        self.assertEqual(kwargs["details"]["live_metrics"]["candidate_posts"], 11)
 
     def test_build_scheduler_progress_callback_should_forward_canonical_stage_contract(self):
         callback = scheduler_jobs.build_scheduler_progress_callback("run-scheduler-1")
 
         with patch("src.scheduler.jobs.update_task_run") as update_mock:
             callback({
-                "stage": "persisting",
+                "stage": "processing",
                 "stage_key": "persist-posts",
                 "stage_label": "正在写入抓取结果",
                 "progress_mode": "stage_only",
@@ -311,6 +312,7 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(kwargs["status"], "running")
         self.assertEqual(kwargs["details"]["stage"], "persisting")
         self.assertEqual(kwargs["details"]["stage_label"], "正在写入抓取结果")
+        self.assertEqual(kwargs["details"]["stage_key"], "persist-posts")
         self.assertEqual(kwargs["details"]["live_metrics"]["posts_seen"], 12)
 
     def test_get_sources_should_return_items(self):

@@ -9,6 +9,7 @@ from uuid import uuid4
 from loguru import logger
 
 from src.config import settings
+from src.services.task_progress import resolve_canonical_stage
 
 MAX_TASK_RUNS = 50
 RUNNING_STATUSES = {"queued", "pending", "running", "processing", "cancel_requested"}
@@ -218,15 +219,12 @@ def _build_stale_task_run(task_run: Dict[str, Any], now: datetime) -> Dict[str, 
     details = dict(task_run.get("details") or {})
     stale_phase = "状态过期，已自动结束"
     failure_reason = details.get("failure_reason") or "任务运行状态已过期，可能是服务重启或异常中断"
-    details["failure_reason"] = failure_reason
-    details["stage_label"] = stale_phase
-    details["final_summary"] = details.get("final_summary") or (
-        task_run.get("summary") or "任务运行状态已过期"
-    )
-
     stale_summary = task_run.get("summary") or "任务运行状态已过期"
     if "状态过期" not in stale_summary:
         stale_summary = f"{stale_summary}（状态过期，已自动结束）"
+    details["failure_reason"] = failure_reason
+    details["stage_label"] = stale_phase
+    details["final_summary"] = stale_summary
 
     stale_task_run = {
         **task_run,
@@ -402,12 +400,16 @@ def build_task_actions(task_run: Dict[str, Any]) -> List[Dict[str, str]]:
         return [{"key": "retry", "label": "按原条件重试"}]
 
     if status == "cancelled":
-        action_key = "incremental" if task_type in TASK_INCREMENTAL_ACTION_TYPES else "retry"
-        action_label = "只补剩余" if action_key == "incremental" else "按原条件重试"
-        return [{"key": action_key, "label": action_label}]
+        actions = [{"key": "retry", "label": "按原条件重试"}]
+        if task_type in TASK_INCREMENTAL_ACTION_TYPES:
+            actions.append({"key": "incremental", "label": "只补剩余"})
+        return actions
 
     if status == "success":
-        return [{"key": "rerun", "label": "再次运行"}]
+        actions = [{"key": "rerun", "label": "再次运行"}]
+        if task_type in TASK_INCREMENTAL_ACTION_TYPES:
+            actions.append({"key": "incremental", "label": "只补剩余"})
+        return actions
     return []
 
 
@@ -455,12 +457,12 @@ def _build_canonical_metrics(details: Dict[str, Any], status: str) -> tuple[Dict
 def _infer_runtime_stage_from_phase(phase: str | None, existing_stage: str | None) -> str:
     """为尚未迁移到 explicit stage 的 phase-only 更新兜底推导 canonical stage。"""
     normalized_phase = (phase or "").strip()
-    normalized_existing_stage = (existing_stage or "").strip()
+    normalized_existing_stage = resolve_canonical_stage(existing_stage)
     if any(token in normalized_phase for token in ("收尾", "整理", "终止", "停止")):
         return "finalizing"
     if normalized_existing_stage and normalized_existing_stage != "submitted":
         return normalized_existing_stage
-    return "processing"
+    return "collecting"
 
 
 def _build_admin_compatibility_details(
@@ -522,12 +524,19 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
     progress_mode = _normalize_admin_progress_mode(details)
     live_metrics, final_metrics = _build_canonical_metrics(details, status)
     metrics = live_metrics if live_metrics else final_metrics
-    stage = details.get("stage") or ""
+    stage = ""
+    if details.get("stage") or details.get("stage_key"):
+        stage = resolve_canonical_stage(details.get("stage"), details.get("stage_key"))
     stage_label = details.get("stage_label") or normalized_task_run.get("phase") or ""
+    if not stage and status in {"queued", "pending"}:
+        stage = "submitted"
+    elif not stage and status not in FINAL_STATUSES and stage_label:
+        stage = _infer_runtime_stage_from_phase(stage_label, details.get("stage"))
     stage_started_at = details.get("stage_started_at") or ""
-    final_summary = details.get("final_summary") or (
-        normalized_task_run.get("summary")
-        if status in FINAL_STATUSES else ""
+    final_summary = (
+        (normalized_task_run.get("summary") or details.get("final_summary") or "")
+        if status in FINAL_STATUSES
+        else (details.get("final_summary") or "")
     )
     failure_reason = normalized_task_run.get("failure_reason")
     stage_key = details.get("stage_key")
@@ -647,6 +656,7 @@ def update_task_run(
                 next_runs.append(task_run)
                 continue
 
+            existing_status = task_run.get("status")
             existing_details = dict(task_run.get("details") or {})
             merged_details = dict(existing_details)
             resolved_heartbeat = _normalize_datetime_value(heartbeat_at)
@@ -667,7 +677,21 @@ def update_task_run(
             else:
                 details = {}
 
-            if phase is not None and "stage_label" not in details:
+            should_keep_cancel_requested = (
+                existing_status == "cancel_requested"
+                and (status or existing_status) not in FINAL_STATUSES
+            )
+            if should_keep_cancel_requested:
+                merged_details["stage"] = existing_details.get("stage") or "finalizing"
+                merged_details["stage_label"] = (
+                    existing_details.get("stage_label")
+                    or task_run.get("phase")
+                    or "当前处理单元结束后会停止"
+                )
+                if existing_details.get("stage_started_at"):
+                    merged_details["stage_started_at"] = existing_details.get("stage_started_at")
+
+            if not should_keep_cancel_requested and phase is not None and "stage_label" not in details:
                 previous_stage_label = (
                     existing_details.get("stage_label")
                     or task_run.get("phase")
@@ -689,9 +713,13 @@ def update_task_run(
 
             updated_run = {
                 **task_run,
-                "status": status or task_run.get("status"),
+                "status": existing_status if should_keep_cancel_requested else (status or existing_status),
                 "summary": summary if summary is not None else task_run.get("summary", ""),
-                "phase": phase if phase is not None else task_run.get("phase", ""),
+                "phase": (
+                    task_run.get("phase", "")
+                    if should_keep_cancel_requested
+                    else (phase if phase is not None else task_run.get("phase", ""))
+                ),
                 "progress": normalized_progress if normalized_progress is not None else task_run.get("progress"),
                 "details": merged_details if details is not None else task_run.get("details", {}),
                 "heartbeat_at": resolved_heartbeat,
@@ -748,7 +776,7 @@ def record_task_run(
         )
 
         if status in FINAL_STATUSES:
-            final_details.setdefault("final_summary", summary)
+            final_details["final_summary"] = summary
             resolved_stage_label = phase or final_details.get("stage_label") or ""
             if resolved_stage_label:
                 final_details["stage_label"] = resolved_stage_label

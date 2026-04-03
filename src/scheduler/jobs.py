@@ -19,7 +19,7 @@ from src.services.admin_task_service import (
     update_task_run,
 )
 from src.services.scraper_service import scrape_and_save
-from src.services.task_progress import ProgressCallback
+from src.services.task_progress import ProgressCallback, resolve_canonical_stage
 
 # 创建调度器
 scheduler = AsyncIOScheduler()
@@ -53,7 +53,10 @@ def build_scheduler_progress_callback(task_id: str) -> ProgressCallback:
             phase=payload.get("stage_label") or "",
             progress=None,
             details=build_runtime_task_details(
-                stage=payload.get("stage") or payload.get("stage_key") or "submitted",
+                stage=resolve_canonical_stage(
+                    payload.get("stage"),
+                    payload.get("stage_key"),
+                ),
                 stage_label=payload.get("stage_label") or "",
                 progress_mode=payload.get("progress_mode") or "stage_only",
                 stage_key=payload.get("stage_key") or "",

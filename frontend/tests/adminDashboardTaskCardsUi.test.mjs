@@ -27,8 +27,15 @@ test('admin task cards should use shared action, stat, and metric primitives', (
 test('admin task run card should show user-facing guidance for task actions', () => {
   const runCardSource = readSource('views/admin/sections/AdminTaskRunCard.vue')
 
-  assert.match(runCardSource, /primaryActionDefinition/)
+  assert.match(runCardSource, /actionDefinitions/)
+  assert.match(runCardSource, /v-for="action in actionDefinitions"/)
   assert.match(runCardSource, /AppActionButton/)
+  assert.match(runCardSource, /:aria-expanded=/)
+  assert.match(runCardSource, /:aria-controls=/)
+  assert.match(runCardSource, /role="region"/)
+  assert.match(runCardSource, /:aria-labelledby=/)
+  assert.match(runCardSource, /detailPanelId/)
+  assert.doesNotMatch(runCardSource, /primaryActionDefinition/)
   assert.doesNotMatch(runCardSource, /cardPresentation\.actionSummary/)
 })
 
