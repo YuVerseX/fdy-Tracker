@@ -90,6 +90,9 @@ export const formatAdminInterval = (secondsValue) => {
 }
 
 export const formatAdminDurationMs = (durationMs) => {
+  if (durationMs === null || durationMs === undefined || String(durationMs).trim() === '') {
+    return EMPTY_LABEL
+  }
   const normalized = normalizeNumber(durationMs)
   if (normalized === null || normalized < 0) return EMPTY_LABEL
   if (normalized < 1000) return `${Math.round(normalized)}ms`

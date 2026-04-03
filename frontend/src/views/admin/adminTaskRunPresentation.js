@@ -220,13 +220,25 @@ const getProgressPercent = (run = {}, metrics = {}) => {
   return 0
 }
 
+const getTaskDurationLabel = (run = {}) => (FINAL_TASK_STATUSES.has(run?.status) ? '耗时' : '已运行')
+
 const getTaskElapsedMs = (run = {}, nowTs = Date.now()) => {
-  const durationMs = Number(run?.duration_ms)
-  if (Number.isFinite(durationMs) && durationMs >= 0) return durationMs
+  const isRunning = isRunningTaskStatus(run?.status)
+  const isFinal = FINAL_TASK_STATUSES.has(run?.status)
+  const rawDurationMs = run?.duration_ms ?? run?.durationMs
+  if (isFinal && rawDurationMs !== null && rawDurationMs !== undefined && String(rawDurationMs).trim() !== '') {
+    const durationMs = Number(rawDurationMs)
+    if (Number.isFinite(durationMs) && durationMs >= 0) return durationMs
+  }
+
   const startedMs = Date.parse(run?.started_at || run?.startedAt || '')
   if (Number.isNaN(startedMs)) return null
+
+  if (isRunning) return Math.max(nowTs - startedMs, 0)
+
   const finishedMs = Date.parse(run?.finished_at || run?.finishedAt || '')
-  return Math.max((Number.isNaN(finishedMs) ? nowTs : finishedMs) - startedMs, 0)
+  if (Number.isFinite(finishedMs)) return Math.max(finishedMs - startedMs, 0)
+  return null
 }
 
 const getTaskFailureReason = (run = {}) => [run?.failure_reason, run?.error, run?.details?.failure_reason, run?.details?.error].find(Boolean) || ''
@@ -429,7 +441,7 @@ const buildTaskStageFacts = (run = {}, progressView = {}, { nowTs = Date.now() }
     : (run?.status === 'failed'
         ? '失败时间'
         : (run?.finished_at || run?.finishedAt ? '完成时间' : '最近更新'))
-  const durationLabel = FINAL_TASK_STATUSES.has(run?.status) ? '耗时' : '已运行'
+  const durationLabel = getTaskDurationLabel(run)
 
   return [
     { label: timeLabel, value: formatAdminDateTime(run?.finished_at || run?.finishedAt || getTaskHeartbeatAt(run)) },
@@ -634,7 +646,7 @@ export function buildTaskDetailSections(run = {}, { sourceOptions = [], nowTs = 
   const factItems = [
     { label: '开始时间', value: formatAdminDateTime(run?.started_at) },
     { label: run?.finished_at ? '完成时间' : '最近更新', value: formatAdminDateTime(run?.finished_at || getTaskHeartbeatAt(run)) },
-    { label: '耗时', value: formatAdminDurationMs(getTaskElapsedMs(run, nowTs)) },
+    { label: getTaskDurationLabel(run), value: formatAdminDurationMs(getTaskElapsedMs(run, nowTs)) },
     { label: '数据源', value: formatSourceParam(run, sourceOptions) },
     { label: '抓取页数', value: getTaskParam(run, 'max_pages', 'maxPages') ?? EMPTY_LABEL },
     { label: '处理上限', value: getTaskParam(run, 'limit') ?? EMPTY_LABEL }

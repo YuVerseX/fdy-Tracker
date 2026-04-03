@@ -254,6 +254,15 @@ def _cleanup_stale_running_tasks(task_runs: List[Dict[str, Any]]) -> List[Dict[s
             normalized_runs.append(task_run)
             continue
 
+        normalized_task_run = dict(task_run)
+        if "duration_ms" in normalized_task_run:
+            normalized_task_run.pop("duration_ms", None)
+            has_changes = True
+        if normalized_task_run.get("finished_at") is not None:
+            normalized_task_run["finished_at"] = None
+            has_changes = True
+        task_run = normalized_task_run
+
         started_at = _parse_datetime_value(task_run.get("started_at"))
         heartbeat_at = _parse_datetime_value(task_run.get("heartbeat_at"))
         last_seen_at = heartbeat_at or started_at
@@ -521,6 +530,8 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
     normalized_task_run = dict(task_run or {})
     details = dict(normalized_task_run.get("details") or {})
     status = normalized_task_run.get("status") or ""
+    finished_at = normalized_task_run.get("finished_at") if status in FINAL_STATUSES else None
+    duration_ms = normalized_task_run.get("duration_ms") if status in FINAL_STATUSES else None
     progress_mode = _normalize_admin_progress_mode(details)
     live_metrics, final_metrics = _build_canonical_metrics(details, status)
     metrics = live_metrics if live_metrics else final_metrics
@@ -561,8 +572,8 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
         "summary": normalized_task_run.get("summary"),
         "started_at": normalized_task_run.get("started_at"),
         "heartbeat_at": normalized_task_run.get("heartbeat_at"),
-        "finished_at": normalized_task_run.get("finished_at"),
-        "duration_ms": normalized_task_run.get("duration_ms"),
+        "finished_at": finished_at,
+        "duration_ms": duration_ms,
         "params": normalized_task_run.get("params"),
         "progress": normalized_task_run.get("progress"),
         "failure_reason": failure_reason,

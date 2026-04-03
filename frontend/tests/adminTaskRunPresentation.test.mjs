@@ -280,6 +280,69 @@ test('buildTaskRunCardPresentation should expose canonical stage timeline items'
   assert.equal(card.failureNotice, null)
 })
 
+test('buildTaskRunCardPresentation should calculate running elapsed from started_at when legacy duration_ms is zero', () => {
+  const card = buildTaskRunCardPresentation({
+    id: 'run-scheduled-1',
+    task_type: 'scheduled_scrape',
+    status: 'running',
+    started_at: '2026-04-03T02:41:00Z',
+    heartbeat_at: '2026-04-03T02:53:00Z',
+    duration_ms: 0,
+    stage: 'collecting',
+    stage_label: '正在抓取源站并写入数据库'
+  }, {
+    nowTs: Date.parse('2026-04-03T02:53:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000
+  })
+
+  assert.equal(
+    card.stageFacts.find((item) => item.label === '已运行')?.value,
+    '12分0秒'
+  )
+  assert.equal(
+    card.detailSections[0].items.find((item) => item.label === '已运行')?.value,
+    '12分0秒'
+  )
+})
+
+test('buildTaskRunCardPresentation should calculate finished duration from started_at and finished_at when duration_ms is null', () => {
+  const card = buildTaskRunCardPresentation({
+    id: 'run-failed-1',
+    task_type: 'scheduled_scrape',
+    status: 'failed',
+    started_at: '2026-04-03T02:41:00Z',
+    finished_at: '2026-04-03T02:53:00Z',
+    duration_ms: null,
+    stage_label: '定时抓取失败'
+  }, {
+    nowTs: Date.parse('2026-04-03T03:10:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000
+  })
+
+  assert.equal(
+    card.stageFacts.find((item) => item.label === '耗时')?.value,
+    '12分0秒'
+  )
+})
+
+test('buildTaskRunCardPresentation should hide elapsed facts when running duration cannot be calculated truthfully', () => {
+  const card = buildTaskRunCardPresentation({
+    id: 'run-running-invalid-1',
+    task_type: 'manual_scrape',
+    status: 'running',
+    started_at: 'not-a-date',
+    heartbeat_at: '2026-04-03T02:53:00Z',
+    duration_ms: 0,
+    stage_label: '正在抓取源站并写入数据库'
+  }, {
+    nowTs: Date.parse('2026-04-03T03:10:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000
+  })
+
+  assert.equal(card.stageFacts.some((item) => item.label === '已运行'), false)
+  assert.equal(card.detailSections[0].items.some((item) => item.label === '已运行'), false)
+})
+
 test('buildTaskRunCardPresentation should map raw stage keys into canonical timeline stages', () => {
   const card = buildTaskRunCardPresentation({
     task_type: 'attachment_backfill',

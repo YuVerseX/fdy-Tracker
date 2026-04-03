@@ -370,6 +370,35 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["final_metrics"], {})
         self.assertEqual(serialized["details"]["stage"], "persisting")
 
+    def test_load_task_runs_for_admin_should_drop_legacy_duration_ms_from_running_records(self):
+        self.write_task_runs([
+            {
+                "id": "running-legacy-duration-1",
+                "task_type": "scheduled_scrape",
+                "status": "running",
+                "summary": "定时抓取进行中",
+                "phase": "正在抓取源站并写入数据库",
+                "progress": 40,
+                "params": {"source_id": 1, "max_pages": 5},
+                "details": {
+                    "stage": "collecting",
+                    "stage_label": "正在抓取源站并写入数据库",
+                    "progress_mode": "stage_only",
+                    "metrics": {"posts_seen": 5},
+                },
+                "started_at": "2026-04-03T02:41:00+00:00",
+                "heartbeat_at": "2026-04-03T02:53:00+00:00",
+                "finished_at": None,
+                "duration_ms": 0,
+            }
+        ])
+
+        serialized = admin_task_service.load_task_runs_for_admin(limit=5)[0]
+        persisted = json.loads(self.task_runs_path.read_text(encoding="utf-8"))[0]
+
+        self.assertIsNone(serialized["duration_ms"])
+        self.assertNotIn("duration_ms", persisted)
+
     def test_serialize_task_run_should_normalize_indeterminate_to_stage_only_and_hide_details(self):
         task_run = admin_task_service.record_task_run(
             task_type="manual_scrape",

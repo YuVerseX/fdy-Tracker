@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  formatAdminDurationMs,
   buildAiEnhancementPanels,
   buildDataProcessingPanels,
   buildTaskRunsPresentation
@@ -16,6 +17,12 @@ test('buildDataProcessingPanels should keep task-oriented ids in taxonomy order'
     panels.map((panel) => panel.id),
     ['collect-and-backfill', 'duplicate-governance', 'content-analysis', 'job-index']
   )
+})
+
+test('formatAdminDurationMs should not coerce nullish durations into 0ms', () => {
+  assert.equal(formatAdminDurationMs(null), '--')
+  assert.equal(formatAdminDurationMs(undefined), '--')
+  assert.equal(formatAdminDurationMs(''), '--')
 })
 
 test('buildDataProcessingPanels should surface live task metrics while scrape and job extraction are running', () => {
