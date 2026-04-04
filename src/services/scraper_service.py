@@ -2,7 +2,7 @@
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.exc import SQLAlchemyError
 from loguru import logger
-from src.scrapers.jiangsu_hrss import JiangsuHRSSScraper
+from src.scrapers.jiangsu_hrss import DEFAULT_BASE_URL as JIANGSU_HRSS_DEFAULT_BASE_URL, JiangsuHRSSScraper
 from src.services.ai_analysis_service import ensure_rule_analysis_bundle
 from src.services.attachment_service import ensure_attachments_processed
 from src.services.duplicate_service import refresh_duplicate_posts
@@ -20,6 +20,7 @@ from src.parsers.post_parser import parse_post_fields
 SCRAPER_REGISTRY = {
     "JiangsuHRSSScraper": JiangsuHRSSScraper,
 }
+LEGACY_JIANGSU_HRSS_DEFAULT_BASE_URL = JIANGSU_HRSS_DEFAULT_BASE_URL.replace("https://", "http://", 1)
 
 
 class ScrapeSourceError(RuntimeError):
@@ -30,12 +31,25 @@ class ScrapeSourceError(RuntimeError):
         self.status_code = status_code
 
 
+def normalize_source_base_url(source: Source) -> str:
+    """对内置江苏旧默认地址做兜底升级，不覆盖用户自定义地址。"""
+    base_url = str(source.base_url).strip()
+    if (
+        source.scraper_class == "JiangsuHRSSScraper"
+        and base_url == LEGACY_JIANGSU_HRSS_DEFAULT_BASE_URL
+    ):
+        return JIANGSU_HRSS_DEFAULT_BASE_URL
+    return base_url
+
+
 def create_scraper(source: Source):
     """根据数据源配置创建爬虫实例"""
     scraper_class = SCRAPER_REGISTRY.get(source.scraper_class)
     if not scraper_class:
         raise ValueError(f"未注册的爬虫类: {source.scraper_class}")
-    return scraper_class()
+    if source.base_url is None or not str(source.base_url).strip():
+        raise ValueError("source base_url 不能为空")
+    return scraper_class(base_url=normalize_source_base_url(source))
 
 
 def ensure_scrape_source_ready(db: Session, source_id: int) -> Source:
@@ -100,6 +114,44 @@ def build_attachment_metadata_map(attachments) -> dict[str, tuple[str, str]]:
     return metadata_map
 
 
+def refresh_existing_post_from_result(existing_post: Post, result: dict) -> bool:
+    """按同 URL 最新抓取结果刷新主记录权威字段。"""
+    did_update = False
+    title_or_content_changed = False
+
+    incoming_title = (result.get("title") or "").strip()
+    if incoming_title and incoming_title != (existing_post.title or ""):
+        existing_post.title = incoming_title
+        did_update = True
+        title_or_content_changed = True
+
+    incoming_publish_date = result.get("publish_date")
+    if incoming_publish_date and incoming_publish_date != existing_post.publish_date:
+        existing_post.publish_date = incoming_publish_date
+        did_update = True
+
+    incoming_original_url = (result.get("url") or "").strip()
+    if incoming_original_url and incoming_original_url != (existing_post.original_url or ""):
+        existing_post.original_url = incoming_original_url
+        did_update = True
+
+    incoming_content = result.get("content") or ""
+    if incoming_content and incoming_content != (existing_post.content or ""):
+        existing_post.content = incoming_content
+        did_update = True
+        title_or_content_changed = True
+
+    if title_or_content_changed:
+        is_match, confidence = is_counselor_position(
+            existing_post.title or "",
+            existing_post.content or "",
+        )
+        existing_post.is_counselor = is_match
+        existing_post.confidence_score = confidence if is_match else None
+
+    return did_update
+
+
 def save_post_fields(
     db: Session,
     post_id: int,
@@ -113,13 +165,46 @@ def save_post_fields(
         return 0
 
     try:
-        if replace:
-            db.query(PostField).filter(PostField.post_id == post_id).delete(synchronize_session=False)
-
         fields = merge_field_data(
             parse_post_fields(title, content) if content else [],
             extra_fields
         )
+        if replace:
+            existing_fields = db.query(PostField).filter(PostField.post_id == post_id).all()
+            existing_by_name: dict[str, PostField] = {}
+            duplicate_fields: list[PostField] = []
+            for existing_field in existing_fields:
+                field_name = existing_field.field_name
+                if field_name in existing_by_name:
+                    duplicate_fields.append(existing_field)
+                    continue
+                existing_by_name[field_name] = existing_field
+
+            incoming_names = set()
+            for field_data in fields:
+                field_name = field_data["field_name"]
+                field_value = field_data["field_value"]
+                incoming_names.add(field_name)
+                existing_field = existing_by_name.pop(field_name, None)
+                if existing_field is not None:
+                    existing_field.field_value = field_value
+                    continue
+                db.add(PostField(
+                    post_id=post_id,
+                    field_name=field_name,
+                    field_value=field_value,
+                ))
+
+            for stale_field in existing_by_name.values():
+                if stale_field.field_name not in incoming_names:
+                    db.delete(stale_field)
+
+            for duplicate_field in duplicate_fields:
+                db.delete(duplicate_field)
+
+            logger.debug(f"保存 {len(fields)} 个结构化字段")
+            return len(fields)
+
         for field_data in fields:
             field = PostField(
                 post_id=post_id,
@@ -143,12 +228,14 @@ def save_attachments(
 ) -> int:
     """保存结构化附件"""
     if not attachments:
+        if replace:
+            existing_attachments = db.query(Attachment).filter(Attachment.post_id == post_id).all()
+            for existing_attachment in existing_attachments:
+                db.delete(existing_attachment)
+            db.flush()
         return 0
 
     try:
-        if replace:
-            db.query(Attachment).filter(Attachment.post_id == post_id).delete(synchronize_session=False)
-
         unique_attachments = {}
         for attachment_data in attachments:
             file_url = (attachment_data.get("file_url") or "").strip()
@@ -161,6 +248,38 @@ def save_attachments(
                 "file_type": (attachment_data.get("file_type") or "").strip() or None
             }
 
+        if replace:
+            existing_attachments = db.query(Attachment).filter(Attachment.post_id == post_id).all()
+            existing_by_url: dict[str, Attachment] = {}
+            duplicate_rows: list[Attachment] = []
+            for existing_attachment in existing_attachments:
+                file_url = (existing_attachment.file_url or "").strip()
+                if file_url in existing_by_url:
+                    duplicate_rows.append(existing_attachment)
+                    continue
+                existing_by_url[file_url] = existing_attachment
+
+            incoming_urls = set()
+            for file_url, attachment_data in unique_attachments.items():
+                incoming_urls.add(file_url)
+                existing_attachment = existing_by_url.pop(file_url, None)
+                if existing_attachment is not None:
+                    existing_attachment.filename = attachment_data["filename"]
+                    existing_attachment.file_type = attachment_data["file_type"]
+                    continue
+                db.add(Attachment(post_id=post_id, **attachment_data))
+
+            for stale_attachment in existing_by_url.values():
+                if stale_attachment.file_url not in incoming_urls:
+                    db.delete(stale_attachment)
+
+            for duplicate_attachment in duplicate_rows:
+                db.delete(duplicate_attachment)
+
+            db.flush()
+            logger.debug(f"保存 {len(unique_attachments)} 个附件")
+            return len(unique_attachments)
+
         for attachment_data in unique_attachments.values():
             db.add(Attachment(post_id=post_id, **attachment_data))
 
@@ -172,24 +291,37 @@ def save_attachments(
         return 0
 
 
-async def enrich_post_from_attachments(db: Session, scraper, post: Post, replace_fields: bool = False) -> dict:
+async def enrich_post_from_attachments(
+    db: Session,
+    scraper,
+    post: Post,
+    replace_fields: bool = False,
+    force_download: bool = False,
+) -> dict:
     """下载并解析附件，补充帖子结构化字段"""
     attachments = db.query(Attachment).filter(Attachment.post_id == post.id).all()
     if not attachments:
         return {
             "field_count": 0,
             "downloaded_count": 0,
-            "parsed_count": 0
+            "parsed_count": 0,
+            "fields_payload": [],
         }
 
-    attachment_result = await ensure_attachments_processed(scraper, attachments)
+    attachment_result = await ensure_attachments_processed(
+        scraper,
+        attachments,
+        force_download=force_download,
+    )
     db.flush()
     attachment_fields = attachment_result["fields"]
+    fields_payload = list(attachment_fields)
     if not attachment_fields:
         return {
             "field_count": 0,
             "downloaded_count": attachment_result["downloaded_count"],
-            "parsed_count": attachment_result["parsed_count"]
+            "parsed_count": attachment_result["parsed_count"],
+            "fields_payload": fields_payload,
         }
 
     existing_field_names = {
@@ -206,7 +338,8 @@ async def enrich_post_from_attachments(db: Session, scraper, post: Post, replace
         return {
             "field_count": 0,
             "downloaded_count": attachment_result["downloaded_count"],
-            "parsed_count": attachment_result["parsed_count"]
+            "parsed_count": attachment_result["parsed_count"],
+            "fields_payload": fields_payload,
         }
 
     field_count = save_post_fields(
@@ -220,7 +353,8 @@ async def enrich_post_from_attachments(db: Session, scraper, post: Post, replace
     return {
         "field_count": field_count,
         "downloaded_count": attachment_result["downloaded_count"],
-        "parsed_count": attachment_result["parsed_count"]
+        "parsed_count": attachment_result["parsed_count"],
+        "fields_payload": fields_payload,
     }
 
 
@@ -314,6 +448,10 @@ async def backfill_existing_attachments(
                 if should_refresh_post_attachments(post):
                     detail_url = post.original_url or post.canonical_url
                     detail_payload = await scraper.scrape_detail_page(detail_url)
+                    if detail_payload.get("detail_failed"):
+                        logger.warning(f"历史附件补处理详情抓取失败，跳过当前帖子: post_id={post.id}")
+                        result["failures"] += 1
+                        continue
 
                     if not post.content and detail_payload.get("content"):
                         post.content = detail_payload["content"]
@@ -328,7 +466,7 @@ async def backfill_existing_attachments(
 
                     latest_attachments = detail_payload.get("attachments", [])
                     latest_attachment_map = build_attachment_metadata_map(latest_attachments)
-                    if latest_attachment_map and latest_attachment_map != before_attachment_map:
+                    if latest_attachment_map != before_attachment_map:
                         save_attachments(
                             db,
                             post_id=post.id,
@@ -353,8 +491,18 @@ async def backfill_existing_attachments(
                 attachment_result = await enrich_post_from_attachments(
                     db,
                     scraper=scraper,
-                    post=post
+                    post=post,
+                    force_download=bool(post.attachments),
                 )
+                save_post_fields(
+                    db,
+                    post_id=post.id,
+                    title=post.title,
+                    content=post.content or "",
+                    extra_fields=attachment_result.get("fields_payload"),
+                    replace=True,
+                )
+                db.flush()
                 result["fields_added"] += attachment_result["field_count"]
                 result["attachments_downloaded"] += attachment_result["downloaded_count"]
                 result["attachments_parsed"] += attachment_result["parsed_count"]
@@ -421,7 +569,7 @@ async def backfill_existing_attachments(
 
 async def scrape_and_save(
     db: Session,
-    source_id: int = 1,
+    source_id: int,
     max_pages: int = 10,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, int]:
@@ -470,28 +618,17 @@ async def scrape_and_save(
                 existing_post = db.query(Post).filter(Post.canonical_url == canonical_url).first()
                 attachments = result.get("attachments", [])
 
+                if result.get("detail_failed"):
+                    logger.warning(f"详情页抓取失败，跳过当前记录写库: {canonical_url}")
+                    failure_count += 1
+                    continue
+
                 if existing_post:
-                    did_update = False
-
-                    if not existing_post.content and result.get("content"):
-                        logger.info(f"更新已有记录的详细内容: {result['title']}")
-                        existing_post.content = result["content"]
-
-                        is_match, confidence = is_counselor_position(result["title"], result["content"])
-                        existing_post.is_counselor = is_match
-                        existing_post.confidence_score = confidence if is_match else None
-                        save_post_fields(
-                            db,
-                            post_id=existing_post.id,
-                            title=result["title"],
-                            content=result["content"],
-                            replace=True
-                        )
-                        did_update = True
+                    did_update = refresh_existing_post_from_result(existing_post, result)
 
                     existing_attachment_map = build_attachment_metadata_map(existing_post.attachments)
                     latest_attachment_map = build_attachment_metadata_map(attachments)
-                    if latest_attachment_map and latest_attachment_map != existing_attachment_map:
+                    if latest_attachment_map != existing_attachment_map:
                         save_attachments(
                             db,
                             post_id=existing_post.id,
@@ -504,8 +641,18 @@ async def scrape_and_save(
                         db,
                         scraper=scraper,
                         post=existing_post,
-                        replace_fields=not bool(existing_post.content)
+                        replace_fields=not bool(existing_post.content),
+                        force_download=bool(latest_attachment_map),
                     )
+                    save_post_fields(
+                        db,
+                        post_id=existing_post.id,
+                        title=existing_post.title,
+                        content=existing_post.content or "",
+                        extra_fields=attachment_result.get("fields_payload"),
+                        replace=True,
+                    )
+                    db.flush()
                     if (
                         attachment_result["field_count"]
                         or attachment_result["downloaded_count"]
@@ -550,22 +697,26 @@ async def scrape_and_save(
                 db.add(post)
                 db.flush()
 
-                save_post_fields(
-                    db,
-                    post_id=post.id,
-                    title=result["title"],
-                    content=result.get("content", "")
-                )
                 save_attachments(
                     db,
                     post_id=post.id,
                     attachments=attachments
                 )
-                await enrich_post_from_attachments(
+                attachment_result = await enrich_post_from_attachments(
                     db,
                     scraper=scraper,
-                    post=post
+                    post=post,
+                    force_download=bool(attachments),
                 )
+                save_post_fields(
+                    db,
+                    post_id=post.id,
+                    title=result["title"],
+                    content=result.get("content", ""),
+                    extra_fields=attachment_result.get("fields_payload"),
+                    replace=True,
+                )
+                db.flush()
 
                 db.expire_all()
                 post = db.query(Post).options(

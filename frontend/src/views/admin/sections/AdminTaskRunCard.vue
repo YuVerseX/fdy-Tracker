@@ -90,6 +90,13 @@
         />
 
         <AppNotice
+          v-if="cardPresentation.snapshotNotice"
+          :tone="cardPresentation.snapshotNotice.tone"
+          :title="cardPresentation.snapshotNotice.title"
+          :description="cardPresentation.snapshotNotice.description"
+        />
+
+        <AppNotice
           v-if="cardPresentation.stuckNotice"
           tone="warning"
           :title="cardPresentation.stuckNotice.title"
@@ -140,7 +147,7 @@
         <div class="flex items-center justify-between gap-3">
           <h4 class="text-sm font-semibold text-slate-900">{{ section.title }}</h4>
           <p class="text-xs text-slate-500">
-            {{ section.id === 'facts' ? '用于确认任务范围和运行时间。' : '这里显示本次任务的补充结果。' }}
+            {{ section.id === 'facts' ? '用于确认任务范围和运行时间。' : section.id === 'snapshot' ? '这里显示当前状态快照的可信度、时间和范围。' : '这里显示本次任务的补充结果。' }}
           </p>
         </div>
 

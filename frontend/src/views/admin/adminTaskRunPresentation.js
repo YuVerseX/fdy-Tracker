@@ -7,6 +7,15 @@ import {
   isTaskRunPossiblyStuck
 } from '../../utils/adminDashboardViewModels.js'
 import { normalizeAdminUiMessage, normalizeAdminUiText } from '../../utils/adminCopySanitizers.js'
+import {
+  getTaskSnapshotAt,
+  getTaskSnapshotDetail,
+  getTaskSnapshotLabel,
+  getTaskSnapshotSummary,
+  getTaskSnapshotTone,
+  getTaskSnapshotTrust,
+  normalizeAdminTaskSnapshot
+} from '../../utils/adminTaskSnapshots.js'
 import { buildTaskActionGuide } from './adminDashboardTaskActions.js'
 
 const EMPTY_LABEL = '--'
@@ -216,7 +225,7 @@ const getProgressPercent = (run = {}, metrics = {}) => {
     return Math.max(0, Math.min(Math.round((completed / total) * 100), 100))
   }
 
-  if (run?.status === 'success' || run?.status === 'cancelled') return 100
+  if (run?.status === 'success') return 100
   return 0
 }
 
@@ -246,6 +255,27 @@ const isTaskCancellationPending = (run = {}) => (
   run?.status === 'cancel_requested'
   || (isRunningTaskStatus(run?.status) && Boolean(run?.details?.cancel_requested_at))
 )
+const getCancellationNoticeDescription = (run = {}) => {
+  const stageLabel = String(run?.stage_label || run?.details?.stage_label || '').trim()
+  if (/尚未开始|启动前/.test(stageLabel)) {
+    return '任务尚未开始，启动前会直接停止，已完成结果会保留。'
+  }
+  return '当前处理单元结束后会停止，已完成结果会保留。'
+}
+const buildTaskSnapshotDescription = (run = {}) => {
+  const parts = [getTaskSnapshotSummary(run), getTaskSnapshotDetail(run)]
+    .filter(Boolean)
+    .filter((value, index, items) => items.indexOf(value) === index)
+  return parts.join('。')
+}
+const buildTaskSnapshotNotice = (run = {}) => {
+  if (getTaskSnapshotTrust(run) === 'trusted') return null
+  return {
+    title: getTaskSnapshotLabel(run),
+    description: buildTaskSnapshotDescription(run),
+    tone: getTaskSnapshotTone(run)
+  }
+}
 
 const getTaskStatusLabel = (run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) => {
   if (isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)) return '进度停滞'
@@ -541,26 +571,27 @@ const buildStageOnlyProgressLabel = (run = {}, metrics = {}, { isStuck = false }
 }
 
 export function buildTaskProgressView(run = {}, { nowTs = Date.now(), heartbeatStaleMs = 10 * 60 * 1000 } = {}) {
-  const mode = resolveProgressMode(run)
-  const metrics = getRunMetricSource(run)
-  const percent = getProgressPercent(run, metrics)
-  const isStuck = isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)
-  const currentStage = getCanonicalStage(run)
+  const normalizedRun = normalizeAdminTaskSnapshot(run)
+  const mode = resolveProgressMode(normalizedRun)
+  const metrics = getRunMetricSource(normalizedRun)
+  const percent = getProgressPercent(normalizedRun, metrics)
+  const isStuck = isTaskRunPossiblyStuck(normalizedRun, nowTs, heartbeatStaleMs)
+  const currentStage = getCanonicalStage(normalizedRun)
   const stageLabel = String(
-    run?.stage_label
-    || run?.phase_label
-    || run?.details?.stage_label
-    || run?.details?.phase_label
+    normalizedRun?.stage_label
+    || normalizedRun?.phase_label
+    || normalizedRun?.details?.stage_label
+    || normalizedRun?.details?.phase_label
     || ''
   ).trim() || getStageTimelineItemCopy(
     currentStage,
-    run?.status === 'failed'
+    normalizedRun?.status === 'failed'
       ? 'failed'
-      : (run?.status === 'cancelled'
+      : (normalizedRun?.status === 'cancelled'
           ? 'cancelled'
-          : (run?.status === 'success' ? 'done' : 'current')),
-    run
-  )?.label || getDefaultStageLabel(run)
+          : (normalizedRun?.status === 'success' ? 'done' : 'current')),
+    normalizedRun
+  )?.label || getDefaultStageLabel(normalizedRun)
   const determinateKind = getDeterminateProgressKind(metrics)
 
   if (mode === 'determinate' && determinateKind === 'count_based') {
@@ -570,7 +601,7 @@ export function buildTaskProgressView(run = {}, { nowTs = Date.now(), heartbeatS
       modeLabel: '按完成量更新',
       showProgressBar: true,
       stageLabel,
-      progressLabel: buildDeterminateProgressLabel(run, metrics),
+      progressLabel: buildDeterminateProgressLabel(normalizedRun, metrics),
       progressPercentLabel: `${percent}%`,
       percent,
       visualPercent: percent
@@ -584,8 +615,8 @@ export function buildTaskProgressView(run = {}, { nowTs = Date.now(), heartbeatS
       modeLabel: '阶段估算',
       showProgressBar: false,
       stageLabel,
-      progressLabel: buildEstimatedProgressLabel(run, { isStuck }),
-      progressPercentLabel: run?.status === 'success' || run?.status === 'failed' ? '' : `约 ${percent}%`,
+      progressLabel: buildEstimatedProgressLabel(normalizedRun, { isStuck }),
+      progressPercentLabel: ['success', 'failed', 'cancelled'].includes(normalizedRun?.status) ? '' : `约 ${percent}%`,
       percent,
       visualPercent: 0
     }
@@ -593,20 +624,21 @@ export function buildTaskProgressView(run = {}, { nowTs = Date.now(), heartbeatS
 
   return {
     mode,
-    isStuck,
-    modeLabel: '按阶段更新',
-    showProgressBar: false,
-    stageLabel,
-    progressLabel: buildStageOnlyProgressLabel(run, metrics, { isStuck }),
-    progressPercentLabel: '',
-    percent: 0,
-    visualPercent: 0
+      isStuck,
+      modeLabel: '按阶段更新',
+      showProgressBar: false,
+      stageLabel,
+      progressLabel: buildStageOnlyProgressLabel(normalizedRun, metrics, { isStuck }),
+      progressPercentLabel: '',
+      percent: 0,
+      visualPercent: 0
   }
 }
 
 export function buildTaskMetricItems(run = {}) {
-  const taskType = run?.task_type || run?.taskType
-  const metrics = getRunMetricSource(run)
+  const normalizedRun = normalizeAdminTaskSnapshot(run)
+  const taskType = normalizedRun?.task_type || normalizedRun?.taskType
+  const metrics = getRunMetricSource(normalizedRun)
   const orderedKeys = TASK_METRIC_ORDER[taskType] || []
 
   const items = orderedKeys
@@ -643,16 +675,27 @@ export function buildTaskMetricItems(run = {}) {
 }
 
 export function buildTaskDetailSections(run = {}, { sourceOptions = [], nowTs = Date.now() } = {}) {
+  const normalizedRun = normalizeAdminTaskSnapshot(run)
+  const detailTimeLabel = normalizedRun?.status === 'cancelled'
+    ? '终止时间'
+    : (normalizedRun?.status === 'failed'
+        ? '失败时间'
+        : (normalizedRun?.finished_at ? '完成时间' : '最近更新'))
   const factItems = [
-    { label: '开始时间', value: formatAdminDateTime(run?.started_at) },
-    { label: run?.finished_at ? '完成时间' : '最近更新', value: formatAdminDateTime(run?.finished_at || getTaskHeartbeatAt(run)) },
-    { label: getTaskDurationLabel(run), value: formatAdminDurationMs(getTaskElapsedMs(run, nowTs)) },
-    { label: '数据源', value: formatSourceParam(run, sourceOptions) },
-    { label: '抓取页数', value: getTaskParam(run, 'max_pages', 'maxPages') ?? EMPTY_LABEL },
-    { label: '处理上限', value: getTaskParam(run, 'limit') ?? EMPTY_LABEL }
+    { label: '开始时间', value: formatAdminDateTime(normalizedRun?.started_at) },
+    { label: detailTimeLabel, value: formatAdminDateTime(normalizedRun?.finished_at || getTaskHeartbeatAt(normalizedRun)) },
+    { label: getTaskDurationLabel(normalizedRun), value: formatAdminDurationMs(getTaskElapsedMs(normalizedRun, nowTs)) },
+    { label: '数据源', value: formatSourceParam(normalizedRun, sourceOptions) },
+    { label: '抓取页数', value: getTaskParam(normalizedRun, 'max_pages', 'maxPages') ?? EMPTY_LABEL },
+    { label: '处理上限', value: getTaskParam(normalizedRun, 'limit') ?? EMPTY_LABEL }
   ].filter((item) => item.value && item.value !== EMPTY_LABEL)
 
-  const resultItems = buildTaskMetricItems(run).slice(4)
+  const resultItems = buildTaskMetricItems(normalizedRun).slice(4)
+  const snapshotItems = [
+    { label: '快照可信度', value: getTaskSnapshotLabel(normalizedRun) },
+    { label: '快照时间', value: formatAdminDateTime(getTaskSnapshotAt(normalizedRun)) },
+    { label: '快照范围', value: getTaskSnapshotSummary(normalizedRun) }
+  ].filter((item) => item.value && item.value !== EMPTY_LABEL && item.value !== '未获取')
   const sections = []
 
   if (factItems.length > 0) {
@@ -671,6 +714,14 @@ export function buildTaskDetailSections(run = {}, { sourceOptions = [], nowTs = 
     })
   }
 
+  if (snapshotItems.length > 0) {
+    sections.push({
+      id: 'snapshot',
+      title: '快照说明',
+      items: snapshotItems
+    })
+  }
+
   return sections
 }
 
@@ -679,19 +730,20 @@ export function buildTaskRunCardPresentation(run = {}, {
   nowTs = Date.now(),
   heartbeatStaleMs = 10 * 60 * 1000
 } = {}) {
-  const progressView = buildTaskProgressView(run, { nowTs, heartbeatStaleMs })
-  const actionGuide = buildTaskActionGuide(run)
-  const resultItems = buildTaskHeadlineResultItems(run)
+  const normalizedRun = normalizeAdminTaskSnapshot(run)
+  const progressView = buildTaskProgressView(normalizedRun, { nowTs, heartbeatStaleMs })
+  const actionGuide = buildTaskActionGuide(normalizedRun)
+  const resultItems = buildTaskHeadlineResultItems(normalizedRun)
   const failureReason = normalizeAdminUiMessage(
-    getTaskFailureReason(run),
+    getTaskFailureReason(normalizedRun),
     '这次处理没有完成，请稍后再试。'
   )
-  const cancellationNotice = isTaskCancellationPending(run)
+  const cancellationNotice = isTaskCancellationPending(normalizedRun)
     ? {
         title: '终止请求已提交',
-        description: '当前处理单元结束后会停止，已完成结果会保留。'
+        description: getCancellationNoticeDescription(normalizedRun)
       }
-    : run?.status === 'cancelled'
+    : normalizedRun?.status === 'cancelled'
       ? {
           title: '这次处理已终止',
           description: '已完成的结果已保留，可按当前建议操作继续处理。'
@@ -699,23 +751,24 @@ export function buildTaskRunCardPresentation(run = {}, {
       : null
 
   return {
-    title: run?.display_name || getTaskTypeLabel(run?.task_type || run?.taskType),
-    summaryText: getTaskSummaryText(run),
-    timelineText: getTaskTimelineText(run),
-    statusLabel: getTaskStatusLabel(run, { nowTs, heartbeatStaleMs }),
-    statusTone: getTaskStatusTone(run, { nowTs, heartbeatStaleMs }),
-    surfaceTone: getTaskSurfaceTone(run, { nowTs, heartbeatStaleMs }),
+    title: normalizedRun?.display_name || getTaskTypeLabel(normalizedRun?.task_type || normalizedRun?.taskType),
+    summaryText: getTaskSummaryText(normalizedRun),
+    timelineText: getTaskTimelineText(normalizedRun),
+    statusLabel: getTaskStatusLabel(normalizedRun, { nowTs, heartbeatStaleMs }),
+    statusTone: getTaskStatusTone(normalizedRun, { nowTs, heartbeatStaleMs }),
+    surfaceTone: getTaskSurfaceTone(normalizedRun, { nowTs, heartbeatStaleMs }),
     progressView,
-    stageTitle: getTaskStageTitle(run),
-    stageTimelineItems: buildStageTimelineItems(run),
-    stageFacts: buildTaskStageFacts(run, progressView, { nowTs }),
-    resultTitle: getTaskResultTitle(run),
-    resultHint: getTaskResultHint(run, resultItems, { isStuck: progressView.isStuck }),
+    stageTitle: getTaskStageTitle(normalizedRun),
+    stageTimelineItems: buildStageTimelineItems(normalizedRun),
+    stageFacts: buildTaskStageFacts(normalizedRun, progressView, { nowTs }),
+    resultTitle: getTaskResultTitle(normalizedRun),
+    resultHint: getTaskResultHint(normalizedRun, resultItems, { isStuck: progressView.isStuck }),
     resultItems,
-    resultEmptyText: getTaskResultEmptyText(run, resultItems, { isStuck: progressView.isStuck }),
-    detailSections: buildTaskDetailSections(run, { sourceOptions, nowTs }),
+    resultEmptyText: getTaskResultEmptyText(normalizedRun, resultItems, { isStuck: progressView.isStuck }),
+    detailSections: buildTaskDetailSections(normalizedRun, { sourceOptions, nowTs }),
     cancellationNotice,
-    failureNotice: run?.status === 'failed'
+    snapshotNotice: buildTaskSnapshotNotice(normalizedRun),
+    failureNotice: normalizedRun?.status === 'failed'
       ? {
           title: '这次处理未完成',
           description: failureReason

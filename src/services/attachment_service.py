@@ -660,13 +660,29 @@ def get_attachment_status(attachment) -> Dict[str, int | str | bool]:
     }
 
 
-async def download_attachment_file(fetcher, attachment) -> bool:
+async def download_attachment_file(fetcher, attachment, force_download: bool = False) -> bool:
     """下载附件到本地"""
-    if attachment.is_downloaded and attachment.local_path and Path(attachment.local_path).exists():
+    existing_path = Path(attachment.local_path) if attachment.local_path else None
+    if (
+        not force_download
+        and attachment.is_downloaded
+        and existing_path
+        and existing_path.exists()
+    ):
         return False
 
     response = await fetcher.fetch(attachment.file_url)
     file_path = get_attachment_storage_path(attachment.post_id, attachment.filename, attachment.file_url)
+    if existing_path and existing_path.exists():
+        try:
+            if existing_path.read_bytes() == response.content:
+                attachment.local_path = str(existing_path)
+                attachment.file_size = len(response.content)
+                attachment.is_downloaded = True
+                return False
+        except Exception:
+            pass
+
     file_path.write_bytes(response.content)
 
     attachment.local_path = str(file_path)
@@ -675,7 +691,7 @@ async def download_attachment_file(fetcher, attachment) -> bool:
     return True
 
 
-async def ensure_attachments_processed(fetcher, attachments) -> Dict[str, object]:
+async def ensure_attachments_processed(fetcher, attachments, force_download: bool = False) -> Dict[str, object]:
     """确保附件已下载并尽量解析可解析类型"""
     attachment_fields: List[Dict[str, str]] = []
     downloaded_count = 0
@@ -683,7 +699,11 @@ async def ensure_attachments_processed(fetcher, attachments) -> Dict[str, object
 
     for attachment in attachments:
         try:
-            downloaded_now = await download_attachment_file(fetcher, attachment)
+            downloaded_now = await download_attachment_file(
+                fetcher,
+                attachment,
+                force_download=force_download,
+            )
             if downloaded_now:
                 downloaded_count += 1
         except Exception as exc:

@@ -3,6 +3,10 @@ import {
   getTaskActionDefinitions
 } from './adminDashboardTaskActions.js'
 import { normalizeAdminUiMessage, normalizeAdminUiText } from '../../utils/adminCopySanitizers.js'
+import {
+  normalizeAdminTaskSnapshot,
+  normalizeAdminTaskSummary
+} from '../../utils/adminTaskSnapshots.js'
 
 const TASK_ACTION_FEEDBACK = Object.freeze({
   retry: {
@@ -26,6 +30,33 @@ const TASK_SUMMARY_FETCH_SUCCESS = 'success'
 const TASK_SUMMARY_FETCH_DEGRADED = 'degraded'
 
 const resolveTaskType = (run = {}) => run?.task_type || run?.taskType || ''
+const toOptionalSourceId = (value, fallback = '') => {
+  if (value === '' || value === null || value === undefined) return fallback
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback
+}
+const toOptionalSourceIdForPayload = (value) => {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined
+}
+const toMinimumNumber = (value, fallback, minimum = 1) => {
+  if (value === '' || value === null || value === undefined) return fallback
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric >= minimum ? numeric : fallback
+}
+const removeUndefinedFields = (payload = {}) => Object.fromEntries(
+  Object.entries(payload).filter(([, value]) => value !== undefined)
+)
+const createInitialForms = () => ({
+  scrape: { sourceId: '', maxPages: 5 },
+  backfill: { sourceId: '', limit: 100 },
+  duplicate: { limit: 200 },
+  baseAnalysis: { sourceId: '', limit: 100, onlyPending: true },
+  aiAnalysis: { sourceId: '', limit: 100, onlyUnanalyzed: true },
+  jobIndex: { sourceId: '', limit: 100, onlyPending: true },
+  aiJob: { sourceId: '', limit: 100, onlyPending: true },
+  scheduler: { enabled: true, intervalSeconds: 7200, defaultSourceId: '', defaultMaxPages: 5, nextRunAt: '', updatedAt: '' }
+})
 
 const resolveTaskParams = (run = {}) => {
   const sources = [
@@ -81,10 +112,35 @@ export function createAdminDashboardDataService({
     if (state.taskSummaryUnavailable) return TASK_SUMMARY_FETCH_DEGRADED
     return false
   }
+  const resetTaskForms = () => {
+    Object.assign(forms, createInitialForms())
+  }
   const clearAdminRuntimeState = () => {
     runtimeGeneration += 1
     Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', retryingTaskActionKey: '', cancelingTaskId: '', jobsSummaryUnavailable: false, taskStatusLastSyncedAt: '' })
     Object.keys(loaded).forEach((key) => { loaded[key] = false })
+    Object.keys(requests).forEach((key) => { requests[key] = false })
+    sourceOptions.value = []
+    resetTaskForms()
+  }
+  const findSourceOption = (sourceId) => sourceOptions.value.find((source) => Number(source.value) === Number(sourceId))
+  const findActiveSourceOption = (sourceId) => sourceOptions.value.find((source) => Number(source.value) === Number(sourceId) && source.isActive !== false)
+  const resolveManualScrapeSourceId = (preferredSourceId) => {
+    if (findActiveSourceOption(preferredSourceId)) return Number(preferredSourceId)
+    const currentScrapeSourceId = toOptionalSourceId(forms.scrape.sourceId)
+    if (findActiveSourceOption(currentScrapeSourceId)) return Number(currentScrapeSourceId)
+    const firstActiveSource = sourceOptions.value.find((source) => source.isActive !== false)
+    return firstActiveSource?.value || ''
+  }
+  const syncDefaultSourcesFromOptions = () => {
+    const currentSchedulerSourceId = toOptionalSourceId(forms.scheduler.defaultSourceId)
+    if (currentSchedulerSourceId && !findSourceOption(currentSchedulerSourceId)) {
+      forms.scheduler.defaultSourceId = ''
+    }
+    const currentScrapeSourceId = toOptionalSourceId(forms.scrape.sourceId)
+    if (!findActiveSourceOption(currentScrapeSourceId)) {
+      forms.scrape.sourceId = resolveManualScrapeSourceId(forms.scheduler.defaultSourceId)
+    }
   }
   const markTaskStatusSynced = () => {
     state.taskStatusLastSyncedAt = new Date().toISOString()
@@ -130,8 +186,19 @@ export function createAdminDashboardDataService({
     }
   }
   const applySchedulerConfig = (payload = {}) => {
-    Object.assign(forms.scheduler, { enabled: payload.enabled ?? true, intervalSeconds: Number(payload.interval_seconds ?? payload.intervalSeconds ?? 7200), defaultSourceId: Number(payload.default_source_id ?? payload.defaultSourceId ?? forms.scrape.sourceId ?? 1), defaultMaxPages: Number(payload.default_max_pages ?? payload.defaultMaxPages ?? forms.scrape.maxPages ?? 5), nextRunAt: payload.next_run_at || payload.nextRunAt || '', updatedAt: payload.updated_at || payload.updatedAt || '' })
-    forms.scrape.sourceId = forms.scheduler.defaultSourceId
+    const resolvedSourceId = toOptionalSourceId(
+      payload.default_source_id ?? payload.defaultSourceId,
+      toOptionalSourceId(forms.scheduler.defaultSourceId)
+    )
+    Object.assign(forms.scheduler, {
+      enabled: payload.enabled ?? true,
+      intervalSeconds: toMinimumNumber(payload.interval_seconds ?? payload.intervalSeconds, 7200, 60),
+      defaultSourceId: resolvedSourceId,
+      defaultMaxPages: toMinimumNumber(payload.default_max_pages ?? payload.defaultMaxPages, 5, 1),
+      nextRunAt: payload.next_run_at || payload.nextRunAt || '',
+      updatedAt: payload.updated_at || payload.updatedAt || ''
+    })
+    forms.scrape.sourceId = resolveManualScrapeSourceId(forms.scheduler.defaultSourceId)
     forms.scrape.maxPages = forms.scheduler.defaultMaxPages
   }
   const verifyAdminAccess = async () => {
@@ -155,7 +222,7 @@ export function createAdminDashboardDataService({
     try {
       const response = await adminApi.getTaskRuns({ limit: 10 })
       if (!isCurrent()) return getCurrentTaskRunsResult()
-      state.taskRuns = response.data.items || []
+      state.taskRuns = (response.data.items || []).map((run) => normalizeAdminTaskSnapshot(run))
       loaded.taskRuns = true
       return true
     } catch (error) {
@@ -174,7 +241,7 @@ export function createAdminDashboardDataService({
     try {
       const response = await adminApi.getTaskSummary()
       if (!isCurrent()) return getCurrentTaskSummaryResult()
-      state.taskSummary = response.data || null
+      state.taskSummary = normalizeAdminTaskSummary(response.data || null)
       state.taskSummaryUnavailable = false
       loaded.taskSummary = true
       return TASK_SUMMARY_FETCH_SUCCESS
@@ -194,12 +261,18 @@ export function createAdminDashboardDataService({
     try {
       const response = await adminApi.getSources()
       const items = response.data.items || []
+      sourceOptions.value = items.map((source) => ({
+        label: `${source.name}${source.is_active ? '' : ' / 已停用'}`,
+        value: source.id,
+        isActive: source.is_active
+      }))
       if (items.length) {
-        sourceOptions.value = items.map((source) => ({
-          label: `${source.name}${source.is_active ? '' : ' / 已停用'}`,
-          value: source.id,
-          isActive: source.is_active
-        }))
+        syncDefaultSourcesFromOptions()
+      } else {
+        forms.scrape.sourceId = ''
+        if (!findSourceOption(forms.scheduler.defaultSourceId)) {
+          forms.scheduler.defaultSourceId = ''
+        }
       }
     } catch (error) {
       if (!handleAdminAccessError(error)) console.warn('获取数据源列表失败，继续使用默认选项:', error)
@@ -470,7 +543,12 @@ export function createAdminDashboardDataService({
   const saveSchedulerConfig = async () => {
     loading.schedulerSaving = true
     try {
-      const payload = { enabled: forms.scheduler.enabled, interval_seconds: forms.scheduler.intervalSeconds, default_source_id: forms.scheduler.defaultSourceId, default_max_pages: forms.scheduler.defaultMaxPages }
+      const payload = removeUndefinedFields({
+        enabled: forms.scheduler.enabled,
+        interval_seconds: toMinimumNumber(forms.scheduler.intervalSeconds, 7200, 60),
+        default_source_id: toOptionalSourceIdForPayload(forms.scheduler.defaultSourceId),
+        default_max_pages: toMinimumNumber(forms.scheduler.defaultMaxPages, 5, 1)
+      })
       const response = await adminApi.updateSchedulerConfig(payload)
       applySchedulerConfig(response.data?.config || payload)
       loaded.scheduler = true

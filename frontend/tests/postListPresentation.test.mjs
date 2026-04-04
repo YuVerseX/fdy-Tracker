@@ -33,6 +33,16 @@ test('buildPostCardView should turn snapshot data into readable facts and badges
     is_counselor: true,
     counselor_scope: 'dedicated',
     has_content: true,
+    record_completeness: {
+      content: 'available',
+      summary: 'available',
+      jobs: 'available',
+      attachments: 'unknown'
+    },
+    record_provenance: {
+      summary_source: 'rule',
+      job_sources: ['attachment']
+    },
     analysis: {
       event_type: '事业单位招聘'
     },
@@ -52,6 +62,8 @@ test('buildPostCardView should turn snapshot data into readable facts and badges
   assert.ok(view.badges.some((item) => item.label === '只招辅导员'))
   assert.ok(view.badges.some((item) => item.label === '已收录正文'))
   assert.ok(view.meta.some((item) => item.label === '来源'))
+  assert.ok(view.meta.some((item) => item.label === '摘要来源' && item.value === '规则整理'))
+  assert.ok(view.meta.some((item) => item.label === '岗位来源' && item.value === '附件'))
 })
 
 test('buildPostCardView should summarize multi-job posts with announcement-level facts instead of the first job only', () => {
@@ -82,6 +94,57 @@ test('buildPostCardView should summarize multi-job posts with announcement-level
     ['4 个岗位', '16人', '南京市']
   )
   assert.doesNotMatch(view.highlight, /^专职辅导员$/)
+})
+
+test('buildPostCardView should show sparse-record completeness instead of pretending data is complete', () => {
+  const view = buildPostCardView({
+    title: '某高校综合招聘公告',
+    publish_date: '2026-03-10',
+    source: { name: '江苏省人力资源和社会保障厅' },
+    is_counselor: true,
+    counselor_scope: 'contains',
+    has_content: false,
+    record_completeness: {
+      content: 'missing',
+      summary: 'available',
+      jobs: 'pending',
+      attachments: 'unknown'
+    },
+    record_provenance: {
+      summary_source: 'rule',
+      job_sources: []
+    },
+    analysis: {
+      event_type: '事业单位招聘',
+      summary: '规则分析认为该公告包含辅导员岗位。'
+    }
+  })
+
+  assert.ok(view.badges.some((item) => item.label === '正文待补充'))
+  assert.ok(view.badges.some((item) => item.label === '岗位待整理'))
+  assert.ok(view.meta.some((item) => item.label === '摘要来源' && item.value === '规则整理'))
+})
+
+test('buildPostCardView should hide summary provenance when backend marks summary as missing', () => {
+  const view = buildPostCardView({
+    title: '缺摘要公告',
+    publish_date: '2026-03-31',
+    source: { name: '江苏省人力资源和社会保障厅' },
+    has_content: true,
+    record_completeness: {
+      content: 'available',
+      summary: 'missing',
+      jobs: 'available',
+      attachments: 'unknown'
+    },
+    record_provenance: {
+      summary_source: 'none',
+      job_sources: []
+    }
+  })
+
+  assert.ok(view.badges.every((item) => item.label !== '来源待确认'))
+  assert.ok(view.meta.every((item) => item.label !== '摘要来源'))
 })
 
 test('buildPostListEmptyState should distinguish filtered results from first-load empty state', () => {

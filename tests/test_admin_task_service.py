@@ -13,14 +13,21 @@ class AdminTaskServiceTestCase(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.task_runs_path = Path(self.temp_dir.name) / "admin_task_runs.json"
+        self.public_freshness_path = Path(self.temp_dir.name) / "public_task_freshness.json"
         self.get_task_runs_path_patcher = patch(
             "src.services.admin_task_service.get_task_runs_path",
             return_value=self.task_runs_path,
         )
+        self.get_public_freshness_path_patcher = patch(
+            "src.services.admin_task_service.get_public_freshness_path",
+            return_value=self.public_freshness_path,
+        )
         self.get_task_runs_path_patcher.start()
+        self.get_public_freshness_path_patcher.start()
 
     def tearDown(self):
         self.get_task_runs_path_patcher.stop()
+        self.get_public_freshness_path_patcher.stop()
         self.temp_dir.cleanup()
 
     def write_task_runs(self, payload):
@@ -114,6 +121,24 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertIn("job_extraction", ctx.exception.conflict_task_types)
         self.assertIn("scheduled_scrape", ctx.exception.conflict_task_types)
 
+    def test_start_task_run_should_block_maintenance_backfill_when_manual_scrape_running(self):
+        running_task = admin_task_service.start_task_run(
+            task_type="manual_scrape",
+            summary="手动抓取进行中",
+            params={"source_id": 1, "max_pages": 3},
+        )
+
+        with self.assertRaises(admin_task_service.TaskAlreadyRunningError) as ctx:
+            admin_task_service.start_task_run(
+                task_type="maintenance_backfill",
+                summary="历史维护补齐进行中",
+                params={"operation": "counselor_flag_repair"},
+            )
+
+        self.assertEqual(ctx.exception.running_task["id"], running_task["id"])
+        self.assertEqual(ctx.exception.running_task["task_type"], "manual_scrape")
+        self.assertIn("maintenance_backfill", ctx.exception.conflict_task_types)
+
     def test_start_task_run_should_initialize_phase_progress_and_heartbeat(self):
         task_run = admin_task_service.start_task_run(
             task_type="manual_scrape",
@@ -130,6 +155,20 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(task_run["details"]["metrics"], {})
         self.assertEqual(task_run["details"]["stage_started_at"], task_run["started_at"])
         self.assertTrue(task_run["heartbeat_at"])
+
+    def test_start_task_run_should_persist_maintenance_category_and_tags(self):
+        task_run = admin_task_service.start_task_run(
+            task_type="maintenance_backfill",
+            summary="历史维护补齐进行中",
+            params={"operation": "counselor_flag_repair", "limit": 200},
+        )
+
+        self.assertEqual(task_run["task_category"], "maintenance")
+        self.assertEqual(task_run["task_category_label"], "维护任务")
+        self.assertIn("maintenance", task_run["task_tags"])
+        self.assertIn("maintenance-backfill", task_run["task_tags"])
+        self.assertEqual(task_run["details"]["task_category"], "maintenance")
+        self.assertEqual(task_run["details"]["task_category_label"], "维护任务")
 
     def test_update_task_run_should_update_phase_progress_and_heartbeat(self):
         created = admin_task_service.start_task_run(
@@ -318,6 +357,116 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["details"]["posts_seen"], 18)
         self.assertNotIn("internal_debug", serialized["details"])
 
+    def test_serialize_task_run_should_expose_instance_local_snapshot_envelope_for_running_task(self):
+        task_run = admin_task_service.record_task_run(
+            task_type="manual_scrape",
+            status="running",
+            summary="手动抓取进行中",
+            details={
+                "stage": "collecting",
+                "stage_label": "正在抓取源站并写入数据库",
+                "progress_mode": "stage_only",
+                "live_metrics": {"pages_fetched": 2},
+                "metrics": {"pages_fetched": 2},
+            },
+            params={"source_id": 1, "max_pages": 3},
+            phase="正在抓取源站并写入数据库",
+            progress=40,
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(
+            task_run,
+            snapshot_at="2026-04-04T10:30:00+00:00",
+        )
+
+        self.assertEqual(serialized["snapshot_at"], "2026-04-04T10:30:00+00:00")
+        self.assertEqual(serialized["trust_level"], "instance_local")
+        self.assertEqual(serialized["instance_scope"], "current_instance")
+        self.assertIn("本地 JSON", serialized["degraded_reason"])
+        self.assertIn("当前实例", serialized["scope_summary"])
+        self.assertEqual(serialized["details"]["trust_level"], "instance_local")
+        self.assertEqual(serialized["details"]["instance_scope"], "current_instance")
+
+    def test_serialize_task_run_should_expose_degraded_snapshot_envelope_for_stale_task(self):
+        task_run = admin_task_service.record_task_run(
+            task_type="scheduled_scrape",
+            status="failed",
+            summary="定时抓取进行中（状态过期，已自动结束）",
+            details={
+                "progress_mode": "stage_only",
+                "failure_reason": "任务运行状态已过期，可能是服务重启或异常中断",
+                "final_summary": "定时抓取进行中（状态过期，已自动结束）",
+            },
+            params={"source_id": 1, "max_pages": 5},
+            phase="状态过期，已自动结束",
+            progress=95,
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(
+            task_run,
+            snapshot_at="2026-04-04T10:35:00+00:00",
+        )
+
+        self.assertEqual(serialized["trust_level"], "degraded")
+        self.assertEqual(serialized["instance_scope"], "current_instance")
+        self.assertIn("自动归档", serialized["degraded_reason"])
+        self.assertIn("超时", serialized["degraded_reason"])
+        self.assertIn("降级", serialized["scope_summary"])
+        self.assertEqual(serialized["details"]["trust_level"], "degraded")
+
+    def test_serialize_task_run_should_expose_trusted_snapshot_envelope_for_final_task(self):
+        task_run = admin_task_service.record_task_run(
+            task_type="attachment_backfill",
+            status="success",
+            summary="历史附件补处理完成",
+            details={
+                "progress_mode": "stage_only",
+                "metrics": {"posts_scanned": 9, "attachments_downloaded": 4},
+            },
+            params={"source_id": 1, "limit": 50},
+            phase="附件补处理完成",
+            progress=100,
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(
+            task_run,
+            snapshot_at="2026-04-04T10:40:00+00:00",
+        )
+
+        self.assertEqual(serialized["trust_level"], "trusted")
+        self.assertEqual(serialized["instance_scope"], "current_instance")
+        self.assertIsNone(serialized["degraded_reason"])
+        self.assertIn("已归档", serialized["scope_summary"])
+        self.assertEqual(serialized["details"]["trust_level"], "trusted")
+
+    def test_serialize_task_run_should_expose_maintenance_category_and_tags(self):
+        task_run = admin_task_service.record_task_run(
+            task_type="maintenance_backfill",
+            status="success",
+            summary="历史维护补齐完成",
+            details={
+                "progress_mode": "stage_only",
+                "metrics": {
+                    "analysis_created": 3,
+                    "analysis_refreshed": 2,
+                    "duplicate_groups": 1,
+                },
+            },
+            params={"operation": "counselor_flag_repair", "limit": 200},
+            phase="维护补齐完成",
+            progress=100,
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(task_run)
+
+        self.assertEqual(serialized["display_name"], "历史辅导员口径校正")
+        self.assertEqual(serialized["task_category"], "maintenance")
+        self.assertEqual(serialized["task_category_label"], "维护任务")
+        self.assertIn("maintenance", serialized["task_tags"])
+        self.assertIn("maintenance-backfill", serialized["task_tags"])
+        self.assertEqual(serialized["details"]["task_category"], "maintenance")
+        self.assertEqual(serialized["details"]["task_category_label"], "维护任务")
+
     def test_serialize_task_run_should_preserve_stage_key(self):
         task_run = admin_task_service.record_task_run(
             task_type="manual_scrape",
@@ -452,6 +601,23 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["details"]["posts_seen"], 9)
         self.assertNotIn("internal_debug", serialized["details"])
         self.assertNotIn("private_marker", serialized["details"])
+
+    def test_serialize_task_run_should_include_maintenance_category(self):
+        task_run = admin_task_service.record_task_run(
+            task_type="maintenance_backfill",
+            status="success",
+            summary="历史辅导员口径校正完成",
+            details={"progress_mode": "stage_only"},
+            params={"operation": "counselor_flag_repair"},
+            phase="维护补齐完成",
+            progress=100,
+        )
+
+        serialized = admin_task_service.serialize_task_run_for_admin(task_run)
+
+        self.assertEqual(serialized["task_category"], "maintenance")
+        self.assertEqual(serialized["task_category_label"], "维护任务")
+        self.assertEqual(serialized["display_name"], "历史辅导员口径校正")
 
     def test_serialize_task_run_should_distinguish_retry_and_rerun(self):
         failed_run = admin_task_service.record_task_run(
@@ -661,6 +827,47 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertIn("状态过期", serialized_runs[0]["final_summary"])
         self.assertNotEqual(serialized_runs[0]["final_summary"], "定时抓取进行中")
 
+    def test_load_task_runs_should_canonicalize_legacy_status_aliases(self):
+        self.write_task_runs([
+            {
+                "id": "legacy-processing-1",
+                "task_type": "scheduled_scrape",
+                "status": "processing",
+                "summary": "定时抓取进行中",
+                "phase": "正在抓取源站并写入数据库",
+                "progress": 55,
+                "params": {"source_id": 1, "max_pages": 5},
+                "details": {"progress_mode": "stage_only"},
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": None,
+            },
+            {
+                "id": "legacy-pending-1",
+                "task_type": "manual_scrape",
+                "status": "pending",
+                "summary": "手动抓取等待开始",
+                "phase": "等待开始抓取",
+                "progress": 0,
+                "params": {"source_id": 1, "max_pages": 3},
+                "details": {"progress_mode": "stage_only"},
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": None,
+            },
+        ])
+
+        task_runs = admin_task_service.load_task_runs(limit=10)
+        serialized_runs = admin_task_service.load_task_runs_for_admin(limit=10)
+        persisted = json.loads(self.task_runs_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(task_runs[0]["status"], "running")
+        self.assertEqual(task_runs[1]["status"], "queued")
+        self.assertEqual(serialized_runs[0]["status"], "running")
+        self.assertEqual(serialized_runs[1]["status"], "queued")
+        self.assertEqual(persisted[0]["status"], "running")
+        self.assertEqual(persisted[1]["status"], "queued")
+
     def test_load_task_runs_should_keep_running_when_heartbeat_is_fresh(self):
         self.write_task_runs([
             {
@@ -681,7 +888,51 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         task_runs = admin_task_service.load_task_runs(limit=10)
 
         self.assertEqual(task_runs[0]["status"], "running")
-        self.assertEqual(task_runs[0]["phase"], "抓取执行中")
+
+    def test_get_task_runtime_health_summary_should_report_stale_tasks_and_latest_heartbeat(self):
+        fresh_heartbeat = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        stale_heartbeat = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        self.write_task_runs([
+            {
+                "id": "running-fresh-1",
+                "task_type": "manual_scrape",
+                "status": "running",
+                "summary": "手动抓取进行中",
+                "details": {},
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "heartbeat_at": fresh_heartbeat,
+                "finished_at": None,
+            },
+            {
+                "id": "running-stale-1",
+                "task_type": "manual_scrape",
+                "status": "running",
+                "summary": "手动抓取卡住",
+                "details": {},
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "heartbeat_at": stale_heartbeat,
+                "finished_at": None,
+            },
+            {
+                "id": "done-1",
+                "task_type": "scheduled_scrape",
+                "status": "success",
+                "summary": "已完成",
+                "details": {},
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ])
+
+        payload = admin_task_service.get_task_runtime_health_summary()
+
+        self.assertEqual(payload["running_task_count"], 2)
+        self.assertEqual(payload["stale_task_count"], 1)
+        self.assertEqual(payload["latest_heartbeat_at"], fresh_heartbeat)
+        self.assertLessEqual(payload["latest_heartbeat_age_seconds"], 300)
+        self.assertEqual(payload["stale_tasks"][0]["id"], "running-stale-1")
+        self.assertEqual(payload["stale_tasks"][0]["stale_after_seconds"], 7200)
 
     def test_get_public_task_freshness_summary_should_skip_ai_analysis_runs(self):
         self.write_task_runs([
@@ -711,6 +962,123 @@ class AdminTaskServiceTestCase(unittest.TestCase):
 
         self.assertEqual(summary["latest_success_run"]["task_type"], "scheduled_scrape")
 
+    def test_get_public_task_freshness_summary_should_filter_by_source_scope(self):
+        self.write_task_runs([
+            {
+                "id": "scrape-2",
+                "task_type": "scheduled_scrape",
+                "status": "success",
+                "summary": "安徽源抓取完成",
+                "params": {"source_id": 2},
+                "details": {},
+                "started_at": "2026-03-28T10:00:00+00:00",
+                "finished_at": "2026-03-28T10:05:00+00:00",
+            },
+            {
+                "id": "scrape-1",
+                "task_type": "scheduled_scrape",
+                "status": "success",
+                "summary": "江苏源抓取完成",
+                "params": {"source_id": 1},
+                "details": {},
+                "started_at": "2026-03-27T10:00:00+00:00",
+                "finished_at": "2026-03-27T10:05:00+00:00",
+            },
+        ])
+
+        summary = admin_task_service.get_public_task_freshness_summary(source_id=1)
+
+        self.assertEqual(summary["scope"], "source")
+        self.assertEqual(summary["requested_source_id"], 1)
+        self.assertEqual(summary["latest_success_run"]["id"], "scrape-1")
+
+    def test_get_public_task_freshness_summary_should_keep_low_frequency_source_after_task_window_rollover(self):
+        admin_task_service.record_task_run(
+            task_type="scheduled_scrape",
+            status="success",
+            summary="江苏源抓取完成",
+            params={"source_id": 1},
+            details={},
+            task_id="scrape-js-1",
+            started_at="2026-03-01T10:00:00+00:00",
+            finished_at="2026-03-01T10:05:00+00:00",
+        )
+
+        for index in range(60):
+            admin_task_service.record_task_run(
+                task_type="scheduled_scrape",
+                status="success",
+                summary=f"安徽源抓取完成-{index}",
+                params={"source_id": 2},
+                details={},
+                task_id=f"scrape-ah-{index}",
+                started_at=f"2026-03-02T10:{index % 60:02d}:00+00:00",
+                finished_at=f"2026-03-02T10:{index % 60:02d}:30+00:00",
+            )
+
+        task_runs = admin_task_service.load_task_runs(limit=admin_task_service.MAX_TASK_RUNS)
+        source_ids = {
+            admin_task_service._extract_task_source_id(task_run)
+            for task_run in task_runs
+            if task_run.get("task_type") == "scheduled_scrape"
+        }
+        summary = admin_task_service.get_public_task_freshness_summary(source_id=1)
+
+        self.assertNotIn(1, source_ids)
+        self.assertEqual(summary["scope"], "source")
+        self.assertEqual(summary["requested_source_id"], 1)
+        self.assertEqual(summary["latest_success_run"]["id"], "scrape-js-1")
+        self.assertEqual(summary["latest_success_run"]["params"]["source_id"], 1)
+
+    def test_get_public_task_freshness_summary_should_not_cleanup_stale_running_tasks_when_snapshot_missing(self):
+        stale_started_at = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+        stale_heartbeat = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        self.write_task_runs([
+            {
+                "id": "running-stale-raw-1",
+                "task_type": "scheduled_scrape",
+                "status": "running",
+                "summary": "定时抓取卡住",
+                "params": {"source_id": 1, "max_pages": 5},
+                "details": {},
+                "started_at": stale_started_at,
+                "heartbeat_at": stale_heartbeat,
+                "finished_at": None,
+            },
+            {
+                "id": "scrape-success-1",
+                "task_type": "scheduled_scrape",
+                "status": "success",
+                "summary": "江苏源抓取完成",
+                "params": {"source_id": 1},
+                "details": {},
+                "started_at": "2026-03-27T10:00:00+00:00",
+                "finished_at": "2026-03-27T10:05:00+00:00",
+            },
+        ])
+
+        summary = admin_task_service.get_public_task_freshness_summary(source_id=1)
+        persisted = json.loads(self.task_runs_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["latest_success_run"]["id"], "scrape-success-1")
+        self.assertEqual(persisted[0]["status"], "running")
+
+    def test_serialize_public_task_freshness_should_include_scope_and_source_id(self):
+        payload = admin_task_service.serialize_public_task_freshness({
+            "scope": "source",
+            "requested_source_id": 7,
+            "latest_success_at": "2026-03-28T10:05:00+00:00",
+            "latest_success_run": {
+                "task_type": "scheduled_scrape",
+                "finished_at": "2026-03-28T10:05:00+00:00",
+                "params": {"source_id": 7},
+            },
+        })
+
+        self.assertEqual(payload["scope"], "source")
+        self.assertEqual(payload["requested_source_id"], 7)
+        self.assertEqual(payload["latest_success_run"]["source_id"], 7)
+
     def test_request_task_run_cancel_should_mark_cancel_requested_status(self):
         created = admin_task_service.start_task_run(
             task_type="ai_analysis",
@@ -730,6 +1098,8 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["status_label"], "正在终止")
         self.assertEqual(serialized["stage"], "finalizing")
         self.assertEqual(serialized["actions"], [])
+        self.assertEqual(serialized["stage_label"], "任务尚未开始，启动前会直接停止")
+        self.assertEqual(serialized["phase"], "任务尚未开始，启动前会直接停止")
         self.assertEqual(serialized["details"]["cancel_reason"], "user_requested")
 
     def test_update_task_run_should_keep_cancel_requested_absorbing_after_progress_update(self):
@@ -761,13 +1131,41 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         serialized = admin_task_service.serialize_task_run_for_admin(updated)
 
         self.assertEqual(updated["status"], "cancel_requested")
-        self.assertEqual(updated["phase"], "当前处理单元结束后会停止")
+        self.assertEqual(updated["phase"], "任务尚未开始，启动前会直接停止")
         self.assertEqual(updated["details"]["stage"], "finalizing")
-        self.assertEqual(updated["details"]["stage_label"], "当前处理单元结束后会停止")
+        self.assertEqual(updated["details"]["stage_label"], "任务尚未开始，启动前会直接停止")
         self.assertEqual(serialized["status_label"], "正在终止")
         self.assertEqual(serialized["stage"], "finalizing")
+        self.assertEqual(serialized["stage_label"], "任务尚未开始，启动前会直接停止")
         self.assertEqual(serialized["live_metrics"]["posts_scanned"], 3)
         self.assertEqual(serialized["actions"], [])
+
+    def test_request_task_run_cancel_should_use_inflight_copy_for_running_task(self):
+        running = admin_task_service.record_task_run(
+            task_type="ai_analysis",
+            status="running",
+            summary="AI 分析进行中",
+            details={
+                "stage": "persisting",
+                "stage_label": "正在批量执行 AI 分析",
+                "progress_mode": "stage_only",
+            },
+            params={"limit": 100},
+            phase="正在批量执行 AI 分析",
+            progress=45,
+        )
+
+        cancelled = admin_task_service.request_task_run_cancel(
+            task_id=running["id"],
+            cancel_reason="user_requested",
+            cancel_requested_by="admin",
+        )
+        serialized = admin_task_service.serialize_task_run_for_admin(cancelled)
+
+        self.assertEqual(serialized["status"], "cancel_requested")
+        self.assertEqual(serialized["stage"], "finalizing")
+        self.assertEqual(serialized["stage_label"], "当前处理单元结束后会停止")
+        self.assertEqual(serialized["phase"], "当前处理单元结束后会停止")
 
     def test_record_task_run_should_promote_live_metrics_to_final_metrics(self):
         task_run = admin_task_service.record_task_run(

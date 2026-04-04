@@ -15,6 +15,11 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
     logger.info("应用启动中...")
+    if not settings.DEBUG and settings.STARTUP_VALIDATION_ISSUES:
+        raise RuntimeError(
+            "部署启动校验失败: "
+            + ", ".join(settings.STARTUP_VALIDATION_ISSUES)
+        )
     initialize_database()
     start_scheduler()
     yield
@@ -28,13 +33,16 @@ app = FastAPI(
     description="江苏省专职辅导员招聘信息追踪系统",
     version="1.1.0",
     debug=settings.DEBUG,
+    docs_url="/docs" if settings.API_DOCS_ENABLED else None,
+    redoc_url="/redoc" if settings.API_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if settings.API_DOCS_ENABLED else None,
     lifespan=lifespan
 )
 
 # Session 中间件配置
 app.add_middleware(
     SessionMiddleware,
-    secret_key=settings.ADMIN_SESSION_SECRET or "dev-session-secret",
+    secret_key=settings.ADMIN_SESSION_SECRET_EFFECTIVE,
     same_site="lax",
     https_only=settings.ADMIN_SESSION_SECURE,
     max_age=settings.ADMIN_SESSION_MAX_AGE_SECONDS,
@@ -58,8 +66,10 @@ app.include_router(admin.router, prefix="/api", tags=["后台管理"])
 @app.get("/")
 async def root():
     """根路径"""
-    return {
+    payload = {
         "message": "欢迎使用江苏专职辅导员招聘追踪系统",
-        "docs": "/docs",
         "health": "/api/health"
     }
+    if settings.API_DOCS_ENABLED:
+        payload["docs"] = "/docs"
+    return payload

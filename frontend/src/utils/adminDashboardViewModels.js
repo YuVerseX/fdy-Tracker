@@ -1,10 +1,15 @@
 import { getAdminRuntimeCopy } from './adminDashboardMeta.js'
+import {
+  getAdminTaskParam,
+  normalizeAdminTaskSnapshot,
+  normalizeAdminTaskStatus
+} from './adminTaskSnapshots.js'
 
 const EMPTY_LABEL = '--'
 const NOT_FETCHED_LABEL = '未获取'
 const DEFAULT_AI_DISABLED_REASON = '智能整理暂时不可用，基础处理仍可继续。'
 const DEFAULT_HEARTBEAT_STALE_MS = 10 * 60 * 1000
-const RUNNING_TASK_STATUSES = ['queued', 'pending', 'running', 'processing', 'cancel_requested']
+const RUNNING_TASK_STATUSES = ['queued', 'running', 'cancel_requested']
 const FINAL_TASK_STATUSES = new Set(['success', 'failed', 'cancelled'])
 
 const TASK_TYPE_LABELS = {
@@ -36,6 +41,12 @@ const getMetricNumber = (metrics = {}, ...keys) => {
 const formatCount = (value, suffix = '') => {
   const numeric = normalizeNumber(value)
   return numeric === null ? EMPTY_LABEL : `${numeric}${suffix}`
+}
+const normalizeBooleanParam = (value, fallback = false) => {
+  if (typeof value === 'boolean') return value
+  if (value === 'true' || value === '1') return true
+  if (value === 'false' || value === '0') return false
+  return fallback
 }
 
 const buildStat = (label, value, tone = 'slate', options = {}) => ({
@@ -114,11 +125,12 @@ const parseTimeToMs = (value) => {
 const getTaskRunKey = (run) => run?.id || `${run?.task_type || run?.taskType || 'task'}-${run?.started_at || run?.startedAt || run?.finished_at || run?.finishedAt || ''}`
 
 export const getTaskTypeLabel = (taskType) => TASK_TYPE_LABELS[taskType] || taskType || EMPTY_LABEL
-export const isRunningTaskStatus = (status) => RUNNING_TASK_STATUSES.includes(status)
+export const isRunningTaskStatus = (status) => RUNNING_TASK_STATUSES.includes(normalizeAdminTaskStatus(status))
 export const getTaskHeartbeatAt = (run) => run?.heartbeat_at || run?.heartbeatAt || run?.started_at || run?.startedAt || ''
 export const isTaskRunPossiblyStuck = (run, nowTs = Date.now(), heartbeatStaleMs = DEFAULT_HEARTBEAT_STALE_MS) => {
-  if (!isRunningTaskStatus(run?.status)) return false
-  const heartbeatMs = parseTimeToMs(getTaskHeartbeatAt(run))
+  const normalizedRun = normalizeAdminTaskSnapshot(run)
+  if (!isRunningTaskStatus(normalizedRun?.status)) return false
+  const heartbeatMs = parseTimeToMs(getTaskHeartbeatAt(normalizedRun))
   return heartbeatMs !== null && nowTs - heartbeatMs >= heartbeatStaleMs
 }
 
@@ -222,7 +234,7 @@ const buildDuplicateLiveMeta = (taskRuns = []) => {
 const buildJobExtractionLiveMeta = (taskRuns = [], { useAi = false } = {}) => {
   const run = findLatestTaskByMatcher(taskRuns, (item) => {
     const taskType = item?.task_type || item?.taskType
-    const runUsesAi = Boolean(item?.params?.use_ai ?? item?.params?.useAi)
+    const runUsesAi = normalizeBooleanParam(getAdminTaskParam(item, 'use_ai', 'useAi'), false)
     if (!isRunningTaskStatus(item?.status)) return false
     if (useAi) return taskType === 'ai_job_extraction' || (taskType === 'job_extraction' && runUsesAi)
     return taskType === 'job_extraction' && !runUsesAi
@@ -268,18 +280,19 @@ export function buildTaskRunsPresentation({
   maxCurrentRuns = 4,
   maxRecentResultRuns = 4
 } = {}) {
-  const currentRunsAll = taskRuns.filter((run) => isRunningTaskStatus(run?.status))
-  const cancelledRunsAll = taskRuns.filter((run) => run?.status === 'cancelled')
-  const failedRunsAll = taskRuns.filter((run) => run?.status === 'failed')
-  const successRunsAll = taskRuns.filter((run) => run?.status === 'success')
-  const resultRunsAll = taskRuns.filter((run) => ['failed', 'success', 'cancelled'].includes(run?.status))
+  const normalizedRuns = taskRuns.map((run) => normalizeAdminTaskSnapshot(run))
+  const currentRunsAll = normalizedRuns.filter((run) => isRunningTaskStatus(run?.status))
+  const cancelledRunsAll = normalizedRuns.filter((run) => run?.status === 'cancelled')
+  const failedRunsAll = normalizedRuns.filter((run) => run?.status === 'failed')
+  const successRunsAll = normalizedRuns.filter((run) => run?.status === 'success')
+  const resultRunsAll = normalizedRuns.filter((run) => ['failed', 'success', 'cancelled'].includes(run?.status))
   const currentRuns = currentRunsAll
   const recentResultRuns = resultRunsAll.slice(0, maxRecentResultRuns)
   const featuredRunKeys = new Set([...currentRuns, ...recentResultRuns].map((run) => getTaskRunKey(run)))
-  const historyRuns = taskRuns.filter((run) => !featuredRunKeys.has(getTaskRunKey(run)))
+  const historyRuns = normalizedRuns.filter((run) => !featuredRunKeys.has(getTaskRunKey(run)))
   const stuckCount = currentRunsAll.filter((run) => isTaskRunPossiblyStuck(run, nowTs, heartbeatStaleMs)).length
-  const queuedCount = taskRuns.filter((run) => ['queued', 'pending'].includes(run?.status)).length
-  const processingCount = taskRuns.filter((run) => ['running', 'processing', 'cancel_requested'].includes(run?.status)).length
+  const queuedCount = normalizedRuns.filter((run) => run?.status === 'queued').length
+  const processingCount = normalizedRuns.filter((run) => ['running', 'cancel_requested'].includes(run?.status)).length
 
   return {
     summaryCards: [

@@ -11,7 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from src.database.models import Post
-from src.scrapers.jiangsu_hrss import normalize_content_text
+from src.services.content_normalizer import normalize_content_text, normalize_content_text_for_source
 from src.services.task_progress import (
     CancelCheck,
     ProgressCallback,
@@ -98,9 +98,13 @@ def normalize_duplicate_title(title: str) -> str:
     return normalized.strip()
 
 
-def build_post_content_fingerprint(content: str) -> str:
+def build_post_content_fingerprint(content: str, source: Any | None = None) -> str:
     """为正文构造稳定指纹。"""
-    normalized = normalize_content_text(content or "")
+    if source is None:
+        normalized = normalize_content_text(content or "")
+    else:
+        normalized = normalize_content_text_for_source(content or "", source=source)
+
     normalized = re.sub(r"\s+", "", normalized)
     if not normalized:
         return ""
@@ -177,6 +181,11 @@ def choose_primary_post(posts: list[Any]) -> Any:
 
 def detect_duplicate_reason(left: Any, right: Any) -> str:
     """判断两条帖子是否重复，并返回重复原因。"""
+    if getattr(left, "source_id", None) != getattr(right, "source_id", None):
+        return ""
+
+    source_profile = getattr(left, "source", None) or getattr(right, "source", None)
+
     left_canonical = _normalize_url(getattr(left, "canonical_url", ""))
     right_canonical = _normalize_url(getattr(right, "canonical_url", ""))
     if left_canonical and left_canonical == right_canonical:
@@ -186,9 +195,6 @@ def detect_duplicate_reason(left: Any, right: Any) -> str:
     right_original = _normalize_url(getattr(right, "original_url", ""))
     if left_original and left_original == right_original:
         return "original_url"
-
-    if getattr(left, "source_id", None) != getattr(right, "source_id", None):
-        return ""
 
     left_title = normalize_duplicate_title(getattr(left, "title", ""))
     right_title = normalize_duplicate_title(getattr(right, "title", ""))
@@ -205,8 +211,8 @@ def detect_duplicate_reason(left: Any, right: Any) -> str:
         return "source_date_title"
 
     if days_diff <= 1:
-        left_fp = build_post_content_fingerprint(getattr(left, "content", ""))
-        right_fp = build_post_content_fingerprint(getattr(right, "content", ""))
+        left_fp = build_post_content_fingerprint(getattr(left, "content", ""), source=source_profile)
+        right_fp = build_post_content_fingerprint(getattr(right, "content", ""), source=source_profile)
         if left_fp and left_fp == right_fp:
             return "source_date_title_content_fingerprint"
 
@@ -366,6 +372,7 @@ def _load_posts_with_duplicate_context(db: Session, post_ids: list[int]) -> list
     return (
         db.query(Post)
         .options(
+            selectinload(Post.source),
             selectinload(Post.attachments),
             selectinload(Post.fields),
             selectinload(Post.jobs),
@@ -425,6 +432,7 @@ def refresh_duplicate_posts(
     candidate_query = (
         db.query(Post)
         .options(
+            selectinload(Post.source),
             selectinload(Post.attachments),
             selectinload(Post.fields),
             selectinload(Post.jobs),
@@ -561,6 +569,7 @@ def backfill_duplicate_posts(db: Session, limit: int | None = None) -> dict[str,
     query = (
         db.query(Post)
         .options(
+            selectinload(Post.source),
             selectinload(Post.attachments),
             selectinload(Post.fields),
             selectinload(Post.jobs),

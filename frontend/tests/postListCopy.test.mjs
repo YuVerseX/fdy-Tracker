@@ -60,6 +60,12 @@ test('PostDetail freshness copy should use latest-success snapshot semantics', (
   assert.match(source, /return `\$\{freshnessHeadline\.value\}于 \$\{formatDateTime\(latestSuccessTask\.value\.finishedAt\)\}（\$\{getRelativeTimeLabel\(latestSuccessTask\.value\.finishedAt\)\}）。`/)
 })
 
+test('PostDetail state should request source-scoped freshness after loading the current post', () => {
+  const source = readSource('views/post-detail/usePostDetailState.js')
+
+  assert.match(source, /postsApi\.getFreshnessSummary\(\s*sourceId \? \{ source_id: sourceId \} : \{\}\s*\)/)
+})
+
 test('public freshness paths should not contain outdated realtime wording', () => {
   const postListSource = readSource('views/PostList.vue')
   const postListPresentationSource = readSource('utils/postListPresentation.js')

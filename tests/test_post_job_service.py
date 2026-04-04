@@ -1,11 +1,13 @@
 import json
 import unittest
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SAWarning
 from sqlalchemy.orm import sessionmaker
 
 from src.database.models import Attachment, Base, Post, PostField, PostJob, Source
@@ -429,6 +431,58 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
         saved_jobs = self.db.query(PostJob).filter(PostJob.post_id == post.id).all()
         self.assertEqual(len(saved_jobs), 1)
         self.assertEqual(saved_jobs[0].job_name, "新AI岗位")
+
+    async def test_sync_post_jobs_should_update_existing_job_without_sawarning(self):
+        post = Post(
+            source_id=1,
+            title="综合招聘公告",
+            content="正文里只有招聘范围，没有明确岗位表。",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            canonical_url="https://example.com/posts/upsert-job",
+            original_url="https://example.com/posts/upsert-job",
+            counselor_scope=COUNSELOR_SCOPE_CONTAINS,
+            has_counselor_job=True,
+            is_counselor=True,
+        )
+        self.db.add(post)
+        self.db.flush()
+        self.db.add(PostJob(
+            post_id=post.id,
+            job_name="专职辅导员",
+            recruitment_count="1人",
+            education_requirement="本科",
+            source_type="field",
+            is_counselor=True,
+            confidence_score=0.65,
+            raw_payload_json=json.dumps({"岗位名称": "专职辅导员", "招聘人数": "1人"}, ensure_ascii=False),
+            sort_order=0,
+        ))
+        self.db.commit()
+
+        post = self.db.query(Post).filter(Post.id == post.id).first()
+        with patch(
+            "src.services.post_job_service.collect_local_jobs",
+            return_value=[{
+                "job_name": "专职辅导员",
+                "recruitment_count": "3人",
+                "education_requirement": "硕士",
+                "source_type": "field",
+                "is_counselor": True,
+                "raw_payload": {"岗位名称": "专职辅导员", "招聘人数": "3人"},
+            }],
+        ), warnings.catch_warnings(record=True) as caught_warnings:
+            warnings.simplefilter("always")
+            result = await sync_post_jobs(self.db, post, use_ai=False)
+        self.db.commit()
+
+        saved_jobs = self.db.query(PostJob).filter(PostJob.post_id == post.id).all()
+
+        self.assertEqual(result["jobs_saved"], 1)
+        self.assertEqual(len(saved_jobs), 1)
+        self.assertEqual(saved_jobs[0].job_name, "专职辅导员")
+        self.assertEqual(saved_jobs[0].recruitment_count, "3人")
+        self.assertEqual(saved_jobs[0].education_requirement, "硕士")
+        self.assertFalse(any(item.category is SAWarning for item in caught_warnings))
 
     def test_filter_displayable_jobs_should_drop_noisy_field_aggregate_job(self):
         jobs = [

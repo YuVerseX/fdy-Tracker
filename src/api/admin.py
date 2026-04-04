@@ -15,6 +15,8 @@ from src.database.database import SessionLocal, get_db
 from src.database.models import Post, PostJob, Source
 from src.services.ai_analysis_service import (
     backfill_base_analysis,
+    backfill_rule_analyses,
+    backfill_rule_insights,
     get_analysis_summary,
     get_insight_summary,
     is_openai_ready,
@@ -41,10 +43,15 @@ from src.services.admin_task_service import (
 from src.services.duplicate_service import (
     DUPLICATE_BACKFILL_SCOPE_RECHECK_RECENT,
     DUPLICATE_BACKFILL_SCOPE_UNCHECKED,
+    backfill_duplicate_posts,
     get_duplicate_summary,
     run_duplicate_backfill,
 )
-from src.services.post_job_service import backfill_post_jobs, get_job_index_summary
+from src.services.post_job_service import (
+    backfill_post_counselor_flags,
+    backfill_post_jobs,
+    get_job_index_summary,
+)
 from src.services.task_progress import (
     ProgressCallback,
     TaskCancellationRequested,
@@ -56,6 +63,7 @@ from src.services.scraper_service import (
     ensure_scrape_source_ready,
     scrape_and_save,
 )
+from src.services.source_scope import get_default_active_source_id
 
 def _secure_compare_text(left: str, right: str) -> bool:
     """支持 Unicode 的常量时间文本比较。"""
@@ -69,18 +77,23 @@ def _ensure_admin_auth_configured() -> tuple[str, str]:
     """校验后台账号和会话配置。"""
     expected_username = (settings.ADMIN_USERNAME or "").strip()
     expected_password = (settings.ADMIN_PASSWORD or "").strip()
-    session_secret = (settings.ADMIN_SESSION_SECRET or "").strip()
 
-    if not expected_username or not expected_password:
+    if not settings.ADMIN_CREDENTIALS_CONFIGURED:
         raise HTTPException(
             status_code=503,
-            detail="后台鉴权还没配置，请先设置 ADMIN_USERNAME 和 ADMIN_PASSWORD。",
+            detail="后台鉴权还没配置，请先设置真实的 ADMIN_USERNAME 和 ADMIN_PASSWORD。",
         )
 
-    if not session_secret:
+    if not settings.ADMIN_SESSION_SECRET_CONFIGURED:
         raise HTTPException(
             status_code=503,
-            detail="后台会话鉴权还没配置，请先设置 ADMIN_SESSION_SECRET。",
+            detail="后台会话鉴权还没配置，请先设置真实的 ADMIN_SESSION_SECRET。",
+        )
+
+    if not settings.ADMIN_SESSION_SECRET_STRONG_ENOUGH:
+        raise HTTPException(
+            status_code=503,
+            detail="后台会话鉴权还没配置，请把 ADMIN_SESSION_SECRET 设置为至少 32 个字符的随机密钥。",
         )
 
     return expected_username, expected_password
@@ -145,6 +158,7 @@ TASK_TYPE_LABELS = {
     "attachment_backfill": "历史附件补处理",
     "duplicate_backfill": "历史去重补齐",
     "base_analysis_backfill": "基础分析补齐",
+    "maintenance_backfill": "历史维护补齐",
     "ai_analysis": "OpenAI 分析",
     "job_extraction": "岗位级抽取",
     "ai_job_extraction": "智能岗位识别",
@@ -155,10 +169,17 @@ CONTENT_MUTATION_TASK_TYPES = [
     "attachment_backfill",
     "duplicate_backfill",
     "base_analysis_backfill",
+    "maintenance_backfill",
     "ai_analysis",
     "job_extraction",
     "ai_job_extraction",
 ]
+MAINTENANCE_OPERATION_LABELS = {
+    "rule_analysis_refresh": "历史规则分析回填",
+    "rule_insight_refresh": "历史规则洞察回填",
+    "counselor_flag_repair": "历史辅导员口径校正",
+    "duplicate_full_rebuild": "历史重复结果全量重算",
+}
 
 
 class TaskRetryMixin(BaseModel):
@@ -168,7 +189,7 @@ class TaskRetryMixin(BaseModel):
 
 class RunScrapeRequest(TaskRetryMixin):
     """手动抓取请求"""
-    source_id: int = Field(default=1, ge=1)
+    source_id: Optional[int] = Field(default=None, ge=1)
     max_pages: int = Field(default=5, ge=1, le=50)
 
 
@@ -198,6 +219,17 @@ class BackfillBaseAnalysisRequest(TaskRetryMixin):
     only_pending: bool = True
 
 
+class RunMaintenanceRequest(TaskRetryMixin):
+    """一次性维护补齐请求。"""
+    operation: Literal[
+        "rule_analysis_refresh",
+        "rule_insight_refresh",
+        "counselor_flag_repair",
+        "duplicate_full_rebuild",
+    ]
+    limit: Optional[int] = Field(default=None, ge=1, le=5000)
+
+
 class RunJobExtractionRequest(TaskRetryMixin):
     """岗位级抽取任务请求"""
     source_id: Optional[int] = Field(default=None, ge=1)
@@ -217,7 +249,7 @@ class UpdateSchedulerConfigRequest(BaseModel):
     """更新定时抓取配置请求"""
     enabled: bool = True
     interval_seconds: int = Field(default=7200, ge=60, le=86400)
-    default_source_id: int = Field(default=1, ge=1)
+    default_source_id: Optional[int] = Field(default=None, ge=1)
     default_max_pages: int = Field(default=5, ge=1, le=50)
 
 
@@ -228,6 +260,14 @@ def _build_admin_session_payload(username: str) -> dict:
         "issued_at": datetime.now(timezone.utc).isoformat(),
         "credential_fingerprint": _build_admin_credential_fingerprint(),
     }
+
+
+def _resolve_default_source_id_or_raise(db: Session) -> int:
+    """解析当前默认启用 source。"""
+    source_id = get_default_active_source_id(db)
+    if source_id is None:
+        raise HTTPException(status_code=409, detail="当前没有可用数据源，请先启用至少一个数据源。")
+    return source_id
 
 
 @session_router.post("/login")
@@ -404,6 +444,29 @@ def _record_cancelled_task_run(
 def _get_task_type_label(task_type: str) -> str:
     """把任务类型转成人看得懂的名字"""
     return TASK_TYPE_LABELS.get(task_type, task_type)
+
+
+def _get_maintenance_operation_label(operation: str) -> str:
+    """解析维护动作标签。"""
+    return MAINTENANCE_OPERATION_LABELS.get(operation, operation)
+
+
+def _build_maintenance_success_summary(operation: str, result: dict) -> str:
+    """按维护动作输出完成摘要。"""
+    label = _get_maintenance_operation_label(operation)
+    if operation in {"rule_analysis_refresh", "rule_insight_refresh"}:
+        return (
+            f"{label}完成，扫描 {result['scanned']} 条，"
+            f"新增 {result['created']} 条，刷新 {result['refreshed']} 条"
+        )
+    if operation == "counselor_flag_repair":
+        return f"{label}完成，扫描 {result['scanned']} 条，修正 {result['updated']} 条"
+    if operation == "duplicate_full_rebuild":
+        return (
+            f"{label}完成，扫描 {result['scanned']} 条，"
+            f"生成重复组 {result['groups']} 个，折叠 {result['duplicates']} 条"
+        )
+    return f"{label}完成"
 
 
 def _get_job_extraction_runtime_copy(use_ai: bool) -> dict[str, str]:
@@ -1011,6 +1074,115 @@ def _run_base_analysis_with_new_session(
         db.close()
 
 
+def _run_maintenance_with_new_session(params: dict) -> dict:
+    """在线程内创建独立 Session 执行一次性维护补齐。"""
+    db = SessionLocal()
+    try:
+        operation = params["operation"]
+        limit = params.get("limit")
+        if operation == "rule_analysis_refresh":
+            return backfill_rule_analyses(db, limit=limit)
+        if operation == "rule_insight_refresh":
+            return backfill_rule_insights(db, limit=limit)
+        if operation == "counselor_flag_repair":
+            return backfill_post_counselor_flags(db, limit=limit)
+        if operation == "duplicate_full_rebuild":
+            return backfill_duplicate_posts(db, limit=limit)
+        raise ValueError(f"unsupported_maintenance_operation:{operation}")
+    finally:
+        db.close()
+
+
+async def _run_maintenance_backfill_in_background(
+    task_id: str,
+    started_at: str | None,
+    params: dict,
+) -> None:
+    """后台执行一次性维护补齐并写任务记录。"""
+    operation = params["operation"]
+    label = _get_maintenance_operation_label(operation)
+    try:
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase=f"正在准备{label}",
+            progress=None,
+            details=build_progress_details(
+                "stage_only",
+                stage="collecting",
+                stage_label=f"正在准备{label}",
+                metrics={"operation": operation},
+            ),
+        )
+        result = await _run_with_heartbeat(
+            task_id=task_id,
+            phase=f"正在执行{label}",
+            details=build_progress_details(
+                "stage_only",
+                stage="persisting",
+                stage_label=f"正在执行{label}",
+                metrics={"operation": operation},
+            ),
+            awaitable=asyncio.to_thread(
+                _run_maintenance_with_new_session,
+                params,
+            ),
+        )
+        update_task_run(
+            task_id=task_id,
+            status="running",
+            phase=f"正在整理{label}结果",
+            progress=None,
+            details=build_progress_details(
+                "stage_only",
+                stage="finalizing",
+                stage_label=f"正在整理{label}结果",
+                metrics={"operation": operation, **result},
+            ),
+        )
+        record_task_run(
+            task_type="maintenance_backfill",
+            status="success",
+            summary=_build_maintenance_success_summary(operation, result),
+            details={
+                **params,
+                **result,
+                **build_progress_details(
+                    "stage_only",
+                    stage="finalizing",
+                    stage_label=f"{label}完成",
+                    metrics={"operation": operation, **result},
+                ),
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase=f"{label}完成",
+            progress=100,
+        )
+    except Exception as exc:
+        record_task_run(
+            task_type="maintenance_backfill",
+            status="failed",
+            summary=f"{label}失败",
+            details={
+                **params,
+                "error": str(exc),
+                **build_progress_details(
+                    "stage_only",
+                    stage="finalizing",
+                    stage_label=f"{label}失败",
+                    metrics={"operation": operation},
+                ),
+            },
+            params=params,
+            task_id=task_id,
+            started_at=started_at,
+            phase=f"{label}失败",
+            progress=100,
+        )
+
+
 async def _run_job_extraction_in_background(
     task_id: str,
     started_at: str | None,
@@ -1185,7 +1357,13 @@ async def update_scheduler_runtime_config(
     db: Session = Depends(get_db)
 ):
     """更新定时抓取配置"""
-    source = db.query(Source).filter(Source.id == request.default_source_id).first()
+    current_config = load_scheduler_config(db)
+    resolved_source_id = (
+        request.default_source_id
+        or current_config.default_source_id
+        or _resolve_default_source_id_or_raise(db)
+    )
+    source = db.query(Source).filter(Source.id == resolved_source_id).first()
     if not source:
         raise HTTPException(status_code=404, detail="默认数据源不存在")
 
@@ -1196,7 +1374,7 @@ async def update_scheduler_runtime_config(
         db,
         enabled=request.enabled,
         interval_seconds=request.interval_seconds,
-        default_source_id=request.default_source_id,
+        default_source_id=resolved_source_id,
         default_max_pages=request.default_max_pages,
     )
     return {
@@ -1272,13 +1450,14 @@ async def run_scrape_task(
     db: Session = Depends(get_db),
 ):
     """手动抓取最新数据"""
+    resolved_source_id = request.source_id or _resolve_default_source_id_or_raise(db)
     try:
-        ensure_scrape_source_ready(db, request.source_id)
+        ensure_scrape_source_ready(db, resolved_source_id)
     except ScrapeSourceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     params = {
-        "source_id": request.source_id,
+        "source_id": resolved_source_id,
         "max_pages": request.max_pages,
         "rerun_of_task_id": request.rerun_of_task_id,
     }
@@ -1326,6 +1505,36 @@ async def backfill_base_analysis_task(
     )
     return {
         "message": "基础分析补齐任务已提交，后台执行中",
+        "task_run": running_task,
+    }
+
+
+@protected_router.post("/run-maintenance", status_code=202)
+async def run_maintenance_task(
+    request: RunMaintenanceRequest,
+    background_tasks: BackgroundTasks,
+):
+    """显式执行一次性历史维护补齐。"""
+    label = _get_maintenance_operation_label(request.operation)
+    params = {
+        "operation": request.operation,
+        "limit": request.limit,
+        "rerun_of_task_id": request.rerun_of_task_id,
+    }
+    running_task = _start_task_or_raise_conflict(
+        task_type="maintenance_backfill",
+        summary=f"{label}进行中",
+        params=params,
+        conflict_task_types=CONTENT_MUTATION_TASK_TYPES,
+    )
+    background_tasks.add_task(
+        _run_maintenance_backfill_in_background,
+        running_task["id"],
+        running_task.get("started_at"),
+        params,
+    )
+    return {
+        "message": f"{label}任务已提交，后台执行中",
         "task_run": running_task,
     }
 

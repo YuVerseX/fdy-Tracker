@@ -75,11 +75,24 @@ test('admin task center should surface sync status instead of implying continuou
   assert.doesNotMatch(runsSectionSource, /项进行中/)
 })
 
+test('admin task center should keep loaded task cards visible while a refresh is in flight', () => {
+  const runsSectionSource = readSource('views/admin/sections/AdminTaskRunsSection.vue')
+
+  assert.match(runsSectionSource, /v-if="loadingRuns && !taskRunsLoaded"/)
+  assert.doesNotMatch(runsSectionSource, /v-if="loadingRuns \|\| !taskRunsLoaded"/)
+})
+
 test('admin task run card should bind result empty copy from presentation instead of hardcoded promise text', () => {
   const runCardSource = readSource('views/admin/sections/AdminTaskRunCard.vue')
 
   assert.match(runCardSource, /cardPresentation\.resultEmptyText/)
   assert.doesNotMatch(runCardSource, /开始处理后，这里会出现可核对的结果数量/)
+})
+
+test('admin task run card should describe snapshot sections as snapshot guidance instead of task results', () => {
+  const runCardSource = readSource('views/admin/sections/AdminTaskRunCard.vue')
+
+  assert.match(runCardSource, /section\.id === 'snapshot' \? '这里显示当前状态快照的可信度、时间和范围。' : '这里显示本次任务的补充结果。'/)
 })
 
 test('admin task stage timeline should use semantic ordered list and dynamic aria-current', () => {

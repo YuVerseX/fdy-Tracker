@@ -7,6 +7,7 @@ import {
   buildDataProcessingPanels,
   buildTaskRunsPresentation
 } from '../src/utils/adminDashboardViewModels.js'
+import { summarizeTaskSnapshotScope } from '../src/utils/adminTaskSnapshots.js'
 
 test('buildDataProcessingPanels should keep task-oriented ids in taxonomy order', () => {
   const panels = buildDataProcessingPanels({
@@ -233,6 +234,46 @@ test('buildAiEnhancementPanels should show live metrics while ai tasks are runni
   assert.match(String(panels[3].meta), /AI 参与 3 条/)
 })
 
+test('buildAiEnhancementPanels should treat nested request params as ai job runs', () => {
+  const panels = buildAiEnhancementPanels({
+    openaiReady: true,
+    analysisRuntime: {
+      analysis_enabled: true,
+      openai_ready: true,
+      model_name: 'gpt-5.4'
+    },
+    analysisOverview: {
+      total_posts: 20,
+      openai_analyzed_posts: 8,
+      openai_pending_posts: 12
+    },
+    jobsOverview: {
+      posts_with_jobs: 10,
+      ai_job_posts: 2,
+      attachment_job_posts: 4
+    },
+    taskRuns: [
+      {
+        task_type: 'job_extraction',
+        status: 'running',
+        details: {
+          request_params: { use_ai: true },
+          metrics: {
+            posts_scanned: 6,
+            posts_total: 10,
+            ai_posts: 3,
+            jobs_saved: 11
+          }
+        }
+      }
+    ]
+  })
+
+  assert.doesNotMatch(String(panels[2].meta), /进行中：本轮已检查 6\/10 条/)
+  assert.match(String(panels[3].meta), /进行中：本轮已检查 6\/10 条/)
+  assert.match(String(panels[3].meta), /AI 参与 3 条/)
+})
+
 test('buildAiEnhancementPanels should avoid exposing provider and base url details', () => {
   const panels = buildAiEnhancementPanels({
     openaiReady: true,
@@ -329,4 +370,33 @@ test('buildTaskRunsPresentation should keep all active runs out of history even 
     presentation.historyRuns.map((run) => run.id),
     []
   )
+})
+
+test('summarizeTaskSnapshotScope should prioritize current-instance running snapshots over archived results', () => {
+  const snapshot = summarizeTaskSnapshotScope({
+    taskRuns: [
+      {
+        id: 'run-archived-1',
+        task_type: 'manual_scrape',
+        status: 'success',
+        trust_level: 'trusted',
+        scope_summary: '当前实例已归档的任务结果快照'
+      },
+      {
+        id: 'run-live-1',
+        task_type: 'attachment_backfill',
+        status: 'processing',
+        details: {
+          trust_level: 'instance_local',
+          scope_summary: '仅反映当前实例看到的后台任务状态快照',
+          degraded_reason: '运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。'
+        }
+      }
+    ]
+  })
+
+  assert.equal(snapshot.label, '当前实例本地快照')
+  assert.equal(snapshot.tone, 'info')
+  assert.match(snapshot.summary, /当前实例看到的后台任务状态快照/)
+  assert.match(snapshot.detail, /跨实例不可见/)
 })

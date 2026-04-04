@@ -1,3 +1,5 @@
+import { normalizeAdminTaskStatus } from '../../utils/adminTaskSnapshots.js'
+
 const TASK_REFRESH_OPTIONS = Object.freeze({
   manual_scrape: { includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true },
   scheduled_scrape: { includeAnalysis: true, includeInsight: true, includeJobs: true, includeDuplicate: true },
@@ -253,6 +255,7 @@ const TASK_ACTION_GUIDE_COPY_OVERRIDES = Object.freeze({
 })
 
 const toNumber = (value, fallback) => {
+  if (value === '' || value === null || value === undefined) return fallback
   const numeric = Number(value)
   return Number.isFinite(numeric) ? numeric : fallback
 }
@@ -260,7 +263,7 @@ const toNumber = (value, fallback) => {
 const toOptionalSourceId = (value) => {
   if (value === '' || value === null || value === undefined) return undefined
   const numeric = Number(value)
-  return Number.isFinite(numeric) ? numeric : undefined
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined
 }
 
 const toBoolean = (value, fallback) => {
@@ -270,9 +273,14 @@ const toBoolean = (value, fallback) => {
   return fallback
 }
 
-const attachRerunOfTaskId = (payload, rerunOfTaskId) => (
-  rerunOfTaskId ? { ...payload, rerun_of_task_id: rerunOfTaskId } : payload
+const removeUndefinedFields = (payload = {}) => Object.fromEntries(
+  Object.entries(payload).filter(([, value]) => value !== undefined)
 )
+
+const attachRerunOfTaskId = (payload, rerunOfTaskId) => {
+  const normalizedPayload = removeUndefinedFields(payload)
+  return rerunOfTaskId ? { ...normalizedPayload, rerun_of_task_id: rerunOfTaskId } : normalizedPayload
+}
 
 const resolveDuplicateScopeMode = (actionKey, value) => {
   if (actionKey === 'rerun') return 'recheck_recent'
@@ -352,7 +360,7 @@ const TASK_REQUEST_BUILDERS = {
   manual_scrape: ({ params = {}, forms = {}, rerunOfTaskId }) => ({
     apiAction: 'runScrape',
     payload: attachRerunOfTaskId({
-      source_id: toNumber(params.source_id, toNumber(forms.scrape?.sourceId, 1)),
+      source_id: toOptionalSourceId(params.source_id ?? forms.scrape?.sourceId),
       max_pages: toNumber(params.max_pages, toNumber(forms.scrape?.maxPages, 5))
     }, rerunOfTaskId),
     errorMessage: '手动抓取失败'
@@ -360,7 +368,7 @@ const TASK_REQUEST_BUILDERS = {
   scheduled_scrape: ({ params = {}, forms = {}, rerunOfTaskId }) => ({
     apiAction: 'runScrape',
     payload: attachRerunOfTaskId({
-      source_id: toNumber(params.source_id, toNumber(forms.scrape?.sourceId, 1)),
+      source_id: toOptionalSourceId(params.source_id ?? forms.scrape?.sourceId),
       max_pages: toNumber(params.max_pages, toNumber(forms.scrape?.maxPages, 5))
     }, rerunOfTaskId),
     errorMessage: '手动抓取失败'
@@ -445,8 +453,9 @@ export const getTaskRefreshOptions = (taskType) => ({ ...(TASK_REFRESH_OPTIONS[t
 
 export const getTaskActionDefinitions = (run = {}) => {
   const taskType = run?.task_type || run?.taskType
+  const status = normalizeAdminTaskStatus(run?.status)
   if (!canRetryTask(taskType)) return []
-  if (run?.status === 'cancel_requested') return []
+  if (status === 'cancel_requested') return []
 
   const backendActions = getBackendActionDefinitions(run)
   if (backendActions.length > 0) {
@@ -455,7 +464,7 @@ export const getTaskActionDefinitions = (run = {}) => {
 
   if (
     CANCELABLE_TASK_TYPES.has(taskType)
-    && ['queued', 'pending', 'running', 'processing'].includes(run?.status)
+    && ['queued', 'running'].includes(status)
     && !run?.details?.cancel_requested_at
   ) {
     return [resolveActionDefinition(taskType, 'cancel')].filter(Boolean)

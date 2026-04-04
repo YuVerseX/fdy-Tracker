@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from src.database.models import Base, Post, PostAnalysis, PostInsight, Source
@@ -730,8 +731,11 @@ class AIInsightSummaryTestCase(unittest.IsolatedAsyncioTestCase):
                 failed_once["value"] = True
                 db.add(PostAnalysis(post_id=post.id, analysis_status="success"))
                 db.flush()
-                db.add(PostAnalysis(post_id=post.id, analysis_status="success"))
-                db.flush()
+                raise IntegrityError(
+                    statement="INSERT INTO post_analyses (...) VALUES (...)",
+                    params={"post_id": post.id},
+                    orig=RuntimeError("synthetic nested transaction failure"),
+                )
             return original_upsert_post_analysis(db, post, outcome)
 
         with patch(

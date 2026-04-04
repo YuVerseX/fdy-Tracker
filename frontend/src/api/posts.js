@@ -53,8 +53,8 @@ export const postsApi = {
     return api.get(`/api/posts/${id}`)
   },
 
-  getFreshnessSummary() {
-    return api.get('/api/posts/freshness-summary')
+  getFreshnessSummary(params = {}) {
+    return api.get('/api/posts/freshness-summary', { params })
   },
 
   healthCheck() {

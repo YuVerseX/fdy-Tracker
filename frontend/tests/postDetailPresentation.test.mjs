@@ -3,11 +3,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import {
+  buildHeroTags,
   buildHeroSummary,
   buildInfoDisclosureItems,
   buildJobPresentation,
   buildPostFacts,
   buildResolvedPostFields,
+  buildSourceNotes,
   buildSupplementalFields,
   shouldShowAdminFacingMetadata
 } from '../src/utils/postDetailPresentation.js'
@@ -98,6 +100,42 @@ test('buildHeroSummary should summarize multi-job counselor posts without reusin
   assert.match(summary, /南京市/)
 })
 
+test('buildHeroSummary should not overstate completeness for sparse records', () => {
+  const summary = buildHeroSummary({
+    postData: {
+      record_completeness: {
+        content: 'missing',
+        summary: 'missing',
+        jobs: 'pending',
+        attachments: 'unknown'
+      }
+    },
+    fields: {},
+    jobItems: []
+  })
+
+  assert.match(summary, /仅收录公告标题和基础信息/)
+})
+
+test('buildHeroSummary should acknowledge available content when only summary metadata is missing', () => {
+  const summary = buildHeroSummary({
+    postData: {
+      content: '招聘公告正文',
+      record_completeness: {
+        content: 'available',
+        summary: 'missing',
+        jobs: 'missing',
+        attachments: 'unknown'
+      }
+    },
+    fields: {},
+    jobItems: []
+  })
+
+  assert.match(summary, /已收录正文/)
+  assert.doesNotMatch(summary, /仅收录公告标题和基础信息/)
+})
+
 test('post detail page should promote headline summary and move structured facts behind the hero', () => {
   const source = readSource('views/PostDetail.vue')
   const heroSource = readSource('views/post-detail/PostHeroSection.vue')
@@ -169,13 +207,142 @@ test('shouldShowAdminFacingMetadata should hide provider and confidence from fir
   assert.equal(shouldShowAdminFacingMetadata('analysis_provider'), false)
 })
 
+test('buildHeroTags and buildSourceNotes should expose completeness and provenance truthfully', () => {
+  const postData = {
+    is_counselor: true,
+    counselor_scope: 'contains',
+    attachments: [{ id: 1 }],
+    record_completeness: {
+      content: 'missing',
+      summary: 'available',
+      jobs: 'pending',
+      attachments: 'available'
+    },
+    record_provenance: {
+      summary_source: 'rule',
+      job_sources: ['attachment'],
+      duplicate_resolution: {
+        resolved_from_duplicate: true,
+        requested_post_id: 99,
+        resolved_post_id: 1,
+        reason: 'source_date_title'
+      }
+    }
+  }
+
+  const tags = buildHeroTags(postData, [])
+  const notes = buildSourceNotes(postData, [])
+
+  assert.ok(tags.every((item) => item.label !== '规则整理'))
+  assert.ok(tags.some((item) => item.label === '正文待补充'))
+  assert.ok(tags.some((item) => item.label === '岗位待整理'))
+  assert.ok(notes.some((item) => /去重后的主记录/.test(item)))
+  assert.ok(notes.some((item) => /摘要来源：规则整理/.test(item)))
+  assert.ok(notes.some((item) => /岗位来源：附件/.test(item)))
+  assert.ok(notes.some((item) => /暂未收录正文/.test(item)))
+})
+
+test('buildSourceNotes should keep snapshot provenance explicit when backend provenance is absent', () => {
+  const notes = buildSourceNotes(
+    {
+      record_completeness: {
+        content: 'available',
+        summary: 'missing',
+        jobs: 'available',
+        attachments: 'unknown'
+      }
+    },
+    [{ job_name: '辅导员岗位快照', source: '岗位快照' }]
+  )
+
+  assert.ok(notes.some((item) => /岗位来源：岗位快照/.test(item)))
+  assert.ok(notes.every((item) => !/页面整理结果展示|综合展示/.test(item)))
+})
+
+test('buildHeroTags should expose positive completeness when detail content is available', () => {
+  const tags = buildHeroTags({
+    record_completeness: {
+      content: 'available',
+      summary: 'available',
+      jobs: 'available',
+      attachments: 'missing'
+    }
+  }, [])
+
+  assert.ok(tags.some((item) => item.label === '已收录正文'))
+})
+
+test('buildSourceNotes should not leak unknown provider or source identifiers into public copy', () => {
+  const notes = buildSourceNotes({
+    record_completeness: {
+      content: 'available',
+      summary: 'available',
+      jobs: 'available',
+      attachments: 'unknown'
+    },
+    record_provenance: {
+      summary_source: 'unknown',
+      job_sources: ['mystery_source']
+    }
+  }, [])
+
+  assert.ok(notes.some((item) => /摘要来源：来源待确认/.test(item)))
+  assert.ok(notes.some((item) => /岗位来源：其他来源/.test(item)))
+  assert.ok(notes.every((item) => !/mystery_source|unknown/.test(item)))
+})
+
+test('buildSourceNotes should treat summary_source none as missing summary instead of unknown provenance', () => {
+  const notes = buildSourceNotes({
+    record_completeness: {
+      content: 'available',
+      summary: 'missing',
+      jobs: 'available',
+      attachments: 'unknown'
+    },
+    record_provenance: {
+      summary_source: 'none',
+      job_sources: []
+    }
+  }, [])
+
+  assert.ok(notes.every((item) => !/摘要来源：/.test(item)))
+  assert.ok(notes.every((item) => !/来源待确认/.test(item)))
+})
+
+test('buildHeroSummary should treat summary_source none as missing even when completeness payload drifts', () => {
+  const summary = buildHeroSummary({
+    postData: {
+      content: '招聘公告正文',
+      record_completeness: {
+        content: 'available',
+        jobs: 'available',
+        attachments: 'unknown'
+      },
+      record_provenance: {
+        summary_source: 'none'
+      }
+    },
+    fields: {},
+    jobItems: []
+  })
+
+  assert.match(summary, /已收录正文/)
+  assert.doesNotMatch(summary, /已收录正文和结构化信息/)
+})
+
 test('buildInfoDisclosureItems should move provenance copy into disclosure area', () => {
   const items = buildInfoDisclosureItems({
     freshnessHint: '最近一次抓取成功于 2026/03/30 20:41',
-    sourceNotes: ['岗位信息由正文、附件和系统整理结果综合展示']
+    sourceNotes: ['岗位来源：附件'],
+    metadata: [
+      { key: 'record_completeness', label: '记录完整度', value: '正文待补充，岗位待整理' },
+      { key: 'duplicate_resolution', label: '重复记录处理', value: '当前详情已自动切换到主记录' }
+    ]
   })
 
   assert.ok(items.some((item) => /最近一次抓取成功/.test(item.value)))
+  assert.ok(items.some((item) => item.label === '记录完整度'))
+  assert.ok(items.some((item) => item.label === '重复记录处理'))
 })
 
 test('shouldShowPostFactsSection should keep the section visible when supplemental facts exist', () => {

@@ -15,7 +15,7 @@ def init_database():
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
     logger.info(f"数据目录已创建: {settings.DATA_DIR}")
     initialize_database()
-    logger.info("数据库表和内置数据源已检查完成")
+    logger.info("数据库表和内置数据源已检查完成；历史维护补齐请通过后台显式触发")
     logger.success("数据库初始化完成！")
 
 

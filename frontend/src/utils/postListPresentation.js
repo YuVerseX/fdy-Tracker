@@ -1,4 +1,12 @@
-import { buildHeroSummary, buildPostFacts, buildResolvedPostFields, normalizeJobItems } from './postDetailPresentation.js'
+import {
+  buildHeroSummary,
+  buildPostFacts,
+  buildResolvedPostFields,
+  getJobSourcesLabel,
+  getRecordCompletenessFlags,
+  getSummarySourceLabel,
+  normalizeJobItems
+} from './postDetailPresentation.js'
 
 const normalizeText = (value) => String(value ?? '').trim()
 
@@ -181,6 +189,8 @@ const buildCardBadges = (post = {}, jobItems = []) => {
     post?.counselor_jobs_count ??
     post?.analysis?.counselor_jobs_count ??
     jobItems.filter((job) => job.is_counselor_job).length
+  const completeness = getRecordCompletenessFlags(post)
+  const summarySourceLabel = getSummarySourceLabel(post?.record_provenance?.summary_source)
 
   if (counselorScope === 'dedicated') {
     badges.push({ label: '只招辅导员', tone: 'success' })
@@ -196,8 +206,20 @@ const buildCardBadges = (post = {}, jobItems = []) => {
     badges.push({ label: `辅导员岗位 ${counselorJobsCount} 个`, tone: 'info' })
   }
 
-  if (post?.has_content) {
+  if (summarySourceLabel) {
+    badges.push({ label: summarySourceLabel, tone: summarySourceLabel === 'AI 整理' ? 'info' : 'neutral' })
+  }
+
+  if (completeness.contentAvailable) {
     badges.push({ label: '已收录正文', tone: 'info' })
+  }
+
+  if (completeness.contentMissing) {
+    badges.push({ label: '正文待补充', tone: 'warning' })
+  }
+
+  if (completeness.jobsPending) {
+    badges.push({ label: '岗位待整理', tone: 'warning' })
   }
 
   const eventType = normalizeText(post?.analysis?.event_type || post?.event_type)
@@ -205,12 +227,17 @@ const buildCardBadges = (post = {}, jobItems = []) => {
     badges.push({ label: eventType, tone: 'neutral' })
   }
 
-  return badges
+  return badges.filter((item, index, list) => (
+    item?.label && list.findIndex((candidate) => candidate.label === item.label) === index
+  ))
 }
 
 const buildMetaItems = (post = {}, formatDate = formatListDate) => {
   const items = []
   const sourceName = normalizeText(post?.source?.name)
+  const completeness = getRecordCompletenessFlags(post)
+  const summarySourceLabel = getSummarySourceLabel(post?.record_provenance?.summary_source)
+  const jobSourcesLabel = getJobSourcesLabel(post?.record_provenance?.job_sources || [])
 
   if (normalizeText(post?.publish_date)) {
     items.push({ label: '发布日期', value: formatDate(post.publish_date) })
@@ -220,7 +247,15 @@ const buildMetaItems = (post = {}, formatDate = formatListDate) => {
     items.push({ label: '来源', value: sourceName })
   }
 
-  if (post?.has_content) {
+  if (summarySourceLabel) {
+    items.push({ label: '摘要来源', value: summarySourceLabel })
+  }
+
+  if (jobSourcesLabel) {
+    items.push({ label: '岗位来源', value: jobSourcesLabel })
+  }
+
+  if (completeness.contentAvailable) {
     items.push({ label: '正文', value: '已收录', tone: 'success' })
   }
 

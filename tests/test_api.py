@@ -54,7 +54,7 @@ class PostsApiTestCase(unittest.TestCase):
                 name="江苏省人力资源和社会保障厅",
                 province="江苏",
                 source_type="government_website",
-                base_url="http://jshrss.jiangsu.gov.cn/col/col80382/index.html",
+                base_url="https://jshrss.jiangsu.gov.cn/col/col80382/index.html",
                 scraper_class="JiangsuHRSSScraper",
                 is_active=True
             )
@@ -528,6 +528,66 @@ class PostsApiTestCase(unittest.TestCase):
         self.assertEqual(payload["jobs_count"], 1)
         self.assertEqual(payload["job_items"][0]["job_name"], "专职辅导员")
 
+    def test_get_post_detail_should_not_apply_jiangsu_noise_rules_to_unknown_source(self):
+        db = self.SessionLocal()
+        try:
+            db.add(Source(
+                id=2,
+                name="安徽省教育厅",
+                province="安徽",
+                source_type="government_website",
+                base_url="https://example.com/anhui/source",
+                scraper_class="OtherProvinceScraper",
+                is_active=True,
+            ))
+            db.add(Post(
+                id=600,
+                source_id=2,
+                title="安徽高校招聘公告",
+                content="安徽高校招聘公告\n首页\n招聘公告正文",
+                publish_date=datetime(2026, 3, 6, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/600",
+                original_url="https://example.com/posts/600",
+                is_counselor=False,
+                confidence_score=None,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        response = self.client.get("/api/posts/600")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("首页", payload["content"])
+        self.assertIn("招聘公告正文", payload["content"])
+
+    def test_get_post_detail_should_strip_jiangsu_inline_tokens_when_source_known(self):
+        db = self.SessionLocal()
+        try:
+            db.add(Post(
+                id=601,
+                source_id=1,
+                title="江苏高校招聘公告",
+                content="江苏高校招聘公告\n点击查看原文件：\n关\n闭\n本\n页\n打\n印\n本\n页\n招\n聘\n公\n告\n正\n文",
+                publish_date=datetime(2026, 3, 6, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/601",
+                original_url="https://example.com/posts/601",
+                is_counselor=False,
+                confidence_score=None,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        response = self.client.get("/api/posts/601")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertNotIn("点击查看原文件：", payload["content"])
+        self.assertNotIn("关闭本页打印本页", payload["content"])
+        self.assertEqual(payload["content"], "招聘公告正文")
+
     def test_get_posts_should_hide_duplicate_records_by_default(self):
         response = self.client.get("/api/posts")
 
@@ -536,6 +596,59 @@ class PostsApiTestCase(unittest.TestCase):
         ids = {item["id"] for item in payload["items"]}
         self.assertNotIn(99, ids)
 
+    def test_get_posts_should_expose_record_completeness_and_provenance(self):
+        response = self.client.get("/api/posts", params={"search": "南京大学"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        item = payload["items"][0]
+        self.assertEqual(
+            item["record_completeness"],
+            {
+                "content": "available",
+                "summary": "available",
+                "jobs": "available",
+                "attachments": "unknown",
+            },
+        )
+        self.assertEqual(item["record_provenance"]["summary_source"], "rule")
+        self.assertEqual(item["record_provenance"]["job_sources"], ["attachment"])
+        self.assertIsNone(item["record_provenance"]["duplicate_resolution"])
+
+    def test_get_posts_should_keep_summary_available_when_provider_missing(self):
+        db = self.SessionLocal()
+        try:
+            analysis = db.query(PostAnalysis).filter(PostAnalysis.post_id == 1).first()
+            analysis.analysis_provider = None
+            db.commit()
+        finally:
+            db.close()
+
+        response = self.client.get("/api/posts", params={"search": "南京大学"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        item = payload["items"][0]
+        self.assertEqual(item["record_completeness"]["summary"], "available")
+        self.assertEqual(item["record_provenance"]["summary_source"], "unknown")
+
+    def test_get_posts_should_keep_has_content_consistent_with_whitespace_only_content(self):
+        db = self.SessionLocal()
+        try:
+            post = db.query(Post).filter(Post.id == 2).first()
+            post.content = "   \n\t  "
+            db.commit()
+        finally:
+            db.close()
+
+        response = self.client.get("/api/posts", params={"search": "苏州高校"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        item = payload["items"][0]
+        self.assertFalse(item["has_content"])
+        self.assertEqual(item["record_completeness"]["content"], "missing")
+
     def test_get_post_detail_should_resolve_duplicate_record_to_primary(self):
         response = self.client.get("/api/posts/99")
 
@@ -543,6 +656,32 @@ class PostsApiTestCase(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["id"], 1)
         self.assertEqual(payload["canonical_url"], "https://example.com/posts/1")
+
+    def test_get_post_detail_should_expose_duplicate_resolution_and_record_contract(self):
+        response = self.client.get("/api/posts/99")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            payload["record_completeness"],
+            {
+                "content": "available",
+                "summary": "available",
+                "jobs": "available",
+                "attachments": "available",
+            },
+        )
+        self.assertEqual(payload["record_provenance"]["summary_source"], "rule")
+        self.assertEqual(payload["record_provenance"]["job_sources"], ["attachment"])
+        self.assertEqual(
+            payload["record_provenance"]["duplicate_resolution"],
+            {
+                "resolved_from_duplicate": True,
+                "requested_post_id": 99,
+                "resolved_post_id": 1,
+                "reason": "source_date_title",
+            },
+        )
 
     def test_get_post_detail_returns_attachments(self):
         response = self.client.get("/api/posts/1")
@@ -763,35 +902,55 @@ class PostsApiTestCase(unittest.TestCase):
     @patch(
         "src.api.posts.get_public_task_freshness_summary",
         return_value={
+            "scope": "source",
+            "requested_source_id": 7,
             "latest_success_run": {
                 "task_type": "scheduled_scrape",
                 "status": "success",
                 "finished_at": "2026-03-27T10:00:00+00:00",
+                "params": {"source_id": 7},
             },
             "latest_success_at": "2026-03-27T10:00:00+00:00",
         },
     )
     def test_get_freshness_summary_should_only_return_scrape_success(self, _mock_public_summary):
-        response = self.client.get("/api/posts/freshness-summary")
+        response = self.client.get("/api/posts/freshness-summary", params={"source_id": 7})
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
+        _mock_public_summary.assert_called_once_with(source_id=7)
+        self.assertEqual(payload["scope"], "source")
+        self.assertEqual(payload["requested_source_id"], 7)
         self.assertEqual(payload["latest_success_run"]["task_type"], "scheduled_scrape")
         self.assertEqual(payload["latest_success_run"]["task_label"], "定时抓取")
+        self.assertEqual(payload["latest_success_run"]["source_id"], 7)
         self.assertNotIn("running_tasks", payload)
         self.assertNotIn("total_runs", payload)
 
     @patch(
         "src.api.posts.get_public_task_freshness_summary",
-        return_value={"latest_success_run": None, "latest_success_at": None},
+        return_value={
+            "scope": "all_sources",
+            "requested_source_id": None,
+            "latest_success_run": None,
+            "latest_success_at": None,
+        },
     )
     def test_get_freshness_summary_returns_empty_payload_when_no_success(self, _mock_summary):
         response = self.client.get("/api/posts/freshness-summary")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
+        self.assertEqual(payload["scope"], "all_sources")
+        self.assertEqual(payload["requested_source_id"], None)
         self.assertEqual(payload["latest_success_at"], None)
         self.assertEqual(payload["latest_success_run"], None)
+
+    def test_format_post_content_should_use_shared_content_normalizer_module(self):
+        self.assertEqual(
+            posts_api.normalize_content_text.__module__,
+            "src.services.content_normalizer",
+        )
 
 
 if __name__ == "__main__":

@@ -33,6 +33,46 @@ test('buildTaskRequestConfig falls back to current scrape form values when retry
   assert.deepEqual(config.refreshOptions, getTaskRefreshOptions('manual_scrape'))
 })
 
+test('buildTaskRequestConfig should omit source_id when scrape form has no selected source', () => {
+  const config = buildTaskRequestConfig('manual_scrape', {
+    params: {},
+    forms: {
+      ...forms,
+      scrape: { sourceId: '', maxPages: 7 }
+    }
+  })
+
+  assert.deepEqual(config.payload, {
+    max_pages: 7
+  })
+})
+
+test('buildTaskRequestConfig should fall back to safe defaults when numeric inputs are cleared', () => {
+  const scrapeConfig = buildTaskRequestConfig('manual_scrape', {
+    params: {},
+    forms: {
+      ...forms,
+      scrape: { sourceId: 9, maxPages: '' }
+    }
+  })
+  const attachmentConfig = buildTaskRequestConfig('attachment_backfill', {
+    params: {},
+    forms: {
+      ...forms,
+      backfill: { sourceId: '3', limit: '' }
+    }
+  })
+
+  assert.deepEqual(scrapeConfig.payload, {
+    source_id: 9,
+    max_pages: 5
+  })
+  assert.deepEqual(attachmentConfig.payload, {
+    source_id: 3,
+    limit: 100
+  })
+})
+
 test('buildTaskRequestConfig maps ai job retry params to the job extraction api payload', () => {
   const config = buildTaskRequestConfig('ai_job_extraction', {
     params: {
@@ -198,6 +238,16 @@ test('getTaskActionDefinitions should expose cancel for running task without can
   const actions = getTaskActionDefinitions({
     task_type: 'ai_analysis',
     status: 'running',
+    details: {}
+  })
+
+  assert.deepEqual(actions.map((item) => item.key), ['cancel'])
+})
+
+test('getTaskActionDefinitions should canonicalize legacy processing status before exposing cancel action', () => {
+  const actions = getTaskActionDefinitions({
+    task_type: 'ai_analysis',
+    status: 'processing',
     details: {}
   })
 

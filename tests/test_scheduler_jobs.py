@@ -1,12 +1,82 @@
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.scheduler import jobs as scheduler_jobs
 from src.services.admin_task_service import TaskAlreadyRunningError
+from src.services import source_scope
 
 
 class SchedulerJobsTestCase(unittest.TestCase):
+    def test_get_preferred_default_source_id_should_not_fallback_to_inactive_source(self):
+        db = MagicMock()
+        active_query = MagicMock()
+        active_query.filter.return_value.order_by.return_value.first.return_value = None
+        inactive_query = MagicMock()
+        inactive_query.order_by.return_value.first.return_value = SimpleNamespace(
+            id=9,
+            name="停用源",
+            is_active=False,
+        )
+        db.query.side_effect = [active_query, inactive_query]
+
+        result = source_scope.get_preferred_default_source_id(db)
+
+        self.assertIsNone(result)
+
+    def test_load_scheduler_config_should_create_record_with_first_active_source(self):
+        db = MagicMock()
+        config_query = MagicMock()
+        config_query.order_by.return_value.first.return_value = None
+        source_query = MagicMock()
+        source_query.filter.return_value.order_by.return_value.first.return_value = SimpleNamespace(
+            id=9,
+            name="安徽省人社厅",
+            is_active=True,
+        )
+        db.query.side_effect = [config_query, source_query]
+
+        created_config = SimpleNamespace(
+            id=1,
+            enabled=True,
+            interval_seconds=1800,
+            default_source_id=9,
+            default_max_pages=5,
+        )
+
+        def refresh_side_effect(config):
+            config.id = created_config.id
+
+        db.refresh.side_effect = refresh_side_effect
+
+        result = scheduler_jobs.load_scheduler_config(db)
+
+        self.assertEqual(result.default_source_id, 9)
+        created = db.add.call_args.args[0]
+        self.assertEqual(created.default_source_id, 9)
+        db.commit.assert_called_once()
+
+    def test_load_scheduler_config_should_raise_when_only_inactive_sources_exist(self):
+        db = MagicMock()
+        config_query = MagicMock()
+        config_query.order_by.return_value.first.return_value = None
+        active_query = MagicMock()
+        active_query.filter.return_value.order_by.return_value.first.return_value = None
+        inactive_query = MagicMock()
+        inactive_query.order_by.return_value.first.return_value = SimpleNamespace(
+            id=9,
+            name="停用源",
+            is_active=False,
+        )
+        db.query.side_effect = [config_query, active_query, inactive_query]
+
+        with self.assertRaisesRegex(RuntimeError, "未找到可用数据源"):
+            scheduler_jobs.load_scheduler_config(db)
+
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+
     def test_sync_scheduler_job_should_register_enabled_job(self):
         config = SimpleNamespace(
             enabled=True,
@@ -69,6 +139,52 @@ class SchedulerJobsTestCase(unittest.TestCase):
         db.commit.assert_called_once()
         db.refresh.assert_called_once_with(config)
         mocked_sync_scheduler_job.assert_called_once_with(config)
+
+    def test_get_scheduler_runtime_health_should_report_degraded_when_default_source_inactive(self):
+        db = MagicMock()
+        config = SimpleNamespace(
+            enabled=True,
+            interval_seconds=1800,
+            default_source_id=9,
+            default_max_pages=5,
+        )
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = SimpleNamespace(
+            id=9,
+            name="停用源",
+            is_active=False,
+        )
+        db.query.return_value = source_query
+        fake_job = SimpleNamespace(next_run_time=datetime(2026, 4, 4, 10, 0, tzinfo=timezone.utc))
+
+        with patch("src.scheduler.jobs.peek_scheduler_config", return_value=config), patch(
+            "src.scheduler.jobs.scheduler",
+        ) as mocked_scheduler:
+            mocked_scheduler.running = True
+            mocked_scheduler.get_job.return_value = fake_job
+            payload = scheduler_jobs.get_scheduler_runtime_health(db)
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertFalse(payload["ready"])
+        self.assertIn("default_source_inactive", payload["issues"])
+        self.assertEqual(payload["next_run_at"], "2026-04-04T10:00:00+00:00")
+
+    def test_get_scheduler_runtime_health_should_not_write_when_config_missing(self):
+        db = MagicMock()
+
+        with patch("src.scheduler.jobs.peek_scheduler_config", return_value=None), patch(
+            "src.scheduler.jobs.scheduler",
+        ) as mocked_scheduler:
+            mocked_scheduler.running = True
+            mocked_scheduler.get_job.return_value = None
+            payload = scheduler_jobs.get_scheduler_runtime_health(db)
+
+        self.assertEqual(payload["status"], "error")
+        self.assertFalse(payload["ready"])
+        self.assertIn("scheduler_config_missing", payload["issues"])
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+        db.refresh.assert_not_called()
 
 
 class SchedulerJobsAsyncTestCase(unittest.IsolatedAsyncioTestCase):

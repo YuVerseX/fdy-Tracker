@@ -14,10 +14,11 @@ from src.services.admin_task_service import TaskAlreadyRunningError
 
 class AdminApiTestCase(unittest.TestCase):
     def setUp(self):
+        session_secret = "test-session-secret-0123456789abcd"
         app = FastAPI()
         app.add_middleware(
             SessionMiddleware,
-            secret_key="test-session-secret",
+            secret_key=session_secret,
             same_site="lax",
             https_only=False,
             max_age=28800,
@@ -28,7 +29,7 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin.settings",
             ADMIN_USERNAME="admin",
             ADMIN_PASSWORD="secret-pass",
-            ADMIN_SESSION_SECRET="test-session-secret",
+            ADMIN_SESSION_SECRET=session_secret,
             ADMIN_SESSION_MAX_AGE_SECONDS=28800,
             ADMIN_SESSION_SECURE=False,
         )
@@ -92,7 +93,7 @@ class AdminApiTestCase(unittest.TestCase):
             "src.api.admin.settings",
             ADMIN_USERNAME="管理员",
             ADMIN_PASSWORD="复杂密码123",
-            ADMIN_SESSION_SECRET="test-session-secret",
+            ADMIN_SESSION_SECRET="test-session-secret-0123456789abcd",
         ):
             response = self._login(username="管理员", password="复杂密码123")
 
@@ -111,6 +112,13 @@ class AdminApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertIn("ADMIN_SESSION_SECRET", response.json()["detail"])
+
+    def test_admin_session_login_should_return_503_when_secret_too_short(self):
+        with patch.multiple("src.api.admin.settings", ADMIN_SESSION_SECRET="short-secret"):
+            response = self._login()
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("至少 32 个字符", response.json()["detail"])
 
     def test_admin_session_should_be_invalid_after_password_rotation(self):
         login_response = self._login()
@@ -136,10 +144,16 @@ class AdminApiTestCase(unittest.TestCase):
                 "live_metrics": {"posts_seen": 5},
                 "final_metrics": {},
                 "phase": "正在抓取源站并写入数据库",
+                "snapshot_at": "2026-04-04T10:30:00+00:00",
+                "trust_level": "instance_local",
+                "degraded_reason": "运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。",
+                "instance_scope": "current_instance",
+                "scope_summary": "仅反映当前实例看到的后台任务状态快照",
                 "details": {
                     "progress_mode": "stage_only",
                     "metrics": {"posts_seen": 5},
                     "posts_seen": 5,
+                    "trust_level": "instance_local",
                 },
                 "actions": [],
             }],
@@ -156,6 +170,10 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["live_metrics"]["posts_seen"], 5)
         self.assertEqual(payload["phase"], "正在抓取源站并写入数据库")
         self.assertEqual(payload["details"]["posts_seen"], 5)
+        self.assertEqual(payload["snapshot_at"], "2026-04-04T10:30:00+00:00")
+        self.assertEqual(payload["trust_level"], "instance_local")
+        self.assertEqual(payload["instance_scope"], "current_instance")
+        self.assertIn("本地 JSON", payload["degraded_reason"])
 
     def test_get_task_summary_should_return_latest_success(self):
         with patch(
@@ -173,10 +191,16 @@ class AdminApiTestCase(unittest.TestCase):
                     "live_metrics": {"posts_seen": 5},
                     "final_metrics": {},
                     "phase": "正在抓取源站并写入数据库",
+                    "snapshot_at": "2026-04-04T10:30:00+00:00",
+                    "trust_level": "instance_local",
+                    "degraded_reason": "运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。",
+                    "instance_scope": "current_instance",
+                    "scope_summary": "仅反映当前实例看到的后台任务状态快照",
                     "details": {
                         "progress_mode": "stage_only",
                         "metrics": {"posts_seen": 5},
                         "posts_seen": 5,
+                        "trust_level": "instance_local",
                     },
                     "actions": [],
                 },
@@ -192,10 +216,16 @@ class AdminApiTestCase(unittest.TestCase):
                     "live_metrics": {},
                     "final_metrics": {"posts_seen": 12},
                     "phase": "抓取完成",
+                    "snapshot_at": "2026-04-04T10:30:00+00:00",
+                    "trust_level": "trusted",
+                    "degraded_reason": None,
+                    "instance_scope": "current_instance",
+                    "scope_summary": "当前实例已归档的任务结果快照",
                     "details": {
                         "progress_mode": "stage_only",
                         "metrics": {"posts_seen": 12},
                         "posts_seen": 12,
+                        "trust_level": "trusted",
                     },
                     "actions": [{"key": "rerun", "label": "再次运行"}],
                 },
@@ -212,10 +242,16 @@ class AdminApiTestCase(unittest.TestCase):
                     "live_metrics": {"posts_seen": 5},
                     "final_metrics": {},
                     "phase": "正在抓取源站并写入数据库",
+                    "snapshot_at": "2026-04-04T10:30:00+00:00",
+                    "trust_level": "instance_local",
+                    "degraded_reason": "运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。",
+                    "instance_scope": "current_instance",
+                    "scope_summary": "仅反映当前实例看到的后台任务状态快照",
                     "details": {
                         "progress_mode": "stage_only",
                         "metrics": {"posts_seen": 5},
                         "posts_seen": 5,
+                        "trust_level": "instance_local",
                     },
                     "actions": [],
                 }],
@@ -236,6 +272,48 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["running_tasks"][0]["live_metrics"]["posts_seen"], 5)
         self.assertEqual(payload["latest_task_run"]["phase"], "正在抓取源站并写入数据库")
         self.assertEqual(payload["latest_success_run"]["phase"], "抓取完成")
+        self.assertEqual(payload["latest_task_run"]["trust_level"], "instance_local")
+        self.assertEqual(payload["latest_success_run"]["trust_level"], "trusted")
+        self.assertEqual(payload["latest_task_run"]["instance_scope"], "current_instance")
+        self.assertEqual(payload["latest_success_run"]["instance_scope"], "current_instance")
+
+    def test_cancel_task_run_should_preserve_snapshot_envelope(self):
+        self._login()
+        with patch(
+            "src.api.admin.request_task_run_cancel",
+            return_value={
+                "id": "run-ai-1",
+                "task_type": "ai_analysis",
+                "status": "cancel_requested",
+                "details": {"cancel_requested_at": "2026-04-01T10:00:00+00:00"},
+            },
+        ), patch(
+            "src.api.admin.serialize_task_run_for_admin",
+            return_value={
+                "id": "run-ai-1",
+                "task_type": "ai_analysis",
+                "status": "cancel_requested",
+                "status_label": "正在终止",
+                "snapshot_at": "2026-04-04T10:45:00+00:00",
+                "trust_level": "instance_local",
+                "degraded_reason": "运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。",
+                "instance_scope": "current_instance",
+                "scope_summary": "仅反映当前实例看到的后台任务状态快照",
+                "actions": [],
+                "details": {
+                    "cancel_requested_at": "2026-04-01T10:00:00+00:00",
+                    "trust_level": "instance_local",
+                },
+            },
+        ):
+            response = self.client.post("/api/admin/task-runs/run-ai-1/cancel")
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()["task_run"]
+        self.assertEqual(payload["snapshot_at"], "2026-04-04T10:45:00+00:00")
+        self.assertEqual(payload["trust_level"], "instance_local")
+        self.assertEqual(payload["instance_scope"], "current_instance")
+        self.assertIn("本地 JSON", payload["degraded_reason"])
 
     def test_cancel_task_run_should_return_202_for_running_task(self):
         self._login()
@@ -424,6 +502,70 @@ class AdminApiTestCase(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["config"]["interval_seconds"], 3600)
 
+    def test_update_scheduler_config_should_reuse_existing_source_when_request_omits_default_source(self):
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = SimpleNamespace(
+            id=7,
+            name="安徽省人社厅",
+            is_active=True,
+        )
+        self.db.query.return_value = source_query
+
+        with patch(
+            "src.api.admin.load_scheduler_config",
+            return_value=SimpleNamespace(
+                id=1,
+                enabled=True,
+                interval_seconds=7200,
+                default_source_id=7,
+                default_max_pages=5,
+                updated_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+                source=SimpleNamespace(name="安徽省人社厅"),
+            ),
+        ), patch(
+            "src.api.admin.update_scheduler_config",
+            return_value=SimpleNamespace(
+                id=1,
+                enabled=True,
+                interval_seconds=3600,
+                default_source_id=7,
+                default_max_pages=4,
+                updated_at=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
+                source=SimpleNamespace(name="安徽省人社厅"),
+            ),
+        ) as mocked_update, patch(
+            "src.api.admin.serialize_scheduler_config",
+            return_value={
+                "id": 1,
+                "enabled": True,
+                "interval_seconds": 3600,
+                "default_source_id": 7,
+                "default_max_pages": 4,
+                "source_name": "安徽省人社厅",
+                "scheduler_running": True,
+                "next_run_at": None,
+                "updated_at": "2026-03-24T10:00:00+00:00",
+            },
+        ):
+            self._login()
+            response = self.client.put(
+                "/api/admin/scheduler-config",
+                json={
+                    "enabled": True,
+                    "interval_seconds": 3600,
+                    "default_max_pages": 4,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mocked_update.assert_called_once_with(
+            self.db,
+            enabled=True,
+            interval_seconds=3600,
+            default_source_id=7,
+            default_max_pages=4,
+        )
+
     def test_update_scheduler_config_should_return_409_for_inactive_source(self):
         source_query = MagicMock()
         source_query.filter.return_value.first.return_value = SimpleNamespace(
@@ -583,6 +725,71 @@ class AdminApiTestCase(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["overview"]["duplicate_groups"], 2)
         self.assertEqual(payload["reason_distribution"][0]["duplicate_reason"], "source_date_title")
+
+    def test_run_maintenance_backfill_task_should_require_login(self):
+        response = self.client.post(
+            "/api/admin/run-maintenance",
+            json={"operation": "counselor_flag_repair", "limit": 100},
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_run_maintenance_backfill_task_should_return_task_run(self):
+        with patch(
+            "src.api.admin.start_task_run",
+            return_value={
+                "id": "running-maint-1",
+                "started_at": "2026-03-24T09:00:00+00:00",
+                "status": "running",
+                "task_type": "maintenance_backfill",
+                "task_category": "maintenance",
+                "task_tags": ["maintenance", "maintenance-backfill"],
+            },
+        ), patch(
+            "src.api.admin._run_maintenance_backfill_in_background",
+            new=AsyncMock(),
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-maintenance",
+                json={"operation": "counselor_flag_repair", "limit": 200},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertEqual(payload["task_run"]["task_type"], "maintenance_backfill")
+        self.assertEqual(payload["task_run"]["task_category"], "maintenance")
+        self.assertIn("maintenance-backfill", payload["task_run"]["task_tags"])
+        self.assertIn("历史辅导员口径校正", payload["message"])
+        mocked_background.assert_called_once()
+
+    def test_run_maintenance_backfill_task_should_forward_rerun_of_task_id(self):
+        with patch(
+            "src.api.admin.start_task_run",
+            return_value={
+                "id": "running-maint-2",
+                "started_at": "2026-03-24T09:00:00+00:00",
+                "status": "running",
+            },
+        ) as mocked_start, patch(
+            "src.api.admin._run_maintenance_backfill_in_background",
+            new=AsyncMock(),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-maintenance",
+                json={
+                    "operation": "duplicate_full_rebuild",
+                    "limit": 120,
+                    "rerun_of_task_id": "run-prev-maint-1",
+                },
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mocked_start.call_args.kwargs["task_type"], "maintenance_backfill")
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["operation"], "duplicate_full_rebuild")
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["rerun_of_task_id"], "run-prev-maint-1")
 
     def test_backfill_duplicates_task_should_return_task_run(self):
         with patch(
@@ -767,6 +974,31 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(payload["task_run"]["status"], "running")
         self.assertIn("已提交", payload["message"])
         mocked_background.assert_called_once()
+
+    def test_run_scrape_task_should_resolve_first_active_source_when_source_id_omitted(self):
+        source_query = MagicMock()
+        source_query.filter.return_value.order_by.return_value.first.return_value = SimpleNamespace(
+            id=7,
+            name="安徽省人社厅",
+            is_active=True,
+        )
+        self.db.query.return_value = source_query
+
+        with patch(
+            "src.api.admin.ensure_scrape_source_ready",
+        ) as mocked_ready, patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-7", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_scrape_task_in_background",
+            new=AsyncMock(),
+        ):
+            self._login()
+            response = self.client.post("/api/admin/run-scrape", json={"max_pages": 3})
+
+        self.assertEqual(response.status_code, 202)
+        mocked_ready.assert_called_once_with(self.db, 7)
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["source_id"], 7)
 
     def test_run_scrape_task_should_return_409_when_scrape_is_already_running(self):
         running_task = {
@@ -1065,6 +1297,52 @@ class AdminApiTestCase(unittest.TestCase):
         mocked_background.assert_called_once()
         args, _kwargs = mocked_background.call_args
         self.assertFalse(args[2]["only_unindexed"])
+
+    def test_run_maintenance_task_should_return_task_run(self):
+        with patch(
+            "src.api.admin.start_task_run",
+            return_value={"id": "running-maint-1", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_maintenance_backfill_in_background",
+            new=AsyncMock(),
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-maintenance",
+                json={"operation": "counselor_flag_repair", "limit": 200},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["task_run"]["status"], "running")
+        self.assertIn("已提交", payload["message"])
+        self.assertEqual(mocked_start.call_args.kwargs["task_type"], "maintenance_backfill")
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["operation"], "counselor_flag_repair")
+        self.assertEqual(mocked_start.call_args.kwargs["params"]["limit"], 200)
+        mocked_background.assert_called_once()
+
+    def test_run_maintenance_task_should_return_409_when_scrape_is_running(self):
+        running_task = {
+            "id": "running-scrape-maint-1",
+            "task_type": "manual_scrape",
+            "status": "running",
+            "started_at": "2026-03-24T09:00:00+00:00",
+        }
+        with patch(
+            "src.api.admin.start_task_run",
+            side_effect=TaskAlreadyRunningError(
+                task_type="maintenance_backfill",
+                running_task=running_task,
+            ),
+        ):
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-maintenance",
+                json={"operation": "duplicate_full_rebuild"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("手动抓取", response.json()["detail"])
 
 class BaseAnalysisRunnerTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_run_scrape_task_in_background_should_record_failed_when_result_contains_failures(self):

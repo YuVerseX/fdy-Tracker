@@ -29,17 +29,30 @@
             :label="resolvedSyncStatus.badgeLabel"
             :tone="resolvedSyncStatus.badgeTone"
           />
+          <AppMetricPill
+            label="快照范围"
+            :value="resolvedSyncStatus.snapshotScopeLabel"
+            :tone="resolvedSyncStatus.snapshotScopeTone"
+          />
           <AppMetricPill label="同步频率" :value="resolvedSyncStatus.intervalLabel" tone="muted" />
           <AppMetricPill label="最近同步" :value="resolvedSyncStatus.lastSyncedLabel" tone="muted" />
           <AppMetricPill label="活跃任务" :value="resolvedSyncStatus.runningCountLabel" tone="muted" />
         </div>
-        <p class="text-sm leading-6 text-slate-500">
-          {{ resolvedSyncStatus.summary }}
-        </p>
+        <div class="max-w-3xl text-sm leading-6 text-slate-500 xl:text-right">
+          <p>{{ resolvedSyncStatus.summary }}</p>
+          <p class="text-xs leading-5 text-slate-400">{{ resolvedSyncStatus.snapshotScopeSummary }}</p>
+          <p
+            v-if="resolvedSyncStatus.snapshotScopeDetail"
+            class="text-xs leading-5"
+            :class="resolvedSyncStatus.snapshotScopeTone === 'warning' ? 'text-amber-700' : 'text-slate-400'"
+          >
+            {{ resolvedSyncStatus.snapshotScopeDetail }}
+          </p>
+        </div>
       </div>
     </div>
 
-    <div v-if="loadingRuns || !taskRunsLoaded" class="py-10 text-center text-sm text-gray-500">正在加载任务记录...</div>
+    <div v-if="loadingRuns && !taskRunsLoaded" class="py-10 text-center text-sm text-gray-500">正在加载任务记录...</div>
     <AppEmptyState
       v-else-if="taskRuns.length === 0"
       title="还没有任务记录"
@@ -214,6 +227,10 @@ const MANUAL_REFRESH_SUMMARY = '当前无自动刷新，仅支持手动刷新。
 const resolvedSyncStatus = computed(() => ({
   badgeLabel: props.syncStatus?.badgeLabel || (props.syncStatus?.autoRefreshActive ? AUTO_REFRESH_BADGE_LABEL : '手动刷新'),
   badgeTone: props.syncStatus?.badgeTone || 'neutral',
+  snapshotScopeLabel: props.syncStatus?.snapshotScopeLabel || '任务快照未同步',
+  snapshotScopeTone: props.syncStatus?.snapshotScopeTone || 'muted',
+  snapshotScopeSummary: props.syncStatus?.snapshotScopeSummary || '任务状态快照尚未同步。',
+  snapshotScopeDetail: props.syncStatus?.snapshotScopeDetail || '',
   intervalLabel: props.syncStatus?.intervalLabel || '15 秒',
   lastSyncedLabel: props.syncStatus?.lastSyncedLabel || '尚未同步',
   runningCountLabel: props.syncStatus?.runningCountLabel || '0 条',

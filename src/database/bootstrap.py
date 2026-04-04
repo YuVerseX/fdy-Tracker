@@ -5,6 +5,10 @@ from loguru import logger
 from src.database.database import SessionLocal, engine
 from src.database.models import Base, SchedulerConfig, Source
 from src.config import settings
+from src.services.source_scope import get_preferred_default_source_id
+
+LEGACY_JIANGSU_HRSS_BASE_URL = "http://jshrss.jiangsu.gov.cn/col/col80382/index.html"
+DEFAULT_JIANGSU_HRSS_BASE_URL = "https://jshrss.jiangsu.gov.cn/col/col80382/index.html"
 
 
 def ensure_post_compat_columns() -> None:
@@ -67,7 +71,6 @@ def seed_builtin_sources() -> None:
     """补齐内置数据源配置"""
     db = SessionLocal()
     try:
-        expected_base_url = "http://jshrss.jiangsu.gov.cn/col/col80382/index.html"
         existing_source = db.query(Source).filter(
             Source.name == "江苏省人力资源和社会保障厅"
         ).first()
@@ -77,7 +80,7 @@ def seed_builtin_sources() -> None:
                 name="江苏省人力资源和社会保障厅",
                 province="江苏",
                 source_type="government_website",
-                base_url=expected_base_url,
+                base_url=DEFAULT_JIANGSU_HRSS_BASE_URL,
                 scraper_class="JiangsuHRSSScraper",
                 is_active=True
             ))
@@ -86,8 +89,9 @@ def seed_builtin_sources() -> None:
             return
 
         updated = False
-        if existing_source.base_url != expected_base_url:
-            existing_source.base_url = expected_base_url
+        current_base_url = (existing_source.base_url or "").strip()
+        if not current_base_url or current_base_url == LEGACY_JIANGSU_HRSS_BASE_URL:
+            existing_source.base_url = DEFAULT_JIANGSU_HRSS_BASE_URL
             updated = True
         if existing_source.scraper_class != "JiangsuHRSSScraper":
             existing_source.scraper_class = "JiangsuHRSSScraper"
@@ -112,8 +116,9 @@ def seed_scheduler_config() -> None:
     """补齐默认定时抓取配置"""
     db = SessionLocal()
     try:
-        default_source = db.query(Source).filter(Source.is_active == True).order_by(Source.id.asc()).first()
-        default_source_id = default_source.id if default_source else 1
+        default_source_id = get_preferred_default_source_id(db)
+        if default_source_id is None:
+            raise RuntimeError("未找到可用数据源，无法初始化定时抓取配置")
 
         config = db.query(SchedulerConfig).order_by(SchedulerConfig.id.asc()).first()
         if config:
@@ -148,42 +153,11 @@ def seed_scheduler_config() -> None:
 
 
 def initialize_database() -> None:
-    """确保表结构和内置数据源就绪"""
+    """确保表结构、兼容字段和内置配置就绪。"""
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     ensure_post_compat_columns()
     Base.metadata.create_all(bind=engine)
     seed_builtin_sources()
     seed_scheduler_config()
-    db = SessionLocal()
-    try:
-        from src.services.ai_analysis_service import backfill_rule_analyses, backfill_rule_insights
-        from src.services.duplicate_service import backfill_duplicate_posts
-        from src.services.post_job_service import backfill_post_counselor_flags
-
-        result = backfill_rule_analyses(db)
-        if result["created"] or result["refreshed"]:
-            logger.info(
-                f"已补齐规则分析：新增 {result['created']} 条，刷新 {result['refreshed']} 条"
-            )
-
-        insight_result = backfill_rule_insights(db)
-        if insight_result["created"] or insight_result["refreshed"]:
-            logger.info(
-                f"已补齐规则统计洞察：新增 {insight_result['created']} 条，刷新 {insight_result['refreshed']} 条"
-            )
-
-        counselor_result = backfill_post_counselor_flags(db)
-        if counselor_result["updated"]:
-            logger.info(
-                f"已补齐历史辅导员口径：修正 {counselor_result['updated']} 条，扫描 {counselor_result['scanned']} 条"
-            )
-
-        duplicate_result = backfill_duplicate_posts(db)
-        if duplicate_result["groups"] or duplicate_result["duplicates"]:
-            logger.info(
-                f"已补齐历史重复治理：重复组 {duplicate_result['groups']} 个，"
-                f"折叠记录 {duplicate_result['duplicates']} 条"
-            )
-    finally:
-        db.close()
+    logger.info("数据库结构和默认配置已就绪，历史维护补齐需通过显式后台任务触发")

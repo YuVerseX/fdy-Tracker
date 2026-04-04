@@ -20,11 +20,15 @@
 
 仓库里已经有 GitHub Actions 工作流：
 
-- 文件：`.github/workflows/publish-images.yml`
-- 触发：
+- 入口工作流：`.github/workflows/ci.yml`
   - push 到 `main`
   - push `v*` tag
-  - 手动触发
+  - 手动触发 `workflow_dispatch`
+  - 非 PR 场景会先在 caller workflow 内跑源码构建型 `docker compose up -d --build` smoke
+- 镜像发布工作流：`.github/workflows/publish-images.yml`
+  - 被 `CI` 通过 `workflow_call` 复用调用
+  - 只有 caller smoke 通过后才会进入镜像发布
+- 发布后还会用 `docker-compose.ghcr.yml` 对 GHCR 镜像入口再做第二次 smoke
 
 ## 1Panel 编排怎么用
 
@@ -60,14 +64,20 @@ ADMIN_PASSWORD=
 ADMIN_SESSION_SECRET=
 ADMIN_SESSION_MAX_AGE_SECONDS=28800
 ADMIN_SESSION_SECURE=true
+API_DOCS_ENABLED=false
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 ```
 
-`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 需要你自己显式填写。留空时，管理接口会返回 `503`，管理页不能登录。
+`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 需要你自己显式填写。留空时，compose 会直接拒绝启动容器。`ADMIN_SESSION_SECRET` 还需要至少 32 个随机字符。
 
 管理页使用页面内会话登录，不再触发浏览器原生 Basic Auth 弹窗。
 
-生产环境必须启用 HTTPS，并保持 `ADMIN_SESSION_SECURE=true`。如果还没接 HTTPS，不建议直接对公网开放管理页。
+生产环境必须启用 HTTPS，并保持：
+
+- `ADMIN_SESSION_SECURE=true`
+- `API_DOCS_ENABLED=false`
+
+如果还没接 HTTPS，不建议直接对公网开放管理页。即使接了 HTTPS，也建议在 1Panel 网站或上游反向代理层继续给 `/admin` 增加 IP 白名单、额外鉴权或等效访问控制。
 
 如果你后面想固定到某个版本，也可以把：
 
@@ -127,3 +137,8 @@ WEB_PORT=8080
 - `127.0.0.1:8080`
 
 这样不会和 1Panel 自己占用的 `80/443` 冲突。
+
+额外说明：
+
+- `/docs`、`/openapi.json`、`/redoc` 默认不会经公网入口暴露。
+- `/api/health` 现在是 readiness 聚合探针；新部署实例在首轮成功抓取前，可能出现 `status=degraded` 且 `ready=true`。

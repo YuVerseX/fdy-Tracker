@@ -8,6 +8,7 @@ import {
   getAdminRuntimeCopy
 } from '../../utils/adminDashboardMeta.js'
 import { buildAiEnhancementPanels, buildDataProcessingPanels, formatAdminDateTime, getTaskTypeLabel } from '../../utils/adminDashboardViewModels.js'
+import { summarizeTaskSnapshotScope } from '../../utils/adminTaskSnapshots.js'
 import { createAdminDashboardDataService } from './adminDashboardDataService.js'
 import { buildAdminHealthState } from './adminDashboardHealth.js'
 import {
@@ -48,7 +49,7 @@ export function useAdminDashboardState() {
   const activeAdminSection = ref(ADMIN_SECTION_ORDER[0])
   const processingMode = ref(PROCESSING_MODE_ORDER[0])
   const feedback = ref({ type: '', message: '' })
-  const sourceOptions = ref([{ label: '江苏省人社厅', value: 1, isActive: true }])
+  const sourceOptions = ref([])
   const state = reactive({
     taskRuns: [],
     taskSummary: null,
@@ -71,14 +72,14 @@ export function useAdminDashboardState() {
   const loaded = reactive({ scheduler: false, analysis: false, insight: false, jobs: false, duplicate: false, taskSummary: false, taskRuns: false })
   const requests = reactive({ scrape: false, backfill: false, duplicate: false, baseAnalysis: false, aiAnalysis: false, jobExtraction: false })
   const forms = reactive({
-    scrape: { sourceId: 1, maxPages: 5 },
+    scrape: { sourceId: '', maxPages: 5 },
     backfill: { sourceId: '', limit: 100 },
     duplicate: { limit: 200 },
     baseAnalysis: { sourceId: '', limit: 100, onlyPending: true },
     aiAnalysis: { sourceId: '', limit: 100, onlyUnanalyzed: true },
     jobIndex: { sourceId: '', limit: 100, onlyPending: true },
     aiJob: { sourceId: '', limit: 100, onlyPending: true },
-    scheduler: { enabled: true, intervalSeconds: 7200, defaultSourceId: 1, defaultMaxPages: 5, nextRunAt: '', updatedAt: '' }
+    scheduler: { enabled: true, intervalSeconds: 7200, defaultSourceId: '', defaultMaxPages: 5, nextRunAt: '', updatedAt: '' }
   })
   const dataService = createAdminDashboardDataService({
     adminApi,
@@ -128,7 +129,10 @@ export function useAdminDashboardState() {
   }))
   const backendRunningTasks = computed(() => {
     if (!adminAuthorized.value || !loaded.taskRuns) return []
-    const combined = [...(Array.isArray(state.taskSummary?.running_tasks) ? state.taskSummary.running_tasks : []), ...state.taskRuns.filter((run) => ['queued', 'pending', 'running', 'processing'].includes(run?.status))]
+    const combined = [
+      ...(Array.isArray(state.taskSummary?.running_tasks) ? state.taskSummary.running_tasks : []),
+      ...state.taskRuns.filter((run) => isRunningTaskStatus(run?.status))
+    ]
     const seen = new Set()
     return combined.filter((run) => {
       const taskType = run?.task_type || run?.taskType
@@ -149,7 +153,11 @@ export function useAdminDashboardState() {
     autoRefreshActive: adminAuthorized.value && hasTaskStatusSnapshot.value && backendRunningTasks.value.length > 0,
     pollIntervalMs: TASK_POLL_INTERVAL_MS,
     lastSyncedAt: state.taskStatusLastSyncedAt,
-    runningCount: hasTaskStatusSnapshot.value ? backendRunningTasks.value.length : null
+    runningCount: hasTaskStatusSnapshot.value ? backendRunningTasks.value.length : null,
+    snapshotScope: summarizeTaskSnapshotScope({
+      taskRuns: state.taskRuns,
+      taskSummary: state.taskSummary
+    })
   }))
   const isTaskTypeRunning = (...taskTypes) => backendRunningTasks.value.some((run) => taskTypes.includes(run?.task_type || run?.taskType))
   const taskBusy = computed(() => ({
@@ -282,6 +290,10 @@ export function useAdminDashboardState() {
         pollIntervalMs: syncStatus.pollIntervalMs,
         lastSyncedAt: syncStatus.lastSyncedAt,
         runningCount: syncStatus.runningCount,
+        snapshotScopeLabel: syncStatus.snapshotScope.label,
+        snapshotScopeTone: syncStatus.snapshotScope.tone,
+        snapshotScopeSummary: syncStatus.snapshotScope.summary,
+        snapshotScopeDetail: syncStatus.snapshotScope.detail,
         badgeLabel: syncStatus.pending ? '同步状态更新中' : (syncStatus.autoRefreshActive ? '自动刷新中' : '手动刷新'),
         badgeTone: syncStatus.pending ? 'neutral' : (syncStatus.autoRefreshActive ? 'info' : 'neutral'),
         intervalLabel,

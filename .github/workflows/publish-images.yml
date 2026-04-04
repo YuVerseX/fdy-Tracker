@@ -2,7 +2,6 @@ name: Publish Docker Images
 
 on:
   workflow_call:
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,6 +21,7 @@ jobs:
         run: |
           owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
           echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -79,3 +79,40 @@ jobs:
           labels: ${{ steps.meta-web.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Smoke GHCR compose deployment
+        shell: bash
+        env:
+          GHCR_NAMESPACE: ${{ steps.prep.outputs.owner_lc }}
+          IMAGE_TAG: ${{ steps.prep.outputs.sha_tag }}
+          WEB_PORT: 8081
+          ADMIN_USERNAME: smoke-admin
+          ADMIN_PASSWORD: smoke-pass
+          ADMIN_SESSION_SECRET: smoke-session-secret-0123456789abcdefghijkl
+          ADMIN_SESSION_SECURE: "false"
+          API_DOCS_ENABLED: "false"
+          AI_ANALYSIS_ENABLED: "false"
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.ghcr.yml up -d
+          python scripts/smoke_deployment.py \
+            --base-url "http://127.0.0.1:${WEB_PORT}" \
+            --admin-username "${ADMIN_USERNAME}" \
+            --admin-password "${ADMIN_PASSWORD}"
+
+      - name: Dump GHCR compose logs
+        if: always()
+        run: docker compose -f docker-compose.ghcr.yml logs --no-color | tee ghcr-compose-smoke.log
+
+      - name: Fail on dangerous GHCR compose log patterns
+        if: always()
+        run: python scripts/check_ci_logs.py ghcr-compose-smoke.log --label ghcr-compose-smoke
+
+      - name: Tear down GHCR compose
+        if: always()
+        run: docker compose -f docker-compose.ghcr.yml down -v --remove-orphans

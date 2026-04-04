@@ -100,14 +100,14 @@ function createHarness({ adminApiOverrides = {} } = {}) {
     jobExtraction: false
   }
   const forms = {
-    scrape: { sourceId: 1, maxPages: 5 },
+    scrape: { sourceId: '', maxPages: 5 },
     backfill: { sourceId: '', limit: 100 },
     duplicate: { limit: 200 },
     baseAnalysis: { sourceId: '', limit: 100, onlyPending: true },
     aiAnalysis: { sourceId: '', limit: 100, onlyUnanalyzed: true },
     jobIndex: { sourceId: '', limit: 100, onlyPending: true },
     aiJob: { sourceId: '', limit: 100, onlyPending: true },
-    scheduler: { enabled: true, intervalSeconds: 7200, defaultSourceId: 1, defaultMaxPages: 5, nextRunAt: '', updatedAt: '' }
+    scheduler: { enabled: true, intervalSeconds: 7200, defaultSourceId: '', defaultMaxPages: 5, nextRunAt: '', updatedAt: '' }
   }
 
   const service = createAdminDashboardDataService({
@@ -125,7 +125,7 @@ function createHarness({ adminApiOverrides = {} } = {}) {
     forms
   })
 
-  return { calls, service, state, loaded, forms, feedback, adminAuthorized, adminAuthError, adminAuthForm }
+  return { calls, service, state, loaded, forms, feedback, adminAuthorized, adminAuthError, adminAuthForm, sourceOptions, requests }
 }
 
 function createCancelledIncrementalRun(overrides = {}) {
@@ -163,6 +163,120 @@ test('createAdminDashboardDataService should expose refresh aliases expected by 
   assert.deepEqual(state.jobSummary, { overview: { total_jobs: 0 } })
   assert.deepEqual(state.duplicateSummary, { overview: { duplicate_posts: 0 } })
   assert.equal(forms.scheduler.defaultSourceId, 1)
+})
+
+test('fetchSchedulerConfig should not fall back to hardcoded source id when payload omits default source', async () => {
+  const { service, forms } = createHarness({
+    adminApiOverrides: {
+      getSchedulerConfig: async () => ({
+        data: {
+          enabled: true,
+          interval_seconds: 7200,
+          default_max_pages: 5
+        }
+      })
+    }
+  })
+
+  await service.refreshSchedulerConfig()
+
+  assert.equal(forms.scheduler.defaultSourceId, '')
+  assert.equal(forms.scrape.sourceId, '')
+})
+
+test('fetchSchedulerConfig should keep scheduler default empty after sources preload when backend omits default source', async () => {
+  const { service, forms } = createHarness({
+    adminApiOverrides: {
+      getSources: async () => ({
+        data: {
+          items: [{ id: 1, name: '江苏省人社厅', is_active: true }]
+        }
+      }),
+      getSchedulerConfig: async () => ({
+        data: {
+          enabled: true,
+          interval_seconds: 7200,
+          default_max_pages: 5
+        }
+      })
+    }
+  })
+
+  await service.fetchSources()
+  await service.refreshSchedulerConfig()
+
+  assert.equal(forms.scrape.sourceId, 1)
+  assert.equal(forms.scheduler.defaultSourceId, '')
+})
+
+test('fetchSchedulerConfig should keep disabled scheduler source out of manual scrape defaults', async () => {
+  const { service, forms, sourceOptions } = createHarness({
+    adminApiOverrides: {
+      getSchedulerConfig: async () => ({
+        data: {
+          enabled: false,
+          interval_seconds: 7200,
+          default_source_id: 2,
+          default_max_pages: 5
+        }
+      })
+    }
+  })
+
+  sourceOptions.value = [
+    { label: '启用源', value: 1, isActive: true },
+    { label: '停用源', value: 2, isActive: false }
+  ]
+
+  await service.refreshSchedulerConfig()
+
+  assert.equal(forms.scheduler.defaultSourceId, 2)
+  assert.equal(forms.scrape.sourceId, 1)
+})
+
+test('saveSchedulerConfig should omit empty default source id from request payload', async () => {
+  let receivedPayload = null
+  const { service, forms } = createHarness({
+    adminApiOverrides: {
+      updateSchedulerConfig: async (payload) => {
+        receivedPayload = payload
+        return { data: { message: '定时抓取配置已更新', config: payload } }
+      }
+    }
+  })
+
+  forms.scheduler.defaultSourceId = ''
+
+  await service.saveSchedulerConfig()
+
+  assert.deepEqual(receivedPayload, {
+    enabled: true,
+    interval_seconds: 7200,
+    default_max_pages: 5
+  })
+})
+
+test('saveSchedulerConfig should normalize empty numeric inputs back to safe defaults', async () => {
+  let receivedPayload = null
+  const { service, forms } = createHarness({
+    adminApiOverrides: {
+      updateSchedulerConfig: async (payload) => {
+        receivedPayload = payload
+        return { data: { message: '定时抓取配置已更新', config: payload } }
+      }
+    }
+  })
+
+  forms.scheduler.intervalSeconds = ''
+  forms.scheduler.defaultMaxPages = ''
+
+  await service.saveSchedulerConfig()
+
+  assert.deepEqual(receivedPayload, {
+    enabled: true,
+    interval_seconds: 7200,
+    default_max_pages: 5
+  })
 })
 
 test('retryTaskRun should submit action-specific rerun payloads and clear retry action state after completion', async () => {
@@ -564,6 +678,72 @@ test('fetchTaskRuns should keep contextual fallback copy for 500 responses', asy
   assert.equal(feedback.value.message, '加载任务记录失败')
 })
 
+test('fetchTaskRuns should canonicalize legacy task statuses and preserve snapshot envelope fields', async () => {
+  const { service, state } = createHarness({
+    adminApiOverrides: {
+      getTaskRuns: async () => ({
+        data: {
+          items: [{
+            id: 'run-legacy-1',
+            task_type: 'manual_scrape',
+            status: 'processing',
+            snapshot_at: '2026-04-03T03:00:00Z',
+            trust_level: 'instance_local',
+            scope_summary: '仅反映当前实例看到的后台任务状态快照',
+            details: {
+              stage_label: '正在抓取源站',
+              degraded_reason: '运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。'
+            }
+          }]
+        }
+      })
+    }
+  })
+
+  await service.fetchTaskRuns()
+
+  assert.equal(state.taskRuns[0].status, 'running')
+  assert.equal(state.taskRuns[0].trust_level, 'instance_local')
+  assert.equal(state.taskRuns[0].scope_summary, '仅反映当前实例看到的后台任务状态快照')
+  assert.equal(
+    state.taskRuns[0].details.degraded_reason,
+    '运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。'
+  )
+})
+
+test('fetchTaskSummary should canonicalize legacy running task statuses before exposing summary state', async () => {
+  const { service, state } = createHarness({
+    adminApiOverrides: {
+      getTaskSummary: async () => ({
+        data: {
+          latest_task_run: {
+            id: 'run-latest-1',
+            task_type: 'manual_scrape',
+            status: 'pending',
+            trust_level: 'instance_local',
+            scope_summary: '仅反映当前实例看到的后台任务状态快照'
+          },
+          running_tasks: [{
+            id: 'run-summary-1',
+            task_type: 'attachment_backfill',
+            status: 'processing',
+            details: {
+              trust_level: 'instance_local',
+              scope_summary: '仅反映当前实例看到的后台任务状态快照'
+            }
+          }]
+        }
+      })
+    }
+  })
+
+  await service.fetchTaskSummary()
+
+  assert.equal(state.taskSummary.latest_task_run.status, 'queued')
+  assert.equal(state.taskSummary.running_tasks[0].status, 'running')
+  assert.equal(state.taskSummary.running_tasks[0].scope_summary, '仅反映当前实例看到的后台任务状态快照')
+})
+
 test('verifyAdminAccess should keep timeout feedback contextual when session check times out', async () => {
   const timeoutError = new Error('timeout')
   timeoutError.code = 'ECONNABORTED'
@@ -612,7 +792,8 @@ test('refreshTaskStatus should not stamp sync time when task runs fail but task 
 
   assert.equal(refreshSucceeded, false)
   assert.equal(state.taskSummaryUnavailable, false)
-  assert.deepEqual(state.taskSummary, { running_tasks: [{ id: 'run-summary-only', task_type: 'manual_scrape' }] })
+  assert.equal(state.taskSummary.running_tasks[0].id, 'run-summary-only')
+  assert.equal(state.taskSummary.running_tasks[0].task_type, 'manual_scrape')
   assert.equal(state.taskStatusLastSyncedAt, '')
 })
 
@@ -669,8 +850,9 @@ test('refreshTaskStatus should ignore stale task-center responses from older ref
 
     const syncedAfterFreshRefresh = state.taskStatusLastSyncedAt
 
-    assert.deepEqual(state.taskRuns, [{ id: 'fresh-run' }])
-    assert.deepEqual(state.taskSummary, { running_tasks: [{ id: 'fresh-run', task_type: 'manual_scrape' }] })
+    assert.equal(state.taskRuns[0].id, 'fresh-run')
+    assert.equal(state.taskSummary.running_tasks[0].id, 'fresh-run')
+    assert.equal(state.taskSummary.running_tasks[0].task_type, 'manual_scrape')
     assert.equal(syncedAfterFreshRefresh, '2026-04-01T10:00:01.000Z')
 
     stampIndex = 1
@@ -679,8 +861,9 @@ test('refreshTaskStatus should ignore stale task-center responses from older ref
 
     await firstRefresh
 
-    assert.deepEqual(state.taskRuns, [{ id: 'fresh-run' }])
-    assert.deepEqual(state.taskSummary, { running_tasks: [{ id: 'fresh-run', task_type: 'manual_scrape' }] })
+    assert.equal(state.taskRuns[0].id, 'fresh-run')
+    assert.equal(state.taskSummary.running_tasks[0].id, 'fresh-run')
+    assert.equal(state.taskSummary.running_tasks[0].task_type, 'manual_scrape')
     assert.equal(state.taskStatusLastSyncedAt, syncedAfterFreshRefresh)
   } finally {
     global.Date = originalDate
@@ -815,4 +998,66 @@ test('refreshOverview should ignore late responses after logout clears admin run
   assert.equal(state.taskStatusLastSyncedAt, '')
   assert.equal(feedback.value.type, 'success')
   assert.equal(feedback.value.message, '已退出登录')
+})
+
+test('logoutAdmin should clear stale source options, task forms, and request busy flags', async () => {
+  const { service, forms, sourceOptions, requests } = createHarness({
+    adminApiOverrides: {
+      logout: async () => ({})
+    }
+  })
+
+  sourceOptions.value = [{ label: '旧数据源', value: 9, isActive: true }]
+  forms.scrape.sourceId = 9
+  forms.scrape.maxPages = 12
+  forms.aiAnalysis.sourceId = 9
+  forms.aiAnalysis.limit = 88
+  forms.scheduler.defaultSourceId = 9
+  requests.scrape = true
+  requests.aiAnalysis = true
+
+  await service.logoutAdmin()
+
+  assert.deepEqual(sourceOptions.value, [])
+  assert.deepEqual(forms.scrape, { sourceId: '', maxPages: 5 })
+  assert.deepEqual(forms.aiAnalysis, { sourceId: '', limit: 100, onlyUnanalyzed: true })
+  assert.deepEqual(forms.scheduler, { enabled: true, intervalSeconds: 7200, defaultSourceId: '', defaultMaxPages: 5, nextRunAt: '', updatedAt: '' })
+  assert.equal(requests.scrape, false)
+  assert.equal(requests.aiAnalysis, false)
+})
+
+test('fetchSources should clear stale options when backend returns an empty source list', async () => {
+  const { service, sourceOptions } = createHarness({
+    adminApiOverrides: {
+      getSources: async () => ({ data: { items: [] } })
+    }
+  })
+
+  sourceOptions.value = [{ label: '旧数据源', value: 9, isActive: true }]
+
+  await service.fetchSources()
+
+  assert.deepEqual(sourceOptions.value, [])
+})
+
+test('fetchSources should clear stale hidden source selections when backend returns a different active source set', async () => {
+  const { service, forms, sourceOptions } = createHarness({
+    adminApiOverrides: {
+      getSources: async () => ({
+        data: {
+          items: [{ id: 1, name: '江苏省人社厅', is_active: true }]
+        }
+      })
+    }
+  })
+
+  sourceOptions.value = [{ label: '旧数据源', value: 9, isActive: true }]
+  forms.scrape.sourceId = 9
+  forms.scheduler.defaultSourceId = 9
+
+  await service.fetchSources()
+
+  assert.deepEqual(sourceOptions.value, [{ label: '江苏省人社厅', value: 1, isActive: true }])
+  assert.equal(forms.scrape.sourceId, 1)
+  assert.equal(forms.scheduler.defaultSourceId, '')
 })

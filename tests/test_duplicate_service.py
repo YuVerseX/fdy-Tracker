@@ -50,6 +50,36 @@ class DuplicateServiceTestCase(unittest.TestCase):
         right = build_post_content_fingerprint("一、招聘岗位  专职辅导员")
         self.assertEqual(left, right)
 
+    def test_build_post_content_fingerprint_should_not_strip_source_specific_noise_globally(self):
+        left = build_post_content_fingerprint("首页\n招聘公告正文")
+        right = build_post_content_fingerprint("招聘公告正文")
+
+        self.assertNotEqual(left, right)
+
+    def test_build_post_content_fingerprint_should_keep_jiangsu_inline_tokens_in_generic_scope(self):
+        left = build_post_content_fingerprint(
+            "点击查看原文件：\n关\n闭\n本\n页\n打\n印\n本\n页\n招\n聘\n公\n告\n正\n文"
+        )
+        right = build_post_content_fingerprint("招聘公告正文")
+
+        self.assertNotEqual(left, right)
+
+    def test_build_post_content_fingerprint_should_strip_jiangsu_inline_tokens_when_source_known(self):
+        jiangsu_source = SimpleNamespace(scraper_class="JiangsuHRSSScraper")
+        left = build_post_content_fingerprint(
+            "点击查看原文件：\n关\n闭\n本\n页\n打\n印\n本\n页\n招\n聘\n公\n告\n正\n文",
+            source=jiangsu_source,
+        )
+        right = build_post_content_fingerprint("招聘公告正文", source=jiangsu_source)
+
+        self.assertEqual(left, right)
+
+    def test_duplicate_service_should_use_shared_content_normalizer_module(self):
+        self.assertEqual(
+            build_post_content_fingerprint.__globals__["normalize_content_text"].__module__,
+            "src.services.content_normalizer",
+        )
+
     def test_group_duplicate_posts_should_merge_same_source_same_day_same_title(self):
         primary = self.make_post(id=1, canonical_url="https://example.com/a")
         duplicate = self.make_post(
@@ -86,6 +116,37 @@ class DuplicateServiceTestCase(unittest.TestCase):
         groups = group_duplicate_posts([left, right])
         self.assertEqual(groups[0]["reason"], "original_url")
 
+    def test_group_duplicate_posts_should_not_merge_same_canonical_url_across_sources(self):
+        left = self.make_post(id=1, source_id=1, canonical_url="https://example.com/same")
+        right = self.make_post(
+            id=2,
+            source_id=2,
+            canonical_url="https://example.com/same",
+            original_url="https://example.com/other",
+        )
+
+        groups = group_duplicate_posts([left, right])
+
+        self.assertEqual(groups, [])
+
+    def test_group_duplicate_posts_should_not_merge_same_original_url_across_sources(self):
+        left = self.make_post(
+            id=1,
+            source_id=1,
+            canonical_url="https://example.com/a",
+            original_url="https://example.com/raw",
+        )
+        right = self.make_post(
+            id=2,
+            source_id=2,
+            canonical_url="https://example.com/b",
+            original_url="https://example.com/raw",
+        )
+
+        groups = group_duplicate_posts([left, right])
+
+        self.assertEqual(groups, [])
+
     def test_group_duplicate_posts_should_merge_same_content_fingerprint_when_title_matches(self):
         left = self.make_post(id=1, canonical_url="https://example.com/a")
         right = self.make_post(
@@ -96,6 +157,28 @@ class DuplicateServiceTestCase(unittest.TestCase):
             content="一、招聘岗位  专职辅导员  二、报名方式",
         )
         groups = group_duplicate_posts([left, right])
+        self.assertEqual(groups[0]["reason"], "source_date_title_content_fingerprint")
+
+    def test_group_duplicate_posts_should_apply_source_specific_fingerprint_profile_when_source_known(self):
+        jiangsu_source = SimpleNamespace(scraper_class="JiangsuHRSSScraper")
+        left = self.make_post(
+            id=1,
+            canonical_url="https://example.com/a",
+            content="首页\n招聘公告正文",
+            source=jiangsu_source,
+        )
+        right = self.make_post(
+            id=2,
+            canonical_url="https://example.com/b",
+            original_url="https://example.com/b",
+            publish_date=datetime(2026, 3, 27, tzinfo=timezone.utc),
+            content="招聘公告正文",
+            source=jiangsu_source,
+        )
+
+        groups = group_duplicate_posts([left, right])
+
+        self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["reason"], "source_date_title_content_fingerprint")
 
     def test_group_duplicate_posts_should_not_merge_same_title_across_sources(self):

@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import suppress
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import inspect
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -19,12 +20,12 @@ from src.services.admin_task_service import (
     update_task_run,
 )
 from src.services.scraper_service import scrape_and_save
+from src.services.source_scope import get_preferred_default_source_id
 from src.services.task_progress import ProgressCallback, resolve_canonical_stage
 
 # 创建调度器
 scheduler = AsyncIOScheduler()
 SCRAPE_JOB_ID = "scrape_job"
-DEFAULT_SOURCE_ID = 1
 DEFAULT_MAX_PAGES = 5
 
 
@@ -113,12 +114,16 @@ async def _run_with_task_heartbeat(
             await heartbeat_task
 
 
-def _build_default_scheduler_values() -> dict:
+def _build_default_scheduler_values(db) -> dict:
     """构造默认调度配置"""
+    default_source_id = get_preferred_default_source_id(db)
+    if default_source_id is None:
+        raise RuntimeError("未找到可用数据源，无法初始化定时抓取配置")
+
     return {
         "enabled": True,
         "interval_seconds": settings.SCRAPER_INTERVAL,
-        "default_source_id": DEFAULT_SOURCE_ID,
+        "default_source_id": default_source_id,
         "default_max_pages": DEFAULT_MAX_PAGES,
     }
 
@@ -127,13 +132,22 @@ def load_scheduler_config(db) -> SchedulerConfig:
     """读取当前定时抓取配置，不存在时自动补一条"""
     config = db.query(SchedulerConfig).order_by(SchedulerConfig.id.asc()).first()
     if config:
+        if not config.default_source_id:
+            config.default_source_id = get_preferred_default_source_id(db)
+            db.commit()
+            db.refresh(config)
         return config
 
-    config = SchedulerConfig(**_build_default_scheduler_values())
+    config = SchedulerConfig(**_build_default_scheduler_values(db))
     db.add(config)
     db.commit()
     db.refresh(config)
     return config
+
+
+def peek_scheduler_config(db) -> SchedulerConfig | None:
+    """只读获取当前调度配置，不做自动补齐或写库。"""
+    return db.query(SchedulerConfig).order_by(SchedulerConfig.id.asc()).first()
 
 
 def serialize_scheduler_config(config: SchedulerConfig) -> dict:
@@ -144,11 +158,89 @@ def serialize_scheduler_config(config: SchedulerConfig) -> dict:
         "enabled": bool(config.enabled),
         "interval_seconds": config.interval_seconds,
         "default_source_id": config.default_source_id,
+        "default_source_scope": "source",
         "default_max_pages": config.default_max_pages,
         "source_name": config.source.name if getattr(config, "source", None) else None,
         "scheduler_running": bool(scheduler.running),
         "next_run_at": job.next_run_time.isoformat() if job and getattr(job, "next_run_time", None) else None,
         "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+    }
+
+
+def get_scheduler_runtime_health(db) -> dict[str, Any]:
+    """给健康检查提供调度状态摘要。"""
+    issues: list[str] = []
+    config: SchedulerConfig | None = None
+    source = None
+
+    try:
+        config = peek_scheduler_config(db)
+    except Exception as exc:  # pragma: no cover - exercised via API tests
+        return {
+            "status": "error",
+            "ready": False,
+            "scheduler_running": bool(scheduler.running),
+            "enabled": None,
+            "interval_seconds": None,
+            "default_source_id": None,
+            "default_source_scope": "source",
+            "default_max_pages": None,
+            "source_name": None,
+            "next_run_at": None,
+            "issues": [f"scheduler_config_unavailable:{exc}"],
+        }
+
+    if config is None:
+        return {
+            "status": "error",
+            "ready": False,
+            "scheduler_running": bool(scheduler.running),
+            "enabled": None,
+            "interval_seconds": None,
+            "default_source_id": None,
+            "default_source_scope": "source",
+            "default_max_pages": None,
+            "source_name": None,
+            "next_run_at": None,
+            "issues": ["scheduler_config_missing"],
+        }
+
+    if not scheduler.running:
+        issues.append("scheduler_not_running")
+
+    if not config.enabled:
+        issues.append("scheduler_disabled")
+
+    if not config.default_source_id:
+        issues.append("default_source_missing")
+    else:
+        source = db.query(Source).filter(Source.id == config.default_source_id).first()
+        if source is None:
+            issues.append("default_source_not_found")
+        elif not source.is_active:
+            issues.append("default_source_inactive")
+
+    job = scheduler.get_job(SCRAPE_JOB_ID)
+    next_run_at = job.next_run_time.isoformat() if job and getattr(job, "next_run_time", None) else None
+
+    ready = config is not None and (
+        not config.enabled
+        or (config.default_source_id and source is not None and bool(source.is_active))
+    )
+    status = "ok" if not issues else "degraded"
+
+    return {
+        "status": status,
+        "ready": ready,
+        "scheduler_running": bool(scheduler.running),
+        "enabled": bool(config.enabled),
+        "interval_seconds": config.interval_seconds,
+        "default_source_id": config.default_source_id,
+        "default_source_scope": "source",
+        "default_max_pages": config.default_max_pages,
+        "source_name": source.name if source else None,
+        "next_run_at": next_run_at,
+        "issues": issues,
     }
 
 
@@ -215,6 +307,10 @@ def is_scheduler_ready(db, config: SchedulerConfig | None = None) -> bool:
 
     if not config.enabled:
         logger.info("定时抓取开关已关闭，跳过本轮调度")
+        return False
+
+    if not config.default_source_id:
+        logger.warning("默认数据源未配置，跳过定时抓取")
         return False
 
     source = db.query(Source).filter(Source.id == config.default_source_id).first()

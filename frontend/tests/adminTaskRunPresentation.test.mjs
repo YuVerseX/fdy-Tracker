@@ -126,6 +126,22 @@ test('buildTaskProgressView should keep determinate bars for item-based progress
   assert.equal(view.progressPercentLabel, '40%')
 })
 
+test('buildTaskProgressView should hide estimated percent copy for cancelled determinate snapshots', () => {
+  const view = buildTaskProgressView({
+    task_type: 'duplicate_backfill',
+    status: 'cancelled',
+    progress_mode: 'determinate',
+    metrics: {}
+  }, {
+    nowTs: Date.parse('2026-04-03T10:20:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000
+  })
+
+  assert.equal(view.progressLabel, '已终止')
+  assert.equal(view.progressPercentLabel, '')
+  assert.equal(view.percent, 0)
+})
+
 test('buildTaskMetricItems should expose user-facing metric labels in stable order', () => {
   const items = buildTaskMetricItems({
     task_type: 'manual_scrape',
@@ -226,13 +242,17 @@ test('buildTaskDetailSections should group task facts ahead of result metrics', 
 
   assert.deepEqual(
     sections.map((section) => section.title),
-    ['任务信息', '处理结果']
+    ['任务信息', '处理结果', '快照说明']
   )
   assert.equal(sections[0].items[0].label, '开始时间')
   assert.equal(sections[0].items[3].value, '江苏省人社厅')
   assert.deepEqual(
     sections[1].items.map((item) => item.label),
     ['预计公告']
+  )
+  assert.deepEqual(
+    sections[2].items.map((item) => item.label),
+    ['快照可信度', '快照范围']
   )
 })
 
@@ -322,6 +342,10 @@ test('buildTaskRunCardPresentation should calculate finished duration from start
   assert.equal(
     card.stageFacts.find((item) => item.label === '耗时')?.value,
     '12分0秒'
+  )
+  assert.equal(
+    card.detailSections[0].items.find((item) => item.label === '失败时间')?.value,
+    '2026/04/03 10:53'
   )
 })
 
@@ -485,10 +509,52 @@ test('buildTaskRunCardPresentation should surface cancelling notice while reques
   assert.deepEqual(card.actionItems, [])
 })
 
+test('buildTaskRunCardPresentation should distinguish queued cancel copy from in-flight cancellation copy', () => {
+  const card = buildTaskRunCardPresentation({
+    task_type: 'attachment_backfill',
+    status: 'cancel_requested',
+    stage: 'finalizing',
+    stage_label: '任务尚未开始，启动前会直接停止',
+    details: { cancel_requested_at: '2026-04-03T10:00:00Z' }
+  })
+
+  assert.equal(card.cancellationNotice.title, '终止请求已提交')
+  assert.equal(card.cancellationNotice.description, '任务尚未开始，启动前会直接停止，已完成结果会保留。')
+})
+
+test('buildTaskRunCardPresentation should expose instance-local snapshot guidance and canonicalize legacy statuses', () => {
+  const card = buildTaskRunCardPresentation({
+    id: 'run-legacy-processing-1',
+    task_type: 'manual_scrape',
+    status: 'processing',
+    stage: 'collecting',
+    stage_label: '正在抓取源站',
+    snapshot_at: '2026-04-03T10:05:00Z',
+    trust_level: 'instance_local',
+    scope_summary: '仅反映当前实例看到的后台任务状态快照',
+    degraded_reason: '运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。',
+    details: {
+      stage_label: '正在抓取源站'
+    }
+  }, {
+    nowTs: Date.parse('2026-04-03T10:06:00Z'),
+    heartbeatStaleMs: 10 * 60 * 1000
+  })
+
+  assert.equal(card.statusLabel, '运行中')
+  assert.equal(card.snapshotNotice?.title, '当前实例本地快照')
+  assert.match(card.snapshotNotice?.description, /跨实例不可见/)
+  assert.deepEqual(
+    card.detailSections.find((section) => section.id === 'snapshot')?.items.map((item) => item.label),
+    ['快照可信度', '快照时间', '快照范围']
+  )
+})
+
 test('buildTaskRunCardPresentation should treat cancelled run as non-failure final state', () => {
   const card = buildTaskRunCardPresentation({
     task_type: 'job_extraction',
     status: 'cancelled',
+    finished_at: '2026-04-03T02:53:00Z',
     summary: '用户已提前终止，已处理 4 条，已写入 12 条岗位',
     final_metrics: { posts_scanned: 4, jobs_saved: 12 }
   })
@@ -504,6 +570,10 @@ test('buildTaskRunCardPresentation should treat cancelled run as non-failure fin
       ['persisting', 'done', '写入结果'],
       ['finalizing', 'cancelled', '已终止']
     ]
+  )
+  assert.equal(
+    card.detailSections[0].items.find((item) => item.label === '终止时间')?.value,
+    '2026/04/03 10:53'
   )
 })
 

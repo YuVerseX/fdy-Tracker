@@ -12,7 +12,11 @@ from src.config import settings
 from src.services.task_progress import resolve_canonical_stage
 
 MAX_TASK_RUNS = 50
-RUNNING_STATUSES = {"queued", "pending", "running", "processing", "cancel_requested"}
+TASK_STATUS_ALIASES = {
+    "pending": "queued",
+    "processing": "running",
+}
+RUNNING_STATUSES = {"queued", "running", "cancel_requested"}
 DEFAULT_RUNNING_TASK_STALE_HOURS = 6
 RUNNING_TASK_STALE_HOURS = {
     "manual_scrape": 2,
@@ -22,16 +26,64 @@ RUNNING_TASK_STALE_HOURS = {
     "ai_job_extraction": 6,
     "attachment_backfill": 12,
     "duplicate_backfill": 12,
+    "maintenance_backfill": 12,
+}
+TASK_CATEGORY_LABELS = {
+    "scrape": "抓取任务",
+    "attachment": "附件任务",
+    "analysis": "分析任务",
+    "maintenance": "维护任务",
+}
+TASK_TYPE_METADATA = {
+    "manual_scrape": {
+        "label": "手动抓取最新数据",
+        "category": "scrape",
+        "tags": ["scrape", "manual"],
+    },
+    "scheduled_scrape": {
+        "label": "定时抓取",
+        "category": "scrape",
+        "tags": ["scrape", "scheduled"],
+    },
+    "attachment_backfill": {
+        "label": "历史附件补处理",
+        "category": "attachment",
+        "tags": ["attachment", "backfill"],
+    },
+    "duplicate_backfill": {
+        "label": "历史去重补齐",
+        "category": "maintenance",
+        "tags": ["maintenance", "duplicate-backfill"],
+    },
+    "base_analysis_backfill": {
+        "label": "基础分析补齐",
+        "category": "maintenance",
+        "tags": ["maintenance", "base-analysis-backfill"],
+    },
+    "maintenance_backfill": {
+        "label": "历史维护补齐",
+        "category": "maintenance",
+        "tags": ["maintenance", "maintenance-backfill"],
+    },
+    "ai_analysis": {
+        "label": "OpenAI 分析",
+        "category": "analysis",
+        "tags": ["analysis", "ai"],
+    },
+    "job_extraction": {
+        "label": "岗位级抽取",
+        "category": "analysis",
+        "tags": ["analysis", "job-extraction"],
+    },
+    "ai_job_extraction": {
+        "label": "智能岗位识别",
+        "category": "analysis",
+        "tags": ["analysis", "ai-job-extraction"],
+    },
 }
 TASK_TYPE_LABELS = {
-    "manual_scrape": "手动抓取最新数据",
-    "scheduled_scrape": "定时抓取",
-    "attachment_backfill": "历史附件补处理",
-    "duplicate_backfill": "历史去重补齐",
-    "base_analysis_backfill": "基础分析补齐",
-    "ai_analysis": "OpenAI 分析",
-    "job_extraction": "岗位级抽取",
-    "ai_job_extraction": "智能岗位识别",
+    task_type: metadata["label"]
+    for task_type, metadata in TASK_TYPE_METADATA.items()
 }
 TASK_STATUS_LABELS = {
     "queued": "排队中",
@@ -43,6 +95,16 @@ TASK_STATUS_LABELS = {
     "failed": "失败",
     "cancelled": "已终止",
 }
+TASK_SNAPSHOT_TRUST_TRUSTED = "trusted"
+TASK_SNAPSHOT_TRUST_DEGRADED = "degraded"
+TASK_SNAPSHOT_TRUST_INSTANCE_LOCAL = "instance_local"
+TASK_SNAPSHOT_INSTANCE_SCOPE = "current_instance"
+INSTANCE_LOCAL_TASK_SNAPSHOT_REASON = (
+    "运行态来自当前实例的本地 JSON 心跳快照，跨实例不可见，不保证强一致实时性。"
+)
+STALE_TASK_SNAPSHOT_REASON = (
+    "该任务因心跳过期被当前实例自动归档，最终状态基于超时推断。"
+)
 FINAL_STATUSES = {"success", "failed", "cancelled"}
 ADMIN_COMPATIBILITY_DETAIL_FIELDS = {
     "processed_records",
@@ -52,16 +114,7 @@ ADMIN_COMPATIBILITY_DETAIL_FIELDS = {
     "fields_added",
 }
 SCRAPE_FRESHNESS_TASK_TYPES = {"manual_scrape", "scheduled_scrape"}
-CONTENT_MUTATION_TASK_TYPES = {
-    "manual_scrape",
-    "scheduled_scrape",
-    "attachment_backfill",
-    "duplicate_backfill",
-    "base_analysis_backfill",
-    "ai_analysis",
-    "job_extraction",
-    "ai_job_extraction",
-}
+CONTENT_MUTATION_TASK_TYPES = set(TASK_TYPE_METADATA)
 TASK_CANCELABLE_TYPES = {
     "attachment_backfill",
     "duplicate_backfill",
@@ -98,10 +151,81 @@ class TaskAlreadyRunningError(RuntimeError):
         self.conflict_task_types = conflict_task_types or [task_type]
 
 
+MAINTENANCE_OPERATION_LABELS = {
+    "rule_analysis_refresh": "历史规则分析回填",
+    "rule_insight_refresh": "历史规则洞察回填",
+    "counselor_flag_repair": "历史辅导员口径校正",
+    "duplicate_full_rebuild": "历史重复结果全量重算",
+}
+
+
+def resolve_task_type_label(
+    task_type: str,
+    *,
+    params: Dict[str, Any] | None = None,
+    details: Dict[str, Any] | None = None,
+) -> str:
+    """按任务类型和参数生成最终展示标签。"""
+    if task_type != "maintenance_backfill":
+        return TASK_TYPE_LABELS.get(task_type, task_type)
+
+    operation = ""
+    for source in (params or {}, details or {}):
+        candidate = str(source.get("operation") or "").strip()
+        if candidate:
+            operation = candidate
+            break
+
+    return MAINTENANCE_OPERATION_LABELS.get(
+        operation,
+        TASK_TYPE_LABELS.get(task_type, task_type),
+    )
+
+
+def get_task_metadata(
+    task_type: str,
+    *,
+    params: Dict[str, Any] | None = None,
+    details: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """按任务类型返回统一的展示/分类元数据。"""
+    metadata = dict(TASK_TYPE_METADATA.get(task_type, {}))
+    category = metadata.get("category") or "maintenance"
+    tags = list(metadata.get("tags") or [category])
+    return {
+        "label": resolve_task_type_label(task_type, params=params, details=details),
+        "category": category,
+        "category_label": TASK_CATEGORY_LABELS.get(category, category),
+        "tags": tags,
+    }
+
+
+def build_task_record_metadata(
+    task_type: str,
+    *,
+    params: Dict[str, Any] | None = None,
+    details: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """构造持久化到任务记录中的分类信息。"""
+    metadata = get_task_metadata(task_type, params=params, details=details)
+    return {
+        "task_type_label": metadata["label"],
+        "task_category": metadata["category"],
+        "task_category_label": metadata["category_label"],
+        "task_tags": list(metadata["tags"]),
+    }
+
+
 def get_task_runs_path() -> Path:
     """获取管理任务记录文件路径"""
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
     return settings.DATA_DIR / "admin_task_runs.json"
+
+
+def get_public_freshness_path() -> Path:
+    """获取公开抓取新鲜度快照文件路径。"""
+    settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return settings.DATA_DIR / "public_task_freshness.json"
 
 
 def _read_task_runs() -> List[Dict[str, Any]]:
@@ -132,6 +256,50 @@ def _write_task_runs(task_runs: List[Dict[str, Any]]) -> None:
         )
     except Exception as exc:
         logger.warning(f"写入管理任务记录失败: {exc}")
+
+
+def _read_public_freshness_snapshot() -> Dict[str, Any]:
+    """读取公开抓取新鲜度快照。"""
+    path = get_public_freshness_path()
+    if not path.exists():
+        return {"all_sources": None, "sources": {}}
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning(f"读取公开抓取新鲜度快照失败: {exc}")
+        return {"all_sources": None, "sources": {}}
+
+    if not isinstance(payload, dict):
+        return {"all_sources": None, "sources": {}}
+
+    sources = payload.get("sources")
+    normalized_sources = (
+        {
+            str(key): value
+            for key, value in sources.items()
+            if isinstance(value, dict)
+        }
+        if isinstance(sources, dict)
+        else {}
+    )
+    all_sources = payload.get("all_sources")
+    return {
+        "all_sources": all_sources if isinstance(all_sources, dict) else None,
+        "sources": normalized_sources,
+    }
+
+
+def _write_public_freshness_snapshot(snapshot: Dict[str, Any]) -> None:
+    """写入公开抓取新鲜度快照。"""
+    path = get_public_freshness_path()
+    try:
+        path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.warning(f"写入公开抓取新鲜度快照失败: {exc}")
 
 
 def _parse_datetime_value(value: str | None) -> datetime | None:
@@ -211,6 +379,19 @@ def _get_running_task_stale_delta(task_type: str | None) -> timedelta:
     return timedelta(hours=hours)
 
 
+def normalize_task_status(status: str | None) -> str:
+    """把 legacy 状态值收口到 canonical 状态。"""
+    normalized = str(status or "").strip().lower()
+    if not normalized:
+        return ""
+    return TASK_STATUS_ALIASES.get(normalized, normalized)
+
+
+def _is_running_task_status(status: str | None) -> bool:
+    """判断指定状态是否仍属于运行态。"""
+    return normalize_task_status(status) in RUNNING_STATUSES
+
+
 def _build_stale_task_run(task_run: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     """把异常遗留的运行中任务自动转成失败"""
     started_at_value = _normalize_datetime_value(task_run.get("started_at"))
@@ -250,11 +431,15 @@ def _cleanup_stale_running_tasks(task_runs: List[Dict[str, Any]]) -> List[Dict[s
     has_changes = False
 
     for task_run in task_runs:
-        if task_run.get("status") not in RUNNING_STATUSES:
-            normalized_runs.append(task_run)
+        normalized_task_run = dict(task_run)
+        normalized_status = normalize_task_status(normalized_task_run.get("status"))
+        if normalized_status and normalized_status != normalized_task_run.get("status"):
+            normalized_task_run["status"] = normalized_status
+            has_changes = True
+        if not _is_running_task_status(normalized_task_run.get("status")):
+            normalized_runs.append(normalized_task_run)
             continue
 
-        normalized_task_run = dict(task_run)
         if "duration_ms" in normalized_task_run:
             normalized_task_run.pop("duration_ms", None)
             has_changes = True
@@ -313,7 +498,7 @@ def _find_running_task(
     """从现有记录里找出正在运行的任务"""
     allowed_task_types = set(task_types or [])
     for task_run in task_runs:
-        if task_run.get("status") not in RUNNING_STATUSES:
+        if not _is_running_task_status(task_run.get("status")):
             continue
         if allowed_task_types and task_run.get("task_type") not in allowed_task_types:
             continue
@@ -325,6 +510,56 @@ def load_task_runs(limit: int = 20) -> List[Dict[str, Any]]:
     """读取最近的管理任务记录"""
     with TASK_RUNS_LOCK:
         return _load_task_runs_with_cleanup()[:limit]
+
+
+def get_task_runtime_health_summary(limit: int = MAX_TASK_RUNS) -> Dict[str, Any]:
+    """汇总运行中任务的心跳与过期情况，供健康检查使用。"""
+    with TASK_RUNS_LOCK:
+        raw_task_runs = _read_task_runs()[:limit]
+
+    now = datetime.now(timezone.utc)
+    latest_heartbeat_at: datetime | None = None
+    running_count = 0
+    stale_tasks: list[dict[str, Any]] = []
+
+    for task_run in raw_task_runs:
+        normalized_status = normalize_task_status(task_run.get("status"))
+        if not _is_running_task_status(normalized_status):
+            continue
+
+        running_count += 1
+        started_at = _parse_datetime_value(task_run.get("started_at"))
+        heartbeat_at = _parse_datetime_value(task_run.get("heartbeat_at"))
+        last_seen_at = heartbeat_at or started_at
+        if last_seen_at and (latest_heartbeat_at is None or last_seen_at > latest_heartbeat_at):
+            latest_heartbeat_at = last_seen_at
+
+        if last_seen_at is None:
+            continue
+
+        stale_after = _get_running_task_stale_delta(task_run.get("task_type"))
+        if now - last_seen_at <= stale_after:
+            continue
+
+        stale_tasks.append({
+            "id": task_run.get("id"),
+            "task_type": task_run.get("task_type"),
+            "last_seen_at": last_seen_at.isoformat(),
+            "stale_after_seconds": int(stale_after.total_seconds()),
+        })
+
+    latest_heartbeat_age_seconds = (
+        int((now - latest_heartbeat_at).total_seconds())
+        if latest_heartbeat_at is not None
+        else None
+    )
+    return {
+        "running_task_count": running_count,
+        "stale_task_count": len(stale_tasks),
+        "latest_heartbeat_at": latest_heartbeat_at.isoformat() if latest_heartbeat_at else None,
+        "latest_heartbeat_age_seconds": latest_heartbeat_age_seconds,
+        "stale_tasks": stale_tasks,
+    }
 
 
 def find_running_task(task_types: List[str] | None = None) -> Dict[str, Any] | None:
@@ -351,7 +586,8 @@ def request_task_run_cancel(
                 next_runs.append(task_run)
                 continue
 
-            if task_run.get("status") not in RUNNING_STATUSES:
+            current_status = normalize_task_status(task_run.get("status"))
+            if not _is_running_task_status(current_status):
                 raise ValueError("task_not_running")
 
             merged_details = dict(task_run.get("details") or {})
@@ -360,14 +596,19 @@ def request_task_run_cancel(
             merged_details["cancel_reason"] = cancel_reason
             if cancel_requested_by:
                 merged_details["cancel_requested_by"] = cancel_requested_by
+            cancel_stage_label = (
+                "任务尚未开始，启动前会直接停止"
+                if current_status == "queued"
+                else "当前处理单元结束后会停止"
+            )
             merged_details["stage"] = "finalizing"
-            merged_details["stage_label"] = "当前处理单元结束后会停止"
+            merged_details["stage_label"] = cancel_stage_label
             merged_details["stage_started_at"] = merged_details.get("cancel_requested_at")
 
             updated_run = {
                 **task_run,
                 "status": "cancel_requested",
-                "phase": "当前处理单元结束后会停止",
+                "phase": cancel_stage_label,
                 "details": merged_details,
                 "heartbeat_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -391,13 +632,13 @@ def is_task_run_cancel_requested(task_id: str) -> bool:
 def build_task_actions(task_run: Dict[str, Any]) -> List[Dict[str, str]]:
     """为后台管理列表补充与状态匹配的操作语义。"""
     task_type = task_run.get("task_type")
-    status = task_run.get("status")
+    status = normalize_task_status(task_run.get("status"))
     if task_type not in CONTENT_MUTATION_TASK_TYPES:
         return []
 
     if (
         task_type in TASK_CANCELABLE_TYPES
-        and status in {"queued", "pending", "running", "processing"}
+        and status in {"queued", "running"}
         and not (task_run.get("details") or {}).get("cancel_requested_at")
     ):
         return [{"key": "cancel", "label": "提前终止"}]
@@ -452,6 +693,56 @@ def build_runtime_task_details(
     return details
 
 
+def _is_stale_task_snapshot(task_run: Dict[str, Any], details: Dict[str, Any]) -> bool:
+    """判断任务是否为基于过期心跳自动归档的降级快照。"""
+    for candidate in (
+        task_run.get("failure_reason"),
+        details.get("failure_reason"),
+        task_run.get("summary"),
+        details.get("final_summary"),
+        task_run.get("phase"),
+        details.get("stage_label"),
+    ):
+        if "状态过期" in str(candidate or ""):
+            return True
+    return False
+
+
+def _build_task_snapshot_envelope(
+    task_run: Dict[str, Any],
+    details: Dict[str, Any],
+    *,
+    snapshot_at: str,
+) -> Dict[str, Any]:
+    """为后台任务视图生成快照可信度 envelope。"""
+    status = str(task_run.get("status") or "").strip()
+    if status in RUNNING_STATUSES:
+        return {
+            "snapshot_at": snapshot_at,
+            "trust_level": TASK_SNAPSHOT_TRUST_INSTANCE_LOCAL,
+            "degraded_reason": INSTANCE_LOCAL_TASK_SNAPSHOT_REASON,
+            "instance_scope": TASK_SNAPSHOT_INSTANCE_SCOPE,
+            "scope_summary": "仅反映当前实例看到的后台任务状态快照",
+        }
+
+    if _is_stale_task_snapshot(task_run, details):
+        return {
+            "snapshot_at": snapshot_at,
+            "trust_level": TASK_SNAPSHOT_TRUST_DEGRADED,
+            "degraded_reason": STALE_TASK_SNAPSHOT_REASON,
+            "instance_scope": TASK_SNAPSHOT_INSTANCE_SCOPE,
+            "scope_summary": "这是当前实例根据过期心跳自动归档的降级任务快照",
+        }
+
+    return {
+        "snapshot_at": snapshot_at,
+        "trust_level": TASK_SNAPSHOT_TRUST_TRUSTED,
+        "degraded_reason": None,
+        "instance_scope": TASK_SNAPSHOT_INSTANCE_SCOPE,
+        "scope_summary": "当前实例已归档的任务结果快照",
+    }
+
+
 def _build_canonical_metrics(details: Dict[str, Any], status: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """按任务状态拆分运行态和完成态指标。"""
     live_metrics = dict(details.get("live_metrics") or details.get("metrics") or {})
@@ -486,11 +777,20 @@ def _build_admin_compatibility_details(
     live_metrics: Dict[str, Any],
     final_metrics: Dict[str, Any],
     final_summary: str,
+    snapshot_at: str,
+    trust_level: str,
+    degraded_reason: str | None,
+    instance_scope: str,
+    scope_summary: str,
 ) -> Dict[str, Any]:
     """为当前前端提供安全的兼容 details 结构。"""
     compatibility_details: Dict[str, Any] = {
         "progress_mode": progress_mode,
         "metrics": metrics,
+        "snapshot_at": snapshot_at,
+        "trust_level": trust_level,
+        "instance_scope": instance_scope,
+        "scope_summary": scope_summary,
     }
     if stage:
         compatibility_details["stage"] = stage
@@ -522,14 +822,32 @@ def _build_admin_compatibility_details(
         compatibility_details["cancel_requested_by"] = raw_details.get("cancel_requested_by")
     if failure_reason:
         compatibility_details["failure_reason"] = failure_reason
+    if degraded_reason:
+        compatibility_details["degraded_reason"] = degraded_reason
+    if raw_details.get("task_category"):
+        compatibility_details["task_category"] = raw_details.get("task_category")
+    if raw_details.get("task_category_label"):
+        compatibility_details["task_category_label"] = raw_details.get("task_category_label")
+    if raw_details.get("task_tags"):
+        compatibility_details["task_tags"] = list(raw_details.get("task_tags") or [])
     return compatibility_details
 
 
-def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
+def serialize_task_run_for_admin(
+    task_run: Dict[str, Any],
+    *,
+    snapshot_at: datetime | str | None = None,
+) -> Dict[str, Any]:
     """把原始任务记录转成后台任务列表展示契约。"""
     normalized_task_run = dict(task_run or {})
     details = dict(normalized_task_run.get("details") or {})
-    status = normalized_task_run.get("status") or ""
+    resolved_snapshot_at = _normalize_datetime_value(snapshot_at)
+    task_metadata = get_task_metadata(
+        normalized_task_run.get("task_type") or "",
+        params=normalized_task_run.get("params") or {},
+        details=details,
+    )
+    status = normalize_task_status(normalized_task_run.get("status"))
     finished_at = normalized_task_run.get("finished_at") if status in FINAL_STATUSES else None
     duration_ms = normalized_task_run.get("duration_ms") if status in FINAL_STATUSES else None
     progress_mode = _normalize_admin_progress_mode(details)
@@ -539,7 +857,7 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
     if details.get("stage") or details.get("stage_key"):
         stage = resolve_canonical_stage(details.get("stage"), details.get("stage_key"))
     stage_label = details.get("stage_label") or normalized_task_run.get("phase") or ""
-    if not stage and status in {"queued", "pending"}:
+    if not stage and status == "queued":
         stage = "submitted"
     elif not stage and status not in FINAL_STATUSES and stage_label:
         stage = _infer_runtime_stage_from_phase(stage_label, details.get("stage"))
@@ -551,10 +869,18 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
     )
     failure_reason = normalized_task_run.get("failure_reason")
     stage_key = details.get("stage_key")
+    snapshot_envelope = _build_task_snapshot_envelope(
+        normalized_task_run,
+        details,
+        snapshot_at=resolved_snapshot_at,
+    )
     return {
         "id": normalized_task_run.get("id"),
         "task_type": normalized_task_run.get("task_type"),
-        "display_name": get_task_type_label(normalized_task_run.get("task_type") or ""),
+        "display_name": task_metadata["label"],
+        "task_category": task_metadata["category"],
+        "task_category_label": task_metadata["category_label"],
+        "task_tags": list(task_metadata["tags"]),
         "status": status,
         "status_label": TASK_STATUS_LABELS.get(status, "未知"),
         "stage": "" if status in FINAL_STATUSES else stage,
@@ -577,6 +903,7 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
         "params": normalized_task_run.get("params"),
         "progress": normalized_task_run.get("progress"),
         "failure_reason": failure_reason,
+        **snapshot_envelope,
         "details": _build_admin_compatibility_details(
             raw_details=details,
             progress_mode=progress_mode,
@@ -588,13 +915,22 @@ def serialize_task_run_for_admin(task_run: Dict[str, Any]) -> Dict[str, Any]:
             live_metrics=live_metrics,
             final_metrics=final_metrics,
             final_summary=final_summary,
+            snapshot_at=snapshot_envelope["snapshot_at"],
+            trust_level=snapshot_envelope["trust_level"],
+            degraded_reason=snapshot_envelope["degraded_reason"],
+            instance_scope=snapshot_envelope["instance_scope"],
+            scope_summary=snapshot_envelope["scope_summary"],
         ),
     }
 
 
 def load_task_runs_for_admin(limit: int = 20) -> List[Dict[str, Any]]:
     """读取最近任务记录，并转换为后台展示契约。"""
-    return [serialize_task_run_for_admin(task_run) for task_run in load_task_runs(limit=limit)]
+    snapshot_at = datetime.now(timezone.utc).isoformat()
+    return [
+        serialize_task_run_for_admin(task_run, snapshot_at=snapshot_at)
+        for task_run in load_task_runs(limit=limit)
+    ]
 
 
 def start_task_run(
@@ -618,6 +954,12 @@ def start_task_run(
 
         normalized_params = dict(params or {})
         normalized_details = dict(details or {})
+        task_record_metadata = build_task_record_metadata(
+            task_type,
+            params=normalized_params,
+            details=normalized_details,
+        )
+        normalized_details.update(task_record_metadata)
         rerun_of_task_id = (
             normalized_details.get("rerun_of_task_id")
             or normalized_params.get("rerun_of_task_id")
@@ -631,6 +973,7 @@ def start_task_run(
             "phase": "任务已提交，等待后台执行",
             "progress": 0,
             "params": normalized_params,
+            **task_record_metadata,
             "details": build_runtime_task_details(
                 stage="submitted",
                 stage_label="任务已提交，等待后台执行",
@@ -668,6 +1011,7 @@ def update_task_run(
                 continue
 
             existing_status = task_run.get("status")
+            normalized_existing_status = normalize_task_status(existing_status)
             existing_details = dict(task_run.get("details") or {})
             merged_details = dict(existing_details)
             resolved_heartbeat = _normalize_datetime_value(heartbeat_at)
@@ -689,8 +1033,8 @@ def update_task_run(
                 details = {}
 
             should_keep_cancel_requested = (
-                existing_status == "cancel_requested"
-                and (status or existing_status) not in FINAL_STATUSES
+                normalized_existing_status == "cancel_requested"
+                and normalize_task_status(status or normalized_existing_status) not in FINAL_STATUSES
             )
             if should_keep_cancel_requested:
                 merged_details["stage"] = existing_details.get("stage") or "finalizing"
@@ -724,7 +1068,11 @@ def update_task_run(
 
             updated_run = {
                 **task_run,
-                "status": existing_status if should_keep_cancel_requested else (status or existing_status),
+                "status": (
+                    normalized_existing_status
+                    if should_keep_cancel_requested
+                    else normalize_task_status(status or normalized_existing_status)
+                ),
                 "summary": summary if summary is not None else task_run.get("summary", ""),
                 "phase": (
                     task_run.get("phase", "")
@@ -780,6 +1128,13 @@ def record_task_run(
             else dict((existing_run or {}).get("params") or {})
         )
         final_details = dict(details or {})
+        resolved_task_type = task_type or (existing_run or {}).get("task_type")
+        task_record_metadata = build_task_record_metadata(
+            resolved_task_type,
+            params=normalized_params,
+            details=final_details,
+        )
+        final_details.update(task_record_metadata)
         rerun_of_task_id = (
             final_details.get("rerun_of_task_id")
             or normalized_params.get("rerun_of_task_id")
@@ -812,11 +1167,12 @@ def record_task_run(
         task_run = {
             "id": (existing_run or {}).get("id") or task_id or uuid4().hex,
             "task_type": task_type or (existing_run or {}).get("task_type"),
-            "status": status,
+            "status": normalize_task_status(status),
             "summary": summary,
             "phase": final_phase,
             "progress": final_progress,
             "params": normalized_params,
+            **task_record_metadata,
             "details": final_details,
             "started_at": started_at_value,
             "heartbeat_at": finished_at_value,
@@ -829,6 +1185,7 @@ def record_task_run(
             task_run["failure_reason"] = failure_reason
 
         _write_task_runs([task_run, *remaining_runs])
+        _update_public_freshness_snapshot(task_run)
         return task_run
 
 
@@ -842,7 +1199,7 @@ def get_task_summary() -> Dict[str, Any]:
     )
     running_tasks = [
         task_run for task_run in task_runs
-        if task_run.get("status") in RUNNING_STATUSES
+        if _is_running_task_status(task_run.get("status"))
     ]
 
     return {
@@ -857,62 +1214,176 @@ def get_task_summary() -> Dict[str, Any]:
 def get_task_summary_for_admin() -> Dict[str, Any]:
     """返回后台页面可直接消费的任务摘要。"""
     summary = get_task_summary()
+    snapshot_at = datetime.now(timezone.utc).isoformat()
     return {
         **summary,
         "latest_task_run": (
-            serialize_task_run_for_admin(summary["latest_task_run"])
+            serialize_task_run_for_admin(summary["latest_task_run"], snapshot_at=snapshot_at)
             if summary.get("latest_task_run")
             else None
         ),
         "latest_success_run": (
-            serialize_task_run_for_admin(summary["latest_success_run"])
+            serialize_task_run_for_admin(summary["latest_success_run"], snapshot_at=snapshot_at)
             if summary.get("latest_success_run")
             else None
         ),
         "running_tasks": [
-            serialize_task_run_for_admin(task_run)
+            serialize_task_run_for_admin(task_run, snapshot_at=snapshot_at)
             for task_run in summary.get("running_tasks") or []
         ],
     }
 
 
-def get_public_task_freshness_summary() -> Dict[str, Any]:
-    """公开页面只关心抓取任务的成功时间。"""
-    task_runs = load_task_runs(limit=MAX_TASK_RUNS)
-    latest_success_run = next(
-        (
-            task_run for task_run in task_runs
-            if task_run.get("status") == "success"
-            and task_run.get("task_type") in SCRAPE_FRESHNESS_TASK_TYPES
-        ),
-        None,
-    )
+def _extract_task_source_id(task_run: Dict[str, Any] | None) -> int | None:
+    """从任务记录里提取 source_id。"""
+    if not isinstance(task_run, dict):
+        return None
+
+    sources = [
+        task_run.get("params"),
+        task_run.get("details"),
+        (task_run.get("details") or {}).get("params"),
+        (task_run.get("details") or {}).get("request_params"),
+    ]
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        candidate = source.get("source_id")
+        if candidate in ("", None):
+            continue
+        try:
+            normalized = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if normalized >= 1:
+            return normalized
+
+    return None
+
+
+def _build_public_freshness_task_run(task_run: Dict[str, Any]) -> Dict[str, Any]:
+    """裁剪出公开新鲜度需要的最小任务字段。"""
+    source_id = _extract_task_source_id(task_run)
+    params = dict(task_run.get("params") or {})
+    if source_id is not None:
+        params["source_id"] = source_id
+
     return {
+        "id": task_run.get("id"),
+        "task_type": task_run.get("task_type"),
+        "status": task_run.get("status"),
+        "finished_at": task_run.get("finished_at"),
+        "params": params,
+    }
+
+
+def _should_replace_public_freshness_entry(
+    existing_entry: Dict[str, Any] | None,
+    candidate_entry: Dict[str, Any],
+) -> bool:
+    """仅在候选时间更新时替换公开抓取新鲜度快照。"""
+    if not existing_entry:
+        return True
+
+    candidate_finished_at = _parse_datetime_value(candidate_entry.get("finished_at"))
+    existing_finished_at = _parse_datetime_value(existing_entry.get("finished_at"))
+    if candidate_finished_at is None:
+        return False
+    if existing_finished_at is None:
+        return True
+    return candidate_finished_at >= existing_finished_at
+
+
+def _update_public_freshness_snapshot(task_run: Dict[str, Any]) -> None:
+    """在抓取成功时更新公开抓取新鲜度快照。"""
+    if task_run.get("status") != "success":
+        return
+    if task_run.get("task_type") not in SCRAPE_FRESHNESS_TASK_TYPES:
+        return
+
+    candidate_entry = _build_public_freshness_task_run(task_run)
+    if _parse_datetime_value(candidate_entry.get("finished_at")) is None:
+        return
+
+    snapshot = _read_public_freshness_snapshot()
+    if _should_replace_public_freshness_entry(snapshot.get("all_sources"), candidate_entry):
+        snapshot["all_sources"] = candidate_entry
+
+    source_id = _extract_task_source_id(task_run)
+    if source_id is not None:
+        sources = dict(snapshot.get("sources") or {})
+        source_key = str(source_id)
+        if _should_replace_public_freshness_entry(sources.get(source_key), candidate_entry):
+            sources[source_key] = candidate_entry
+            snapshot["sources"] = sources
+
+    _write_public_freshness_snapshot(snapshot)
+
+
+def get_public_task_freshness_summary(*, source_id: int | None = None) -> Dict[str, Any]:
+    """公开页面只关心抓取任务的成功时间。"""
+    snapshot = _read_public_freshness_snapshot()
+    latest_success_run = (
+        (snapshot.get("sources") or {}).get(str(source_id))
+        if source_id is not None
+        else snapshot.get("all_sources")
+    )
+    if latest_success_run is None:
+        with TASK_RUNS_LOCK:
+            task_runs = _read_task_runs()[:MAX_TASK_RUNS]
+        latest_success_run = next(
+            (
+                task_run for task_run in task_runs
+                if task_run.get("status") == "success"
+                and task_run.get("task_type") in SCRAPE_FRESHNESS_TASK_TYPES
+                and (
+                    source_id is None
+                    or _extract_task_source_id(task_run) == source_id
+                )
+            ),
+            None,
+        )
+
+    return {
+        "scope": "source" if source_id is not None else "all_sources",
+        "requested_source_id": source_id,
         "latest_success_run": latest_success_run,
         "latest_success_at": latest_success_run.get("finished_at") if latest_success_run else None,
     }
 
 
-def get_task_type_label(task_type: str) -> str:
+def get_task_type_label(
+    task_type: str,
+    *,
+    params: Dict[str, Any] | None = None,
+    details: Dict[str, Any] | None = None,
+) -> str:
     """把任务类型转成人可读标签。"""
-    return TASK_TYPE_LABELS.get(task_type, task_type)
+    return resolve_task_type_label(task_type, params=params, details=details)
 
 
 def serialize_public_task_freshness(summary: Dict[str, Any]) -> Dict[str, Any]:
     """序列化公开可见的任务新鲜度字段。"""
     latest_success_run = summary.get("latest_success_run")
+    payload = {
+        "scope": summary.get("scope") or "all_sources",
+        "requested_source_id": summary.get("requested_source_id"),
+    }
     if not latest_success_run:
         return {
+            **payload,
             "latest_success_at": None,
             "latest_success_run": None,
         }
 
     task_type = latest_success_run.get("task_type") or ""
     return {
+        **payload,
         "latest_success_at": summary.get("latest_success_at"),
         "latest_success_run": {
             "task_type": task_type,
             "task_label": get_task_type_label(task_type),
             "finished_at": latest_success_run.get("finished_at"),
+            "source_id": _extract_task_source_id(latest_success_run),
         },
     }

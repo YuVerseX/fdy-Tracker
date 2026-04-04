@@ -679,24 +679,58 @@ def build_existing_ai_job_payloads(post: Post) -> list[dict[str, Any]]:
 
 
 def replace_post_jobs(db: Session, post: Post, jobs: list[dict[str, Any]]) -> int:
-    """覆盖写入岗位级结果"""
-    db.query(PostJob).filter(PostJob.post_id == post.id).delete(synchronize_session=False)
+    """覆盖写入岗位级结果，但保留稳定 identity。"""
+    existing_jobs = db.query(PostJob).filter(PostJob.post_id == post.id).all()
+    existing_by_name: dict[str, PostJob] = {}
+    duplicate_jobs: list[PostJob] = []
+    for existing_job in existing_jobs:
+        normalized_name = normalize_job_name(existing_job.job_name)
+        if normalized_name in existing_by_name:
+            duplicate_jobs.append(existing_job)
+            continue
+        existing_by_name[normalized_name] = existing_job
 
+    incoming_names = set()
     for index, job in enumerate(jobs):
-        db.add(PostJob(
-            post_id=post.id,
-            job_name=job["job_name"],
-            recruitment_count=job.get("recruitment_count") or None,
-            education_requirement=job.get("education_requirement") or None,
-            major_requirement=job.get("major_requirement") or None,
-            location=job.get("location") or None,
-            political_status=job.get("political_status") or None,
-            source_type=job.get("source_type") or "field",
-            is_counselor=bool(job.get("is_counselor")),
-            confidence_score=job.get("confidence_score"),
-            raw_payload_json=json.dumps(job.get("raw_payload") or {}, ensure_ascii=False),
-            sort_order=index,
-        ))
+        normalized_name = normalize_job_name(job["job_name"])
+        incoming_names.add(normalized_name)
+        existing_job = existing_by_name.pop(normalized_name, None)
+        if existing_job is None:
+            db.add(PostJob(
+                post_id=post.id,
+                job_name=job["job_name"],
+                recruitment_count=job.get("recruitment_count") or None,
+                education_requirement=job.get("education_requirement") or None,
+                major_requirement=job.get("major_requirement") or None,
+                location=job.get("location") or None,
+                political_status=job.get("political_status") or None,
+                source_type=job.get("source_type") or "field",
+                is_counselor=bool(job.get("is_counselor")),
+                confidence_score=job.get("confidence_score"),
+                raw_payload_json=json.dumps(job.get("raw_payload") or {}, ensure_ascii=False),
+                sort_order=index,
+            ))
+            continue
+
+        existing_job.job_name = job["job_name"]
+        existing_job.recruitment_count = job.get("recruitment_count") or None
+        existing_job.education_requirement = job.get("education_requirement") or None
+        existing_job.major_requirement = job.get("major_requirement") or None
+        existing_job.location = job.get("location") or None
+        existing_job.political_status = job.get("political_status") or None
+        existing_job.source_type = job.get("source_type") or "field"
+        existing_job.is_counselor = bool(job.get("is_counselor"))
+        existing_job.confidence_score = job.get("confidence_score")
+        existing_job.raw_payload_json = json.dumps(job.get("raw_payload") or {}, ensure_ascii=False)
+        existing_job.sort_order = index
+
+    for stale_job in existing_by_name.values():
+        if normalize_job_name(stale_job.job_name) not in incoming_names:
+            db.delete(stale_job)
+
+    for duplicate_job in duplicate_jobs:
+        db.delete(duplicate_job)
+
     db.flush()
     return len(jobs)
 

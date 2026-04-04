@@ -7,93 +7,92 @@ from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 from loguru import logger
 from src.scrapers.base import BaseScraper
+from src.services.content_normalizer import (
+    ATTACHMENT_SUFFIXES,
+    ATTACHMENT_SUFFIX_PATTERN,
+    JIANGSU_HRSS_CONTENT_PROFILE,
+    is_noise_text as is_generic_noise_text,
+    normalize_content_text as normalize_generic_content_text,
+)
 from src.services.task_progress import ProgressCallback, emit_progress
-
-NOISE_TEXTS = {
-    "当前位置：",
-    "首页",
-    "资讯中心",
-    "省属事业单位招聘",
-    "来源：",
-    "发布日期：",
-    "点击量：",
-    "点击查看原文件：",
-    "关闭本页",
-    "打印本页",
-    "小",
-    "中",
-    "大",
-    ">",
-    "[",
-    "]",
-}
-
-ATTACHMENT_SUFFIXES = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip", ".rar")
-ATTACHMENT_SUFFIX_PATTERN = "|".join(re.escape(suffix) for suffix in ATTACHMENT_SUFFIXES)
 GENERIC_ATTACHMENT_TEXTS = {"附件", "下载", "点击下载", "查看附件", "点击查看原文件"}
-
-
-def is_noise_text(text: str) -> bool:
-    """判断是否为正文噪音"""
-    normalized = text.strip()
-    if not normalized:
-        return True
-    if normalized in NOISE_TEXTS:
-        return True
-    if normalized.startswith("当前位置："):
-        return True
-    if normalized.startswith("发布日期："):
-        return True
-    if normalized.startswith("来源："):
-        return True
-    if normalized.startswith("字体：["):
-        return True
-    if normalized == "关闭本页打印本页":
-        return True
-    return False
+DEFAULT_BASE_URL = "https://jshrss.jiangsu.gov.cn/col/col80382/index.html"
+DEFAULT_AJAX_PATH = "/module/web/jpage/dataproxy.jsp"
+DEFAULT_AJAX_PARAMS = {
+    "columnid": "80382",
+    "unitid": "325517",
+    "webid": "67",
+}
+DETAIL_ERROR_MARKERS = (
+    "404 not found",
+    "nginx 404",
+    "error 404",
+    "页面不存在",
+    "您访问的页面不存在",
+    "系统发生错误",
+    "访问出错",
+)
 
 
 def normalize_content_text(content: str) -> str:
-    """清理正文文本，兼容历史脏数据"""
-    if not content:
-        return ""
+    """江苏源正文清洗始终使用本源 profile。"""
+    return normalize_generic_content_text(content, profile=JIANGSU_HRSS_CONTENT_PROFILE)
 
-    normalized = content.replace("\r", "\n").replace("\xa0", " ").replace("\u3000", " ")
-    raw_lines = [line.strip() for line in normalized.split("\n") if line.strip()]
-    filtered_lines = [line for line in raw_lines if not is_noise_text(line)]
 
-    if not filtered_lines:
-        return ""
+def is_noise_text(text: str) -> bool:
+    """江苏源噪音识别。"""
+    return is_generic_noise_text(text, profile=JIANGSU_HRSS_CONTENT_PROFILE)
 
-    fragmented_line_count = sum(len(line) <= 6 for line in filtered_lines)
-    looks_fragmented = len(filtered_lines) >= 8 and fragmented_line_count / len(filtered_lines) > 0.35
 
-    if looks_fragmented:
-        normalized = "".join(filtered_lines)
-        normalized = normalized.replace("点击查看原文件：", "")
-        normalized = normalized.replace("关闭本页打印本页", "")
-    else:
-        normalized = "\n\n".join(filtered_lines)
+def build_site_root(base_url: str) -> str:
+    """从入口地址推导站点根域名。"""
+    parsed = urlparse((base_url or "").strip() or DEFAULT_BASE_URL)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
 
-    normalized = re.sub(r"(?<!\n\n)(附件[:：])", r"\n\n\1", normalized)
-    normalized = re.sub(
-        r"(?<!\n)(举报电话[:：]|咨询电话[:：]|监督电话[:：]|举报信箱[:：]|联系电话[:：])",
-        r"\n\1",
-        normalized
-    )
-    normalized = re.sub(r"(?<!\n\n)([一二三四五六七八九十]+、)", r"\n\n\1", normalized)
-    normalized = re.sub(r"(?<!\n)(（[一二三四五六七八九十]+）)", r"\n\1", normalized)
-    normalized = re.sub(r"(?<!\d)(?<!\n)([1-9][0-9]?[.、])(?=[^\d])", r"\n\1", normalized)
-    normalized = re.sub(r"([0-9-]{7,})([1-9])(?=\.[\u4e00-\u9fff])", r"\1\n\2", normalized)
-    normalized = re.sub(
-        rf"({ATTACHMENT_SUFFIX_PATTERN})(?=(?:附件[:：]|[\u4e00-\u9fffA-Za-z]))",
-        r"\1\n",
-        normalized,
-        flags=re.IGNORECASE
-    )
-    normalized = re.sub(r"[ \t]+", " ", normalized)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-    return normalized.strip()
+    fallback = urlparse(DEFAULT_BASE_URL)
+    return f"{fallback.scheme}://{fallback.netloc}"
+
+
+def build_ajax_params(
+    base_url: str,
+    overrides: Dict[str, str] | None = None,
+) -> Dict[str, str]:
+    """从 source base_url 推导列表翻页所需参数。"""
+    effective_base_url = (base_url or DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL
+    params: Dict[str, str] = {}
+    parsed = urlparse(effective_base_url)
+    query = parse_qs(parsed.query)
+
+    match = re.search(r"/col/col(\d+)", parsed.path or "")
+    if match:
+        params["columnid"] = match.group(1)
+
+    for key in ("columnid", "unitid", "webid"):
+        values = query.get(key)
+        if values and values[0]:
+            params[key] = values[0]
+
+    for key, value in (overrides or {}).items():
+        if value:
+            params[key] = value
+
+    missing = [key for key in ("columnid", "unitid", "webid") if not params.get(key)]
+    if missing:
+        default_parsed = urlparse(DEFAULT_BASE_URL)
+        is_legacy_default_source = (
+            parsed.netloc == default_parsed.netloc
+            and parsed.path == default_parsed.path
+            and params.get("columnid") == DEFAULT_AJAX_PARAMS["columnid"]
+        )
+        if is_legacy_default_source:
+            for key in missing:
+                params[key] = DEFAULT_AJAX_PARAMS[key]
+        else:
+            missing_params = ", ".join(missing)
+            raise ValueError(f"source base_url 缺少必要的 Ajax 参数: {missing_params}")
+
+    return params
 
 
 def infer_attachment_type(filename: str, file_url: str) -> str:
@@ -160,10 +159,74 @@ def build_attachment_filename(link_text: str, href: str) -> str:
 class JiangsuHRSSScraper(BaseScraper):
     """江苏省人力资源和社会保障厅爬虫"""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        ajax_url: str | None = None,
+        ajax_params: Dict[str, str] | None = None,
+    ):
         super().__init__()
-        self.base_url = "http://jshrss.jiangsu.gov.cn/col/col80382/index.html"
-        self.ajax_url = "http://jshrss.jiangsu.gov.cn/module/web/jpage/dataproxy.jsp"
+        if base_url is None:
+            resolved_base_url = DEFAULT_BASE_URL
+        else:
+            resolved_base_url = base_url.strip()
+            if not resolved_base_url:
+                raise ValueError("source base_url 不能为空")
+
+        self.base_url = resolved_base_url
+        self.site_root = build_site_root(self.base_url)
+        self.ajax_url = ajax_url or urljoin(self.site_root, DEFAULT_AJAX_PATH)
+        self.ajax_params = build_ajax_params(self.base_url, ajax_params)
+        self._reset_scrape_metrics()
+
+    def _reset_scrape_metrics(self) -> None:
+        """重置单次抓取统计。"""
+        self.reset_transport_metrics()
+        self.scrape_metrics = {
+            "pages_fetched": 0,
+            "page_failures": 0,
+            "detail_pages_fetched": 0,
+            "detail_failures": 0,
+            "raw_items_collected": 0,
+            "skipped_items": 0,
+            "request_retries": 0,
+        }
+
+    def _increment_metric(self, key: str, value: int = 1) -> None:
+        self.scrape_metrics[key] = int(self.scrape_metrics.get(key, 0) or 0) + value
+
+    def _snapshot_scrape_metrics(self) -> Dict[str, int]:
+        return {
+            **self.scrape_metrics,
+            "request_retries": int(getattr(self, "request_retry_count", 0) or 0),
+        }
+
+    @staticmethod
+    def _looks_like_list_payload(html: str) -> bool:
+        lowered_html = (html or "").lower()
+        return any(marker in lowered_html for marker in ("<datastore", "<record", "<![cdata["))
+
+    @staticmethod
+    def _looks_like_error_detail_page(soup: BeautifulSoup, content: str, attachments: List[Dict[str, Any]]) -> bool:
+        if attachments:
+            return False
+
+        title_text = normalize_content_text(soup.title.get_text(" ", strip=True) if soup.title else "")
+        body = soup.find("body")
+        body_text = normalize_content_text(body.get_text(" ", strip=True) if body else "")
+        merged_text = f"{title_text}\n{content}\n{body_text}".strip().lower()
+        if not merged_text:
+            return True
+
+        if any(marker in merged_text for marker in DETAIL_ERROR_MARKERS):
+            return True
+
+        return len(merged_text) <= 80 and bool(re.search(r"\b(?:403|404|500|502|503)\b", merged_text))
+
+    def resolve_detail_url(self, href: str) -> str:
+        """把列表页相对链接转成当前 source 对应的绝对链接。"""
+        return urljoin(self.base_url, href or "")
 
     async def scrape_detail_page(self, url: str) -> Dict[str, Any]:
         """
@@ -197,18 +260,22 @@ class JiangsuHRSSScraper(BaseScraper):
                     content = normalize_content_text(body.get_text("\n", strip=True))
 
             content = normalize_content_text(content)
+            if self._looks_like_error_detail_page(soup, content, attachments):
+                logger.warning(f"详情页响应疑似错误页，按失败处理: {url}")
+                return {"content": "", "attachments": [], "detail_failed": True}
 
             logger.debug(
                 f"详情页抓取成功: {url}, 内容长度: {len(content)}, 附件数量: {len(attachments)}"
             )
             return {
                 "content": content,
-                "attachments": attachments
+                "attachments": attachments,
+                "detail_failed": False,
             }
 
         except Exception as e:
             logger.error(f"抓取详情页失败: {url} - {e}")
-            return {"content": "", "attachments": []}
+            return {"content": "", "attachments": [], "detail_failed": True}
 
     def find_content_container(self, soup: BeautifulSoup):
         """定位正文容器"""
@@ -244,15 +311,14 @@ class JiangsuHRSSScraper(BaseScraper):
                 continue
 
             file_url = urljoin(page_url, href)
-            is_attachment = href.lower().endswith(ATTACHMENT_SUFFIXES) or text.lower().endswith(ATTACHMENT_SUFFIXES)
-            if not is_attachment or file_url in seen_urls:
-                continue
-
             filename = build_attachment_filename(text, file_url)
+            file_type = infer_attachment_type(filename, file_url)
+            if not file_type or file_url in seen_urls:
+                continue
             attachments.append({
                 "filename": filename,
                 "file_url": file_url,
-                "file_type": infer_attachment_type(filename, file_url)
+                "file_type": file_type,
             })
             seen_urls.add(file_url)
 
@@ -317,13 +383,15 @@ class JiangsuHRSSScraper(BaseScraper):
 
         if not datastore_match:
             logger.warning("未找到 <datastore> 标签")
-            return []
+            raise RuntimeError("首页响应结构不符合预期：未找到 <datastore> 标签")
 
         datastore_content = datastore_match.group(1)
 
         # 提取所有 record 标签
         record_pattern = r'<record><!\[CDATA\[(.*?)\]\]></record>'
         record_matches = re.findall(record_pattern, datastore_content, re.DOTALL)
+        if not record_matches and not self._looks_like_list_payload(datastore_content):
+            raise RuntimeError("首页响应结构不符合预期")
 
         results = []
         for cdata_text in record_matches:
@@ -332,18 +400,22 @@ class JiangsuHRSSScraper(BaseScraper):
                 record_soup = BeautifulSoup(cdata_text, "html.parser")
                 link_tag = record_soup.find("a")
                 if not link_tag:
+                    self._increment_metric("skipped_items")
+                    continue
+                href = (link_tag.get("href") or "").strip()
+                if not href:
+                    self._increment_metric("skipped_items")
                     continue
 
                 # 提取标题
                 title_span = link_tag.find("span", class_="list_title")
                 if not title_span:
+                    self._increment_metric("skipped_items")
                     continue
                 title = title_span.get_text(strip=True)
 
                 # 提取 URL
-                url = link_tag.get("href", "")
-                if url.startswith("/"):
-                    url = f"http://jshrss.jiangsu.gov.cn{url}"
+                url = self.resolve_detail_url(href)
 
                 # 提取发布日期
                 date_tag = link_tag.find("i")
@@ -352,6 +424,9 @@ class JiangsuHRSSScraper(BaseScraper):
 
                 # 抓取详情页内容
                 detail_payload = await self.scrape_detail_page(url)
+                self._increment_metric("detail_pages_fetched")
+                if detail_payload.get("detail_failed"):
+                    self._increment_metric("detail_failures")
                 await self.delay()
 
                 results.append({
@@ -359,10 +434,12 @@ class JiangsuHRSSScraper(BaseScraper):
                     "url": url,
                     "publish_date": publish_date,
                     "content": detail_payload.get("content", ""),
-                    "attachments": detail_payload.get("attachments", [])
+                    "attachments": detail_payload.get("attachments", []),
+                    "detail_failed": bool(detail_payload.get("detail_failed")),
                 })
             except Exception as e:
                 logger.error(f"解析记录失败: {e}")
+                self._increment_metric("skipped_items")
                 continue
 
         logger.info(f"首页抓取完成，共 {len(results)} 条记录")
@@ -381,12 +458,8 @@ class JiangsuHRSSScraper(BaseScraper):
         logger.info(f"开始抓取第 {page_num} 页数据")
 
         # Ajax 请求参数（GET 方法）
-        params = {
-            "columnid": "80382",
-            "unitid": "325517",
-            "webid": "67",
-            "page": str(page_num)
-        }
+        params = dict(self.ajax_params)
+        params["page"] = str(page_num)
 
         response = await self.fetch(
             self.ajax_url,
@@ -399,6 +472,8 @@ class JiangsuHRSSScraper(BaseScraper):
         # 使用正则表达式提取 record 标签（和首页一样的格式）
         record_pattern = r'<record><!\[CDATA\[(.*?)\]\]></record>'
         record_matches = re.findall(record_pattern, html, re.DOTALL)
+        if not record_matches and not self._looks_like_list_payload(html):
+            raise RuntimeError(f"第 {page_num} 页响应结构不符合预期")
 
         results = []
         for cdata_text in record_matches:
@@ -407,18 +482,22 @@ class JiangsuHRSSScraper(BaseScraper):
                 record_soup = BeautifulSoup(cdata_text, "html.parser")
                 link_tag = record_soup.find("a")
                 if not link_tag:
+                    self._increment_metric("skipped_items")
+                    continue
+                href = (link_tag.get("href") or "").strip()
+                if not href:
+                    self._increment_metric("skipped_items")
                     continue
 
                 # 提取标题
                 title_span = link_tag.find("span", class_="list_title")
                 if not title_span:
+                    self._increment_metric("skipped_items")
                     continue
                 title = title_span.get_text(strip=True)
 
                 # 提取 URL
-                url = link_tag.get("href", "")
-                if url.startswith("/"):
-                    url = f"http://jshrss.jiangsu.gov.cn{url}"
+                url = self.resolve_detail_url(href)
 
                 # 提取发布日期
                 date_tag = link_tag.find("i")
@@ -427,6 +506,9 @@ class JiangsuHRSSScraper(BaseScraper):
 
                 # 抓取详情页内容
                 detail_payload = await self.scrape_detail_page(url)
+                self._increment_metric("detail_pages_fetched")
+                if detail_payload.get("detail_failed"):
+                    self._increment_metric("detail_failures")
                 await self.delay()
 
                 results.append({
@@ -434,34 +516,25 @@ class JiangsuHRSSScraper(BaseScraper):
                     "url": url,
                     "publish_date": publish_date,
                     "content": detail_payload.get("content", ""),
-                    "attachments": detail_payload.get("attachments", [])
+                    "attachments": detail_payload.get("attachments", []),
+                    "detail_failed": bool(detail_payload.get("detail_failed")),
                 })
             except Exception as e:
                 logger.error(f"解析记录失败: {e}")
+                self._increment_metric("skipped_items")
                 continue
 
         logger.info(f"第 {page_num} 页抓取完成，共 {len(results)} 条记录")
         return results
 
-    def _emit_collecting_progress(
-        self,
-        progress_callback: ProgressCallback | None,
-        *,
-        pages_fetched: int,
-        detail_pages_fetched: int,
-        raw_items_collected: int,
-    ) -> None:
+    def _emit_collecting_progress(self, progress_callback: ProgressCallback | None) -> None:
         emit_progress(
             progress_callback,
             stage="collecting",
             stage_key="collect-pages",
             stage_label="正在采集源站页面",
             progress_mode="stage_only",
-            metrics={
-                "pages_fetched": pages_fetched,
-                "detail_pages_fetched": detail_pages_fetched,
-                "raw_items_collected": raw_items_collected,
-            },
+            metrics=self._snapshot_scrape_metrics(),
         )
 
     async def scrape(
@@ -478,42 +551,40 @@ class JiangsuHRSSScraper(BaseScraper):
         Returns:
             List[Dict[str, Any]]: 所有数据列表
         """
+        self._reset_scrape_metrics()
         all_results = []
-        pages_fetched = 0
-        detail_pages_fetched = 0
 
         # 抓取首页
-        first_page_results = await self.scrape_first_page()
-        pages_fetched += 1
-        detail_pages_fetched += len(first_page_results)
+        try:
+            first_page_results = await self.scrape_first_page()
+        except Exception:
+            self._increment_metric("page_failures")
+            self._emit_collecting_progress(progress_callback)
+            raise
+        self._increment_metric("pages_fetched")
         all_results.extend(first_page_results)
-        self._emit_collecting_progress(
-            progress_callback,
-            pages_fetched=pages_fetched,
-            detail_pages_fetched=detail_pages_fetched,
-            raw_items_collected=len(all_results),
-        )
+        self.scrape_metrics["raw_items_collected"] = len(all_results)
+        self._emit_collecting_progress(progress_callback)
         await self.delay()
 
         # 抓取后续页
         for page_num in range(2, max_pages + 1):
             try:
                 page_results = await self.scrape_page(page_num)
+                self._increment_metric("pages_fetched")
                 if not page_results:
+                    self.scrape_metrics["raw_items_collected"] = len(all_results)
+                    self._emit_collecting_progress(progress_callback)
                     logger.info(f"第 {page_num} 页无数据，停止抓取")
                     break
-                pages_fetched += 1
-                detail_pages_fetched += len(page_results)
                 all_results.extend(page_results)
-                self._emit_collecting_progress(
-                    progress_callback,
-                    pages_fetched=pages_fetched,
-                    detail_pages_fetched=detail_pages_fetched,
-                    raw_items_collected=len(all_results),
-                )
+                self.scrape_metrics["raw_items_collected"] = len(all_results)
+                self._emit_collecting_progress(progress_callback)
                 await self.delay()
             except Exception as e:
                 logger.error(f"抓取第 {page_num} 页失败: {e}")
+                self._increment_metric("page_failures")
+                self._emit_collecting_progress(progress_callback)
                 break
 
         logger.success(f"抓取完成，共 {len(all_results)} 条记录")

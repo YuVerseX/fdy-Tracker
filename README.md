@@ -14,7 +14,7 @@
 
 - 多数据源能力还没落地
 - 结果公示类帖子的岗位口径还在持续收口
-- 监控、HTTPS 和长期运行验证还没补齐
+- 监控、真实 HTTPS 终止和 24h 长跑验证还没补齐
 
 ## 当前能力
 
@@ -50,10 +50,18 @@ python scripts/init_db.py
 python -m uvicorn src.main:app --host 127.0.0.1 --port 8000
 ```
 
+说明：
+
+- `.env.example` 现在按“部署默认收紧”给出基线。至少先填好：`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET`（建议至少 32 个随机字符）。
+- 如果你要在本机纯 HTTP 调试管理页，请把 `ADMIN_SESSION_SECURE=false`。
+- 如果你要在本机看 Swagger / OpenAPI，请把 `API_DOCS_ENABLED=true`。
+- `python scripts/init_db.py` 和应用启动现在只负责数据库结构、兼容字段、内置 source / scheduler 默认配置初始化。
+- 启动不会再自动补齐历史规则分析、规则洞察、辅导员口径或重复治理，避免重启实例时隐式改写历史数据。
+
 启动后可访问：
 
-- Swagger：`http://127.0.0.1:8000/docs`
 - 健康检查：`http://127.0.0.1:8000/api/health`
+- Swagger：`http://127.0.0.1:8000/docs`（仅在 `API_DOCS_ENABLED=true` 时开放）
 
 ### 2. 前端
 
@@ -75,9 +83,14 @@ npm run dev
 - 数据处理：抓取、附件补处理、重复治理、基础内容分析、岗位索引
 - AI 增强：在 OpenAI 就绪时补更细摘要、阶段判断和岗位识别
 - 未配置 OpenAI 时，后台仍保持基础模式可用
+- 一次性维护补齐需显式触发，不会在启动阶段自动执行
+  - `POST /api/admin/run-maintenance`
+  - `operation` 支持：`rule_analysis_refresh`、`rule_insight_refresh`、`counselor_flag_repair`、`duplicate_full_rebuild`
 - 现在默认要求后台账号密码，并使用页面内会话登录
   - 必填环境变量：`ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET`
+  - `ADMIN_SESSION_SECRET` 建议至少 32 个随机字符；过短会被后台拒绝
   - 任一未配置时，管理会话接口与管理业务接口会返回 `503`
+  - 部署默认要求 `ADMIN_SESSION_SECURE=true`
   - 不再触发浏览器原生 Basic Auth 弹窗
   - 前台首页和详情页通过公开 `GET /api/posts/freshness-summary` 展示任务新鲜度，不要求后台登录
 
@@ -86,7 +99,8 @@ npm run dev
 ### 后端核心回归（开发/提 PR）
 
 ```bash
-python -m unittest -v tests.test_api tests.test_admin_api tests.test_admin_task_service tests.test_scraper_service tests.test_attachment_service tests.test_duplicate_service tests.test_post_job_service tests.test_scheduler_jobs tests.test_parser tests.test_filter_service
+python -m unittest -v tests.test_api tests.test_admin_api tests.test_admin_task_service tests.test_health_api tests.test_config tests.test_scraper_service tests.test_attachment_service tests.test_duplicate_service tests.test_post_job_service tests.test_scheduler_jobs tests.test_parser tests.test_filter_service 2>&1 | tee backend-tests.log
+python scripts/check_ci_logs.py backend-tests.log --label backend-tests
 ```
 
 ### AI 专项回归（改 AI 逻辑时）
@@ -128,9 +142,13 @@ docker compose down
 默认访问地址：
 
 - 前端页面：`http://服务器IP/`
-- 管理页：`http://服务器IP/admin`
-- Swagger：`http://服务器IP/docs`
 - 健康检查：`http://服务器IP/api/health`
+
+部署基线说明：
+
+- `/docs`、`/openapi.json`、`/redoc` 默认不会从公网入口暴露。
+- `/admin` 前端入口虽然仍可访问，但不应直接裸露公网；至少要放在 HTTPS 反向代理后，再补 IP 白名单、额外鉴权或等效访问控制。
+- `/api/health` 现在是 readiness 聚合探针；新部署实例在首轮成功抓取前，可能出现 `status=degraded` 但 `ready=true`。
 
 更完整的 VPS 步骤见 `docs/deploy-vps-docker.md`。
 
@@ -143,9 +161,10 @@ docker compose down
 
 发布触发方式：
 
-- push 到 `main`，并且先通过后端测试、前端测试、前端构建
-- push `v*` tag，并且先通过同一套 CI 门禁
-- 手动触发 `publish-images` workflow
+- 提 PR：跑后端核心回归 + 后端日志扫描 + 前端测试 + 前端构建
+- push 到 `main`：跑后端完整回归 + 后端日志扫描 + 前端测试/构建 + Docker compose smoke，再发布镜像并验证 `docker-compose.ghcr.yml`
+- push `v*` tag：跑同一套完整回归 + 后端日志扫描 + smoke，再发布镜像并验证 `docker-compose.ghcr.yml`
+- 手动发布：从 `CI` workflow 触发，同样先走完整回归 + 后端日志扫描 + smoke
 
 如果你在 VPS / 1Panel 上直接拉镜像，优先使用根目录 `docker-compose.ghcr.yml`。对应说明见 `docs/deploy-1panel-ghcr.md`。
 
@@ -192,6 +211,9 @@ fdy-Tracker/
 - `AI_ANALYSIS_MODEL`
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
+- `ADMIN_SESSION_SECRET`
+- `ADMIN_SESSION_SECURE`
+- `API_DOCS_ENABLED`
 - `WEB_PORT`
 - `GHCR_NAMESPACE`
 - `IMAGE_TAG`
@@ -202,5 +224,5 @@ fdy-Tracker/
 
 - 协议：`MIT`
 - 欢迎提 Issue / PR，提交流程见 `CONTRIBUTING.md`
-- 已补基础 CI（后端测试 + 前端测试 + 前端构建），PR 默认走自动检查
+- 已补分层 CI：PR 跑核心回归 + 后端日志扫描；`main` / `v*` / 手动发布跑完整回归 + 后端日志扫描 + compose smoke
 - `data/`、`logs/`、构建产物、运行日志、临时文件默认不进仓库

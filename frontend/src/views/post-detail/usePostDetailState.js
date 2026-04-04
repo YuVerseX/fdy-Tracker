@@ -29,45 +29,60 @@ export function usePostDetailState(route) {
   const latestSuccessTask = ref(null)
   const freshnessLoading = ref(false)
   const freshnessUnavailable = ref(false)
+  let detailRequestSeq = 0
+  let freshnessRequestSeq = 0
 
   async function fetchPostDetail() {
+    const requestId = ++detailRequestSeq
     loading.value = true
     error.value = ''
 
     try {
       const response = await postsApi.getPostById(route.params.id)
+      if (requestId !== detailRequestSeq) return
       post.value = response.data || null
+      void fetchLatestSuccessTask(response?.data?.source?.id || null)
     } catch (requestError) {
+      if (requestId !== detailRequestSeq) return
       post.value = null
+      latestSuccessTask.value = null
+      freshnessUnavailable.value = false
       error.value = getErrorMessage(requestError)
       console.error('Error fetching post detail:', requestError)
     } finally {
-      loading.value = false
+      if (requestId === detailRequestSeq) {
+        loading.value = false
+      }
     }
   }
 
-  async function fetchLatestSuccessTask() {
+  async function fetchLatestSuccessTask(sourceId = null) {
+    const requestId = ++freshnessRequestSeq
     freshnessLoading.value = true
     freshnessUnavailable.value = false
     latestSuccessTask.value = null
 
     try {
-      const response = await postsApi.getFreshnessSummary()
+      const response = await postsApi.getFreshnessSummary(sourceId ? { source_id: sourceId } : {})
+      if (requestId !== freshnessRequestSeq) return
       latestSuccessTask.value = normalizeLatestSuccessTask(response?.data || null)
     } catch (requestError) {
+      if (requestId !== freshnessRequestSeq) return
       freshnessUnavailable.value = true
       if (requestError?.response?.status && requestError.response.status !== 404) {
         console.warn('获取公开任务新鲜度失败:', requestError)
       }
     } finally {
-      freshnessLoading.value = false
+      if (requestId === freshnessRequestSeq) {
+        freshnessLoading.value = false
+      }
     }
   }
 
   watch(
     () => route.params.id,
     async () => {
-      await Promise.all([fetchPostDetail(), fetchLatestSuccessTask()])
+      await fetchPostDetail()
     },
     { immediate: true }
   )

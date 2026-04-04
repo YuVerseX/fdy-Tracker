@@ -2,23 +2,25 @@
 from datetime import datetime, timedelta, timezone
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import selectinload
 from src.database.database import get_db
 from src.database.models import Post, PostAnalysis, PostField, PostJob, Source
-from src.scrapers.jiangsu_hrss import normalize_content_text
 from src.services.attachment_service import get_attachment_status
 from src.services.ai_analysis_service import serialize_post_analysis
+from src.services.content_normalizer import normalize_content_text, normalize_content_text_for_source
 from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
 from src.services.post_job_service import (
     build_job_snapshot,
     count_displayable_counselor_jobs,
     count_displayable_jobs,
     filter_displayable_jobs,
+    get_job_source_type,
     get_post_counselor_state,
+    get_post_job_index_state,
     is_counselor_related_post,
     serialize_post_job,
 )
@@ -203,9 +205,100 @@ def serialize_post_jobs(post_jobs) -> list[dict]:
     return [serialize_post_job(job) for job in filter_displayable_jobs(post_jobs)]
 
 
-def format_post_content(title: str, content: str) -> str:
+def get_record_summary_source(post: Post) -> str:
+    """前台只暴露稳定、可读的摘要来源。"""
+    summary_text = getattr(getattr(post, "analysis", None), "summary", "") or ""
+    if not summary_text.strip():
+        return "none"
+
+    provider = str(getattr(post.analysis, "analysis_provider", "") or "").strip().lower()
+    if provider == "openai":
+        return "ai"
+    if provider == "rule":
+        return "rule"
+    return provider or "unknown"
+
+
+def has_record_summary(post: Post) -> bool:
+    """摘要完整度只看摘要文本本身，不受 provider 缺失影响。"""
+    return bool((getattr(getattr(post, "analysis", None), "summary", "") or "").strip())
+
+
+def get_record_job_sources(post: Post) -> list[str]:
+    """输出当前可展示岗位使用到的来源集合。"""
+    seen_sources = set()
+    ordered_sources = []
+
+    for job in filter_displayable_jobs(getattr(post, "jobs", []) or []):
+        source_type = get_job_source_type(job)
+        if not source_type or source_type in seen_sources:
+            continue
+        seen_sources.add(source_type)
+        ordered_sources.append(source_type)
+
+    return ordered_sources
+
+
+def build_record_completeness(post: Post, *, attachments_loaded: bool) -> dict[str, str]:
+    """显式告诉前端当前记录完整到什么程度。"""
+    job_index_state = get_post_job_index_state(post)
+    if job_index_state["has_displayable_jobs"]:
+        jobs_status = "available"
+    elif job_index_state["pending_extraction"]:
+        jobs_status = "pending"
+    else:
+        jobs_status = "missing"
+
+    return {
+        "content": "available" if bool((post.content or "").strip()) else "missing",
+        "summary": "available" if has_record_summary(post) else "missing",
+        "jobs": jobs_status,
+        "attachments": (
+            "available" if bool(getattr(post, "attachments", None)) else "missing"
+        ) if attachments_loaded else "unknown",
+    }
+
+
+def build_duplicate_resolution(
+    requested_post: Post | None,
+    resolved_post: Post,
+) -> dict[str, Any] | None:
+    """详情页如果落在 duplicate 从记录，显式告诉前端已切到主记录。"""
+    if requested_post is None or requested_post.id == resolved_post.id:
+        return None
+    if requested_post.duplicate_status != DUPLICATE_STATUS_DUPLICATE:
+        return None
+
+    return {
+        "resolved_from_duplicate": True,
+        "requested_post_id": requested_post.id,
+        "resolved_post_id": resolved_post.id,
+        "reason": requested_post.duplicate_reason or "",
+    }
+
+
+def build_record_provenance(
+    post: Post,
+    *,
+    attachments_loaded: bool,
+    duplicate_resolution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """显式告诉前端当前记录的来源与 duplicate 承接信息。"""
+    return {
+        "summary_source": get_record_summary_source(post),
+        "job_sources": get_record_job_sources(post),
+        "attachment_count": len(getattr(post, "attachments", []) or []) if attachments_loaded else None,
+        "duplicate_resolution": duplicate_resolution,
+    }
+
+
+def format_post_content(title: str, content: str, source: Source | None = None) -> str:
     """清理详情正文，兼容历史脏数据"""
-    cleaned_content = normalize_content_text(content or "")
+    if source is None:
+        cleaned_content = normalize_content_text(content or "")
+    else:
+        cleaned_content = normalize_content_text_for_source(content or "", source=source)
+
     if cleaned_content.startswith(title):
         cleaned_content = cleaned_content[len(title):].lstrip("：: \n")
     cleaned_content = re.sub(r"^发布日期[:：]\s*\d{4}-\d{2}-\d{2}", "", cleaned_content).lstrip("：: \n")
@@ -418,9 +511,9 @@ def apply_post_filters(
 
     if has_content is not None:
         if has_content:
-            query = query.filter(Post.content.isnot(None), Post.content != "")
+            query = query.filter(Post.content.isnot(None), func.trim(Post.content) != "")
         else:
-            query = query.filter(Post.content.is_(None) | (Post.content == ""))
+            query = query.filter(Post.content.is_(None) | (func.trim(Post.content) == ""))
 
     if gender:
         query = apply_gender_filter(query, gender)
@@ -589,7 +682,7 @@ async def get_posts(
             "counselor_scope": counselor_state["counselor_scope"],
             "has_counselor_job": counselor_state["has_counselor_job"],
             "confidence_score": post.confidence_score,
-            "has_content": bool(post.content),
+            "has_content": bool((post.content or "").strip()),
             "jobs_count": count_displayable_jobs(post.jobs),
             "counselor_jobs_count": counselor_state["counselor_jobs_count"],
             "job_snapshot": build_job_snapshot(post.jobs),
@@ -598,7 +691,9 @@ async def get_posts(
                 "province": post.source.province
             },
             "analysis": serialize_post_analysis(post.analysis),
-            "fields": build_display_field_map(post)
+            "fields": build_display_field_map(post),
+            "record_completeness": build_record_completeness(post, attachments_loaded=False),
+            "record_provenance": build_record_provenance(post, attachments_loaded=False),
         })
 
     return payload
@@ -697,9 +792,11 @@ async def get_posts_summary(
 
 
 @router.get("/posts/freshness-summary")
-async def get_posts_freshness_summary():
+async def get_posts_freshness_summary(
+    source_id: Optional[int] = Query(None, ge=1, description="只看指定数据源的新鲜度"),
+):
     """公开任务新鲜度摘要，只暴露前台展示所需字段。"""
-    summary = get_public_task_freshness_summary()
+    summary = get_public_task_freshness_summary(source_id=source_id)
     return serialize_public_task_freshness(summary)
 
 
@@ -729,6 +826,7 @@ async def get_post_detail(
     if not post:
         raise HTTPException(status_code=404, detail="招聘信息不存在")
 
+    requested_post = post
     if post.duplicate_status == DUPLICATE_STATUS_DUPLICATE and post.primary_post_id:
         primary_post = db.query(Post).options(
             selectinload(Post.source),
@@ -741,11 +839,12 @@ async def get_post_detail(
             post = primary_post
 
     counselor_state = get_post_counselor_state(post)
+    duplicate_resolution = build_duplicate_resolution(requested_post, post)
 
     return {
         "id": post.id,
         "title": post.title,
-        "content": format_post_content(post.title, post.content or ""),
+        "content": format_post_content(post.title, post.content or "", source=post.source),
         "publish_date": post.publish_date.isoformat() if post.publish_date else None,
         "canonical_url": post.canonical_url,
         "original_url": post.original_url,
@@ -766,6 +865,12 @@ async def get_post_detail(
         "fields": serialize_display_fields(post),
         "job_items": serialize_post_jobs(post.jobs),
         "jobs": serialize_post_jobs(post.jobs),
+        "record_completeness": build_record_completeness(post, attachments_loaded=True),
+        "record_provenance": build_record_provenance(
+            post,
+            attachments_loaded=True,
+            duplicate_resolution=duplicate_resolution,
+        ),
         "attachments": [
             {
                 "id": att.id,

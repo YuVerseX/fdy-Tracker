@@ -1,11 +1,26 @@
 """应用配置模块"""
 from pathlib import Path
+import secrets
 from loguru import logger
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEBUG_TRUE_VALUES = {"true", "1", "yes", "on"}
 DEBUG_FALSE_VALUES = {"false", "0", "no", "off"}
+MIN_ADMIN_SESSION_SECRET_LENGTH = 32
+ADMIN_PLACEHOLDER_VALUES = {
+    "",
+    "__required__",
+    "__required_change_me__",
+    "change-me",
+    "change-me-admin",
+    "change-me-password",
+    "change-me-session-secret",
+    "your-admin-username",
+    "your-admin-password",
+    "your-long-random-session-secret",
+}
+RUNTIME_EPHEMERAL_SESSION_SECRET = secrets.token_urlsafe(32)
 
 
 class Settings(BaseSettings):
@@ -13,7 +28,7 @@ class Settings(BaseSettings):
 
     # 应用配置
     APP_NAME: str = "江苏专职辅导员招聘追踪系统"
-    DEBUG: bool = True
+    DEBUG: bool = False
 
     @field_validator("DEBUG", mode="before")
     @classmethod
@@ -21,11 +36,11 @@ class Settings(BaseSettings):
         if isinstance(value, bool):
             return value
         if value is None:
-            return True
+            return False
 
         normalized = str(value).strip().lower()
         if not normalized:
-            return True
+            return False
         if normalized in DEBUG_TRUE_VALUES:
             return True
         if normalized in DEBUG_FALSE_VALUES:
@@ -42,6 +57,8 @@ class Settings(BaseSettings):
     REQUEST_TIMEOUT: int = 30  # 请求超时（秒）
     REQUEST_DELAY_MIN: float = 1.0  # 最小延迟（秒）
     REQUEST_DELAY_MAX: float = 3.0  # 最大延迟（秒）
+    REQUEST_RETRY_COUNT: int = 2  # 临时错误重试次数
+    REQUEST_RETRY_BACKOFF_SECONDS: float = 0.25  # 重试退避基线（秒）
 
     # 日志配置
     LOG_LEVEL: str = "INFO"
@@ -59,7 +76,8 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = ""
     ADMIN_SESSION_SECRET: str = ""
     ADMIN_SESSION_MAX_AGE_SECONDS: int = 28800
-    ADMIN_SESSION_SECURE: bool = False
+    ADMIN_SESSION_SECURE: bool = True
+    API_DOCS_ENABLED: bool = False
     CORS_ALLOWED_ORIGINS: str = "http://127.0.0.1:5173,http://localhost:5173"
 
     # 路径配置
@@ -87,6 +105,58 @@ class Settings(BaseSettings):
             if item.strip()
         ]
         return origins or ["http://127.0.0.1:5173", "http://localhost:5173"]
+
+    @staticmethod
+    def _is_missing_or_placeholder(value: str | None) -> bool:
+        normalized = str(value or "").strip().lower()
+        return normalized in ADMIN_PLACEHOLDER_VALUES
+
+    @property
+    def ADMIN_CREDENTIALS_CONFIGURED(self) -> bool:
+        """后台账号密码是否是可用配置。"""
+        return not (
+            self._is_missing_or_placeholder(self.ADMIN_USERNAME)
+            or self._is_missing_or_placeholder(self.ADMIN_PASSWORD)
+        )
+
+    @property
+    def ADMIN_SESSION_SECRET_CONFIGURED(self) -> bool:
+        """后台 session secret 是否是可用配置。"""
+        return not self._is_missing_or_placeholder(self.ADMIN_SESSION_SECRET)
+
+    @property
+    def ADMIN_SESSION_SECRET_EFFECTIVE(self) -> str:
+        """SessionMiddleware 使用的 secret，不再退回硬编码弱默认值。"""
+        if self.ADMIN_SESSION_SECRET_CONFIGURED:
+            return self.ADMIN_SESSION_SECRET.strip()
+        return RUNTIME_EPHEMERAL_SESSION_SECRET
+
+    @property
+    def ADMIN_SESSION_SECRET_IS_EPHEMERAL(self) -> bool:
+        """未配置时仅使用进程内临时 secret，避免固定弱密钥。"""
+        return not self.ADMIN_SESSION_SECRET_CONFIGURED
+
+    @property
+    def ADMIN_SESSION_SECRET_STRONG_ENOUGH(self) -> bool:
+        """粗粒度检查 secret 强度。"""
+        return (
+            len((self.ADMIN_SESSION_SECRET or "").strip())
+            >= MIN_ADMIN_SESSION_SECRET_LENGTH
+        )
+
+    @property
+    def STARTUP_VALIDATION_ISSUES(self) -> list[str]:
+        """部署态启动前必须满足的硬门禁。"""
+        issues: list[str] = []
+        if not self.ADMIN_CREDENTIALS_CONFIGURED:
+            issues.append("admin_credentials_missing_or_placeholder")
+        if not self.ADMIN_SESSION_SECRET_CONFIGURED:
+            issues.append("admin_session_secret_missing_or_placeholder")
+        elif not self.ADMIN_SESSION_SECRET_STRONG_ENOUGH:
+            issues.append(
+                f"admin_session_secret_too_short(min_length={MIN_ADMIN_SESSION_SECRET_LENGTH})"
+            )
+        return issues
 
     model_config = SettingsConfigDict(
         env_file=".env",
