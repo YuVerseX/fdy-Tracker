@@ -1,4 +1,6 @@
 /.claude
+.codex-temp/
+.playwright-mcp/
 .worktrees/
 
 # Python
