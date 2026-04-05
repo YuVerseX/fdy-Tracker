@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from scripts.smoke_deployment import (
@@ -10,6 +11,16 @@ from scripts.smoke_deployment import (
 
 
 class SmokeDeploymentScriptTestCase(unittest.TestCase):
+    def test_nginx_admin_shell_should_use_dedicated_noindex_fallback(self):
+        config = Path("frontend/nginx.conf").read_text(encoding="utf-8")
+
+        self.assertIn("location ^~ /admin {", config)
+        self.assertIn("try_files $uri $uri/ @admin_spa;", config)
+        self.assertIn("location @admin_spa {", config)
+        self.assertIn('add_header X-Robots-Tag "noindex, nofollow, noarchive" always;', config)
+        self.assertIn('add_header Cache-Control "no-store" always;', config)
+        self.assertIn("try_files /index.html =404;", config)
+
     def test_extract_frontend_asset_paths_should_support_root_relative_assets(self):
         html = """
         <html>
