@@ -270,6 +270,25 @@ def _resolve_default_source_id_or_raise(db: Session) -> int:
     return source_id
 
 
+def _ensure_optional_source_exists(db: Session, source_id: int | None) -> None:
+    """对可选 source_id 只校验存在性，不要求启用状态。"""
+    if source_id is None:
+        return
+    source = db.query(Source).filter(Source.id == source_id).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+
+
+def _ensure_optional_source_ready(db: Session, source_id: int | None) -> None:
+    """对可选 source_id 复用统一 readiness 校验。"""
+    if source_id is None:
+        return
+    try:
+        ensure_scrape_source_ready(db, source_id)
+    except ScrapeSourceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
 @session_router.post("/login")
 async def login_admin_session(payload: AdminSessionLoginRequest, request: Request):
     """后台登录，写入会话。"""
@@ -1316,8 +1335,11 @@ async def cancel_task_run(task_id: str):
             cancel_requested_by="admin",
         )
     except ValueError as exc:
-        if str(exc) == "task_not_found":
+        error_code = str(exc)
+        if error_code == "task_not_found":
             raise HTTPException(status_code=404, detail="未找到对应任务。") from exc
+        if error_code == "task_not_cancelable":
+            raise HTTPException(status_code=409, detail="当前任务类型不支持提前终止，请等待任务自然结束。") from exc
         raise HTTPException(status_code=409, detail="当前任务已经结束，不能再终止。") from exc
 
     return {
@@ -1483,8 +1505,10 @@ async def run_scrape_task(
 async def backfill_base_analysis_task(
     request: BackfillBaseAnalysisRequest,
     background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
     """补齐基础 analysis / insight。"""
+    _ensure_optional_source_exists(db, request.source_id)
     params = {
         "source_id": request.source_id,
         "limit": request.limit,
@@ -1582,9 +1606,11 @@ async def run_ai_analysis_task(
 @protected_router.post("/backfill-attachments", status_code=202)
 async def backfill_attachments_task(
     request: BackfillAttachmentsRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
     """补处理历史附件"""
+    _ensure_optional_source_ready(db, request.source_id)
     params = {
         "source_id": request.source_id,
         "limit": request.limit,
@@ -1611,12 +1637,15 @@ async def backfill_attachments_task(
 @protected_router.post("/run-job-extraction", status_code=202)
 async def run_job_extraction_task(
     request: RunJobExtractionRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
     """批量重建岗位级结果"""
     resolved_only_unindexed = request.only_unindexed
     if resolved_only_unindexed is None:
         resolved_only_unindexed = request.only_pending if request.only_pending is not None else True
+
+    _ensure_optional_source_exists(db, request.source_id)
 
     if request.use_ai and not is_openai_ready():
         raise HTTPException(

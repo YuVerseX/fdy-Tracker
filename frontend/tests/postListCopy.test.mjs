@@ -2,6 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+import { postsApi } from '../src/api/posts.js'
+import { usePostListState } from '../src/views/post-list/usePostListState.js'
+
 const readSource = (relativePath) => readFileSync(new URL(`../src/${relativePath}`, import.meta.url), 'utf8')
 
 test('public post list shell should not expose admin-only guidance', () => {
@@ -51,6 +54,72 @@ test('PostList freshness notice should keep AppNotice bindings and helper wiring
   assert.match(source, /freshnessHeadline:\s*freshnessHeadline\.value/)
   assert.match(source, /formatDateTime\b/)
   assert.match(source, /formatRelativeTime:\s*getRelativeTimeLabel/)
+})
+
+test('PostList error notice should expose multiple recovery actions and announce dynamically', () => {
+  const source = readSource('views/PostList.vue')
+
+  assert.match(source, /<AppNotice[\s\S]*v-else-if="error"[\s\S]*announce/)
+  assert.match(source, /title="招聘列表暂时无法显示"/)
+  assert.match(source, /v-if="currentPage > 1"/)
+  assert.match(source, />\s*返回上一页\s*</)
+  assert.match(source, />\s*回到第一页\s*</)
+  assert.match(source, /v-if="hasQueryOrFilters"/)
+  assert.match(source, />\s*清空条件\s*</)
+  assert.match(source, />\s*重新加载\s*</)
+})
+
+test('PostList event type option fetch should ignore current selection in stats params but preserve selected option locally', () => {
+  const source = readSource('views/post-list/usePostListState.js')
+
+  assert.match(source, /buildEventTypeOptionParams as buildEventTypeOptionRequestParams/)
+  assert.match(source, /postsApi\.getStatsSummary\(buildEventTypeOptionParams\(\)\)/)
+  assert.match(source, /const selectedEventType = filters\.value\.eventType/)
+  assert.match(source, /selectedEventType && !nextOptions\.some\(\(item\) => item\.event_type === selectedEventType\)/)
+  assert.match(source, /nextOptions = \[\{ event_type: selectedEventType \}, \.\.\.nextOptions\]/)
+})
+
+test('usePostListState should surface recovery notice when a requested page exceeds available pages', async () => {
+  const originalGetPosts = postsApi.getPosts
+  const originalWarn = console.warn
+  const originalWindow = globalThis.window
+  const replaceCalls = []
+
+  postsApi.getPosts = async () => ({
+    data: {
+      items: [],
+      total: 3
+    }
+  })
+  console.warn = () => {}
+  globalThis.window = { scrollTo: () => {} }
+
+  try {
+    const state = usePostListState(
+      { query: {} },
+      {
+        replace: async (payload) => {
+          replaceCalls.push(payload)
+        }
+      }
+    )
+
+    await state.goToPage(9, { force: true })
+
+    assert.equal(state.currentPage.value, 9)
+    assert.equal(state.totalPages.value, 1)
+    assert.equal(state.posts.value.length, 0)
+    assert.equal(state.error.value, '当前页码没有对应结果，可以返回上一页继续浏览。')
+    assert.equal(replaceCalls.length, 1)
+  } finally {
+    postsApi.getPosts = originalGetPosts
+    console.warn = originalWarn
+    if (originalWindow === undefined) {
+      delete globalThis.window
+    } else {
+      globalThis.window = originalWindow
+    }
+  }
 })
 
 test('PostDetail freshness copy should use latest-success snapshot semantics', () => {

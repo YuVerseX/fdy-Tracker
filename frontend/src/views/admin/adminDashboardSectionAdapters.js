@@ -250,8 +250,21 @@ export function buildSystemSectionModel({
   schedulerLoaded,
   schedulerLoading,
   schedulerSaving,
+  schedulerConfigError,
   sourceOptions
 } = {}) {
+  const hasSchedulerSnapshot = schedulerLoaded
+  const saveBlockedReason = hasSchedulerSnapshot || schedulerLoading
+    ? ''
+    : `${schedulerConfigError || '定时抓取配置尚未成功加载'}，请先刷新配置后再保存。`
+  const saveDisabled = schedulerSaving || (!hasSchedulerSnapshot && schedulerLoading) || Boolean(saveBlockedReason)
+  const schedulerRefreshNotice = hasSchedulerSnapshot && schedulerConfigError
+    ? {
+        tone: 'warning',
+        title: '配置刷新失败',
+        description: `${schedulerConfigError}，当前仍显示上次成功加载的配置，你可以继续保存或稍后重试刷新。`
+      }
+    : null
   const noticeClass = schedulerLoaded
     ? (schedulerForm?.enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-gray-200 bg-gray-50 text-gray-700')
     : 'border-slate-200 bg-slate-50 text-slate-700'
@@ -292,6 +305,9 @@ export function buildSystemSectionModel({
     schedulerLoaded,
     schedulerLoading,
     schedulerSaving,
+    saveDisabled,
+    saveBlockedReason,
+    schedulerRefreshNotice,
     sourceOptions,
     noticeClass,
     statusBadgeLabel,
@@ -304,6 +320,7 @@ export function buildSystemSectionModel({
 
 export const buildTaskRunsSectionModel = ({
   taskRuns,
+  taskRunsError,
   taskRunsLoaded,
   loadingRuns,
   retryingTaskId,
@@ -316,6 +333,7 @@ export const buildTaskRunsSectionModel = ({
   syncStatus
 } = {}) => ({
   taskRuns,
+  taskRunsError,
   taskRunsLoaded,
   loadingRuns,
   retryingTaskId,

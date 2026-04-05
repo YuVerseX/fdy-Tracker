@@ -53,137 +53,173 @@
     </div>
 
     <div v-if="loadingRuns && !taskRunsLoaded" class="py-10 text-center text-sm text-gray-500">正在加载任务记录...</div>
-    <AppEmptyState
-      v-else-if="taskRuns.length === 0"
-      title="还没有任务记录"
-      description="先运行一次任务，这里会按当前记录展示进度和结果。"
-    />
-
+    <AppNotice
+      v-else-if="taskRunsError && !taskRunsLoaded"
+      class="mt-5"
+      tone="danger"
+      title="任务记录暂时不可用"
+      :description="taskRunsError"
+      :announce="true"
+    >
+      <template #actions>
+        <AppActionButton
+          label="重新加载"
+          busy-label="刷新中..."
+          :busy="loadingRuns"
+          @click="refreshTaskStatus"
+        />
+      </template>
+    </AppNotice>
     <div v-else class="mt-5 space-y-5 lg:space-y-6">
-      <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <AppStatCard
-          v-for="card in presentation.summaryCards"
-          :key="card.label"
-          :label="card.label"
-          :value="card.value"
-          :value-tone="getSummaryCardValueTone(card.tone)"
-          :description="card.description"
-          :meta="card.meta"
-          size="sm"
-          :class="getSummaryCardClass(card.tone)"
-        />
-      </div>
-
-      <section class="space-y-3">
-        <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h3 class="text-base font-semibold text-slate-900">当前任务</h3>
-            <p class="text-sm leading-6 text-slate-500">
-              这里显示正在排队或处理中的任务，按当前同步状态刷新阶段和结果。
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <AppMetricPill label="当前任务" :value="`${presentation.counts.current} 条`" tone="muted" />
-            <AppMetricPill v-if="presentation.counts.processing > 0" label="正在处理" :value="`${presentation.counts.processing} 条`" tone="muted" />
-            <AppMetricPill v-if="presentation.counts.queued > 0" label="等待开始" :value="`${presentation.counts.queued} 条`" tone="muted" />
-            <AppMetricPill v-if="presentation.counts.stuck > 0" label="进度停滞" :value="`${presentation.counts.stuck} 条`" tone="muted" />
-          </div>
-        </div>
-
-        <AppNotice
-          v-if="presentation.currentRuns.length === 0"
-          title="当前没有活跃任务"
-          tone="info"
-          description="发起新的处理后，这里会按当前同步状态展示排队状态、当前阶段和结果。"
-        />
-        <div v-else class="space-y-4">
-          <AdminTaskRunCard
-            v-for="run in presentation.currentRuns"
-            :key="run.id"
-            :run="run"
-            :retrying-task-id="retryingTaskId"
-            :retrying-task-action-key="retryingTaskActionKey"
-            :canceling-task-id="cancelingTaskId"
-            :expanded-task-ids="expandedTaskIds"
-            :now-ts="nowTs"
-            :source-options="sourceOptions"
-            :heartbeat-stale-ms="heartbeatStaleMs"
-            :retry-task-run="retryTaskRun"
-            :cancel-task-run="cancelTaskRun"
-            :toggle-task-expanded="toggleTaskExpanded"
-            :can-retry-task="canRetryTask"
-          />
-        </div>
-      </section>
-
-      <section class="space-y-3">
-        <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h3 class="text-base font-semibold text-slate-900">最近结果</h3>
-            <p class="text-sm leading-6 text-slate-500">
-              查看刚结束任务的结果和状态。
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <AppMetricPill label="最近结果" :value="`${presentation.counts.results} 条`" tone="muted" />
-            <AppMetricPill v-if="presentation.counts.failed > 0" label="未完成" :value="`${presentation.counts.failed} 条`" tone="muted" />
-            <AppMetricPill v-if="presentation.counts.success > 0" label="已完成" :value="`${presentation.counts.success} 条`" tone="muted" />
-            <AppMetricPill v-if="presentation.counts.cancelled > 0" label="已终止" :value="`${presentation.counts.cancelled} 条`" tone="muted" />
-          </div>
-        </div>
-
-        <AppNotice
-          v-if="presentation.recentResultRuns.length === 0"
-          title="最近还没有结果记录"
-          tone="info"
-          description="有新的完成记录后，这里会展示结果和状态。"
-        />
-        <div v-else class="space-y-4">
-          <AdminTaskRunCard
-            v-for="run in presentation.recentResultRuns"
-            :key="run.id"
-            :run="run"
-            :retrying-task-id="retryingTaskId"
-            :retrying-task-action-key="retryingTaskActionKey"
-            :canceling-task-id="cancelingTaskId"
-            :expanded-task-ids="expandedTaskIds"
-            :now-ts="nowTs"
-            :source-options="sourceOptions"
-            :heartbeat-stale-ms="heartbeatStaleMs"
-            :retry-task-run="retryTaskRun"
-            :cancel-task-run="cancelTaskRun"
-            :toggle-task-expanded="toggleTaskExpanded"
-            :can-retry-task="canRetryTask"
-          />
-        </div>
-      </section>
-
-      <AppDisclosure
-        v-if="presentation.historyRuns.length > 0"
-        :summary="`查看历史记录（${presentation.historyRuns.length} 条）`"
+      <AppNotice
+        v-if="taskRunsError && taskRunsLoaded"
+        tone="warning"
+        title="任务记录刷新失败"
+        :description="taskRunsStaleNoticeDescription"
+        :announce="true"
       >
-        <div class="mb-4 text-sm leading-6 text-slate-500">
-          更早的完成和未完成记录会保留在这里，方便回看处理范围与结果。
-        </div>
-        <div class="space-y-4">
-          <AdminTaskRunCard
-            v-for="run in presentation.historyRuns"
-            :key="run.id"
-            :run="run"
-            :retrying-task-id="retryingTaskId"
-            :retrying-task-action-key="retryingTaskActionKey"
-            :canceling-task-id="cancelingTaskId"
-            :expanded-task-ids="expandedTaskIds"
-            :now-ts="nowTs"
-            :source-options="sourceOptions"
-            :heartbeat-stale-ms="heartbeatStaleMs"
-            :retry-task-run="retryTaskRun"
-            :cancel-task-run="cancelTaskRun"
-            :toggle-task-expanded="toggleTaskExpanded"
-            :can-retry-task="canRetryTask"
+        <template #actions>
+          <AppActionButton
+            label="重新加载"
+            busy-label="刷新中..."
+            :busy="loadingRuns"
+            @click="refreshTaskStatus"
+          />
+        </template>
+      </AppNotice>
+
+      <AppEmptyState
+        v-if="taskRuns.length === 0"
+        title="还没有任务记录"
+        description="先运行一次任务，这里会按当前记录展示进度和结果。"
+      />
+
+      <template v-else>
+        <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <AppStatCard
+            v-for="card in presentation.summaryCards"
+            :key="card.label"
+            :label="card.label"
+            :value="card.value"
+            :value-tone="getSummaryCardValueTone(card.tone)"
+            :description="card.description"
+            :meta="card.meta"
+            size="sm"
+            :class="getSummaryCardClass(card.tone)"
           />
         </div>
-      </AppDisclosure>
+
+        <section class="space-y-3">
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 class="text-base font-semibold text-slate-900">当前任务</h3>
+              <p class="text-sm leading-6 text-slate-500">
+                这里显示正在排队或处理中的任务，按当前同步状态刷新阶段和结果。
+              </p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <AppMetricPill label="当前任务" :value="`${presentation.counts.current} 条`" tone="muted" />
+              <AppMetricPill v-if="presentation.counts.processing > 0" label="正在处理" :value="`${presentation.counts.processing} 条`" tone="muted" />
+              <AppMetricPill v-if="presentation.counts.queued > 0" label="等待开始" :value="`${presentation.counts.queued} 条`" tone="muted" />
+              <AppMetricPill v-if="presentation.counts.stuck > 0" label="进度停滞" :value="`${presentation.counts.stuck} 条`" tone="muted" />
+            </div>
+          </div>
+
+          <AppNotice
+            v-if="presentation.currentRuns.length === 0"
+            title="当前没有活跃任务"
+            tone="info"
+            description="发起新的处理后，这里会按当前同步状态展示排队状态、当前阶段和结果。"
+          />
+          <div v-else class="space-y-4">
+            <AdminTaskRunCard
+              v-for="run in presentation.currentRuns"
+              :key="run.id"
+              :run="run"
+              :retrying-task-id="retryingTaskId"
+              :retrying-task-action-key="retryingTaskActionKey"
+              :canceling-task-id="cancelingTaskId"
+              :expanded-task-ids="expandedTaskIds"
+              :now-ts="nowTs"
+              :source-options="sourceOptions"
+              :heartbeat-stale-ms="heartbeatStaleMs"
+              :retry-task-run="retryTaskRun"
+              :cancel-task-run="cancelTaskRun"
+              :toggle-task-expanded="toggleTaskExpanded"
+              :can-retry-task="canRetryTask"
+            />
+          </div>
+        </section>
+
+        <section class="space-y-3">
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 class="text-base font-semibold text-slate-900">最近结果</h3>
+              <p class="text-sm leading-6 text-slate-500">
+                查看刚结束任务的结果和状态。
+              </p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <AppMetricPill label="最近结果" :value="`${presentation.counts.results} 条`" tone="muted" />
+              <AppMetricPill v-if="presentation.counts.failed > 0" label="未完成" :value="`${presentation.counts.failed} 条`" tone="muted" />
+              <AppMetricPill v-if="presentation.counts.success > 0" label="已完成" :value="`${presentation.counts.success} 条`" tone="muted" />
+              <AppMetricPill v-if="presentation.counts.cancelled > 0" label="已终止" :value="`${presentation.counts.cancelled} 条`" tone="muted" />
+            </div>
+          </div>
+
+          <AppNotice
+            v-if="presentation.recentResultRuns.length === 0"
+            title="最近还没有结果记录"
+            tone="info"
+            description="有新的完成记录后，这里会展示结果和状态。"
+          />
+          <div v-else class="space-y-4">
+            <AdminTaskRunCard
+              v-for="run in presentation.recentResultRuns"
+              :key="run.id"
+              :run="run"
+              :retrying-task-id="retryingTaskId"
+              :retrying-task-action-key="retryingTaskActionKey"
+              :canceling-task-id="cancelingTaskId"
+              :expanded-task-ids="expandedTaskIds"
+              :now-ts="nowTs"
+              :source-options="sourceOptions"
+              :heartbeat-stale-ms="heartbeatStaleMs"
+              :retry-task-run="retryTaskRun"
+              :cancel-task-run="cancelTaskRun"
+              :toggle-task-expanded="toggleTaskExpanded"
+              :can-retry-task="canRetryTask"
+            />
+          </div>
+        </section>
+
+        <AppDisclosure
+          v-if="presentation.historyRuns.length > 0"
+          :summary="`查看历史记录（${presentation.historyRuns.length} 条）`"
+        >
+          <div class="mb-4 text-sm leading-6 text-slate-500">
+            更早的完成和未完成记录会保留在这里，方便回看处理范围与结果。
+          </div>
+          <div class="space-y-4">
+            <AdminTaskRunCard
+              v-for="run in presentation.historyRuns"
+              :key="run.id"
+              :run="run"
+              :retrying-task-id="retryingTaskId"
+              :retrying-task-action-key="retryingTaskActionKey"
+              :canceling-task-id="cancelingTaskId"
+              :expanded-task-ids="expandedTaskIds"
+              :now-ts="nowTs"
+              :source-options="sourceOptions"
+              :heartbeat-stale-ms="heartbeatStaleMs"
+              :retry-task-run="retryTaskRun"
+              :cancel-task-run="cancelTaskRun"
+              :toggle-task-expanded="toggleTaskExpanded"
+              :can-retry-task="canRetryTask"
+            />
+          </div>
+        </AppDisclosure>
+      </template>
     </div>
   </section>
 </template>
@@ -204,6 +240,7 @@ import AdminTaskRunCard from './AdminTaskRunCard.vue'
 
 const props = defineProps({
   taskRuns: { type: Array, required: true },
+  taskRunsError: { type: String, required: true },
   taskRunsLoaded: { type: Boolean, required: true },
   loadingRuns: { type: Boolean, required: true },
   retryingTaskId: { type: String, required: true },
@@ -236,6 +273,9 @@ const resolvedSyncStatus = computed(() => ({
   runningCountLabel: props.syncStatus?.runningCountLabel || '0 条',
   summary: props.syncStatus?.summary || MANUAL_REFRESH_SUMMARY
 }))
+const taskRunsStaleNoticeDescription = computed(() => (
+  `${props.taskRunsError}，以下仍显示上次同步到的任务快照。`
+))
 
 const presentation = computed(() => buildTaskRunsPresentation({
   taskRuns: props.taskRuns,

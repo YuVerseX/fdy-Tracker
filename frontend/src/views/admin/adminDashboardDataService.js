@@ -117,7 +117,23 @@ export function createAdminDashboardDataService({
   }
   const clearAdminRuntimeState = () => {
     runtimeGeneration += 1
-    Object.assign(state, { taskRuns: [], taskSummary: null, taskSummaryUnavailable: false, analysisSummary: null, insightSummary: null, jobSummary: null, duplicateSummary: null, expandedTaskIds: [], retryingTaskId: '', retryingTaskActionKey: '', cancelingTaskId: '', jobsSummaryUnavailable: false, taskStatusLastSyncedAt: '' })
+    Object.assign(state, {
+      taskRuns: [],
+      taskRunsError: '',
+      taskSummary: null,
+      taskSummaryUnavailable: false,
+      analysisSummary: null,
+      insightSummary: null,
+      jobSummary: null,
+      duplicateSummary: null,
+      schedulerConfigError: '',
+      expandedTaskIds: [],
+      retryingTaskId: '',
+      retryingTaskActionKey: '',
+      cancelingTaskId: '',
+      jobsSummaryUnavailable: false,
+      taskStatusLastSyncedAt: ''
+    })
     Object.keys(loaded).forEach((key) => { loaded[key] = false })
     Object.keys(requests).forEach((key) => { requests[key] = false })
     sourceOptions.value = []
@@ -223,13 +239,18 @@ export function createAdminDashboardDataService({
       const response = await adminApi.getTaskRuns({ limit: 10 })
       if (!isCurrent()) return getCurrentTaskRunsResult()
       state.taskRuns = (response.data.items || []).map((run) => normalizeAdminTaskSnapshot(run))
+      state.taskRunsError = ''
       loaded.taskRuns = true
       return true
     } catch (error) {
       if (!isCurrent()) return getCurrentTaskRunsResult()
-      state.taskRuns = []
-      loaded.taskRuns = false
-      if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载任务记录失败'))
+      const errorMessage = getErrorMessage(error, '加载任务记录失败')
+      if (handleAdminAccessError(error)) return false
+      if (!loaded.taskRuns) {
+        state.taskRuns = []
+        loaded.taskRuns = false
+      }
+      state.taskRunsError = errorMessage
       return false
     } finally {
       if (isCurrent()) loading.taskRuns = false
@@ -285,12 +306,15 @@ export function createAdminDashboardDataService({
       const response = await adminApi.getSchedulerConfig()
       if (!isCurrent()) return loaded.scheduler === true
       applySchedulerConfig(response.data || {})
+      state.schedulerConfigError = ''
       loaded.scheduler = true
       return true
     } catch (error) {
       if (!isCurrent()) return loaded.scheduler === true
-      loaded.scheduler = false
-      if (!handleAdminAccessError(error)) setFeedback('error', getErrorMessage(error, '加载定时抓取配置失败'))
+      const errorMessage = getErrorMessage(error, '加载定时抓取配置失败')
+      if (handleAdminAccessError(error)) return false
+      state.schedulerConfigError = errorMessage
+      if (!loaded.scheduler) loaded.scheduler = false
       return false
     } finally {
       if (isCurrent()) loading.scheduler = false
@@ -413,6 +437,10 @@ export function createAdminDashboardDataService({
     if (isCurrentTaskCenterRequest() && shouldMarkTaskStatusSync(taskRunsResult, taskSummaryResult)) markTaskStatusSynced()
     return isTaskCenterRefreshSuccessful(taskRunsResult, taskSummaryResult)
   }
+  const setTaskRefreshFailureFeedback = () => {
+    if (!adminAuthorized.value) return
+    setFeedback('error', state.taskRunsError || '刷新当前状态失败，请稍后再试。')
+  }
   const runNamedTask = async (taskType, busyKey, params = {}) => {
     const config = buildTaskRequestConfig(taskType, { params, forms })
     if (!config) return
@@ -431,7 +459,10 @@ export function createAdminDashboardDataService({
 
       if (submissionFeedback.shouldRefresh) {
         const refreshSucceeded = await refreshAfterTask(config.refreshOptions)
-        if (!refreshSucceeded) return
+        if (!refreshSucceeded) {
+          setTaskRefreshFailureFeedback()
+          return
+        }
       }
 
       const feedbackMessage = submissionFeedback.type === 'error'
@@ -474,7 +505,10 @@ export function createAdminDashboardDataService({
 
       if (submissionFeedback.shouldRefresh) {
         const refreshSucceeded = await refreshAfterTask(config.refreshOptions)
-        if (!refreshSucceeded) return
+        if (!refreshSucceeded) {
+          setTaskRefreshFailureFeedback()
+          return
+        }
       }
 
       const feedbackMessage = submissionFeedback.type === 'error'
@@ -551,6 +585,7 @@ export function createAdminDashboardDataService({
       })
       const response = await adminApi.updateSchedulerConfig(payload)
       applySchedulerConfig(response.data?.config || payload)
+      state.schedulerConfigError = ''
       loaded.scheduler = true
       setFeedback('success', response.data?.message || '定时抓取配置已更新')
     } catch (error) {

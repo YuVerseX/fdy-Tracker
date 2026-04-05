@@ -589,6 +589,8 @@ def request_task_run_cancel(
             current_status = normalize_task_status(task_run.get("status"))
             if not _is_running_task_status(current_status):
                 raise ValueError("task_not_running")
+            if task_run.get("task_type") not in TASK_CANCELABLE_TYPES:
+                raise ValueError("task_not_cancelable")
 
             merged_details = dict(task_run.get("details") or {})
             if not merged_details.get("cancel_requested_at"):

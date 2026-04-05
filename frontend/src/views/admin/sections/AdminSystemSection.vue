@@ -31,6 +31,42 @@
     </div>
 
     <AppNotice
+      v-if="schedulerRefreshNotice"
+      class="mt-4"
+      :tone="schedulerRefreshNotice.tone"
+      :title="schedulerRefreshNotice.title"
+      :description="schedulerRefreshNotice.description"
+      :announce="true"
+    >
+      <template #actions>
+        <AppActionButton
+          label="刷新配置"
+          busy-label="刷新中..."
+          :busy="schedulerLoading"
+          @click="refreshSchedulerConfig"
+        />
+      </template>
+    </AppNotice>
+
+    <AppNotice
+      v-if="saveBlockedReason"
+      class="mt-4"
+      tone="warning"
+      title="保存前先同步当前配置"
+      :description="saveBlockedReason"
+      :announce="true"
+    >
+      <template #actions>
+        <AppActionButton
+          label="刷新配置"
+          busy-label="刷新中..."
+          :busy="schedulerLoading"
+          @click="refreshSchedulerConfig"
+        />
+      </template>
+    </AppNotice>
+
+    <AppNotice
       class="mt-4"
       :tone="helperNotice.tone"
       title="生效说明"
@@ -39,26 +75,24 @@
 
     <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
       <div class="md:col-span-2 xl:col-span-2">
-        <label class="mb-2 block text-sm font-medium text-gray-700">默认数据源</label>
-        <select v-model.number="schedulerForm.defaultSourceId" class="app-select">
+        <label for="scheduler-default-source" class="mb-2 block text-sm font-medium text-gray-700">默认数据源</label>
+        <select id="scheduler-default-source" v-model.number="schedulerForm.defaultSourceId" class="app-select">
           <option v-for="source in sourceOptions" :key="`scheduler-${source.value}`" :value="source.value">
             {{ source.label }}
           </option>
         </select>
       </div>
       <div>
-        <label class="mb-2 block text-sm font-medium text-gray-700">抓取间隔（秒）</label>
-        <input v-model.number="schedulerForm.intervalSeconds" type="number" min="60" max="86400" class="app-input">
+        <label for="scheduler-interval-seconds" class="mb-2 block text-sm font-medium text-gray-700">抓取间隔（秒）</label>
+        <input id="scheduler-interval-seconds" v-model.number="schedulerForm.intervalSeconds" type="number" min="60" max="86400" class="app-input">
       </div>
       <div>
-        <label class="mb-2 block text-sm font-medium text-gray-700">默认抓取页数</label>
-        <input v-model.number="schedulerForm.defaultMaxPages" type="number" min="1" max="50" class="app-input">
+        <label for="scheduler-default-max-pages" class="mb-2 block text-sm font-medium text-gray-700">默认抓取页数</label>
+        <input id="scheduler-default-max-pages" v-model.number="schedulerForm.defaultMaxPages" type="number" min="1" max="50" class="app-input">
       </div>
       <div class="flex items-center md:col-span-2 xl:col-span-4">
-        <label class="inline-flex cursor-pointer items-center text-sm text-gray-700">
-          <input v-model="schedulerForm.enabled" type="checkbox" class="app-checkbox">
-          <span class="ml-2">启用定时抓取</span>
-        </label>
+        <input id="scheduler-enabled" v-model="schedulerForm.enabled" type="checkbox" class="app-checkbox">
+        <label for="scheduler-enabled" class="ml-2 cursor-pointer text-sm text-gray-700">启用定时抓取</label>
       </div>
     </div>
 
@@ -67,6 +101,7 @@
         label="保存配置"
         busy-label="保存中..."
         :busy="schedulerSaving"
+        :disabled="saveDisabled"
         variant="primary"
         @click="saveSchedulerConfig"
       />
@@ -103,6 +138,9 @@ const props = defineProps({
   noticeClass: { type: String, required: true },
   statusLine: { type: String, required: true },
   nextRunLine: { type: String, required: true },
+  saveDisabled: { type: Boolean, required: true },
+  saveBlockedReason: { type: String, required: true },
+  schedulerRefreshNotice: { type: Object, default: null },
   saveSchedulerConfig: { type: Function, required: true },
   refreshSchedulerConfig: { type: Function, required: true }
 })

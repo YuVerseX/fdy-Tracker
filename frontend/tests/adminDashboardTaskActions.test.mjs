@@ -290,6 +290,16 @@ test('getTaskActionDefinitions should prefer backend action contract over local 
   assert.deepEqual(actions.map((item) => item.key), ['retry', 'incremental'])
 })
 
+test('getTaskActionDefinitions should drop unsupported backend cancel action for scrape tasks', () => {
+  const actions = getTaskActionDefinitions({
+    task_type: 'manual_scrape',
+    status: 'running',
+    actions: [{ key: 'cancel', label: '提前终止' }]
+  })
+
+  assert.deepEqual(actions, [])
+})
+
 test('getTaskActionDefinitions should preserve successful backend action contract for incremental tasks', () => {
   const actions = getTaskActionDefinitions({
     task_type: 'ai_analysis',

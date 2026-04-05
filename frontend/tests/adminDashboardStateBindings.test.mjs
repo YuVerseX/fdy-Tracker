@@ -3,8 +3,13 @@ import assert from 'node:assert/strict'
 import { computed, ref } from 'vue'
 
 import {
+  buildSystemSectionModel,
+  buildTaskRunsSectionModel
+} from '../src/views/admin/adminDashboardSectionAdapters.js'
+import {
   ADMIN_SECTION_ORDER,
   PROCESSING_MODE_ORDER,
+  collectBackendRunningTasks,
   normalizeAdminDashboardBindings,
   normalizeAdminSection,
   normalizeProcessingMode
@@ -56,4 +61,84 @@ test('normalizeAdminDashboardBindings should preserve syncStatus on taskRunsSect
 
   assert.equal(dashboard.taskRunsSection.syncStatus.badgeLabel, '自动刷新中')
   assert.equal(dashboard.taskRunsSection.syncStatus.lastSyncedLabel, '2026/04/01 18:00')
+})
+
+test('normalizeAdminDashboardBindings should preserve section-local error and save blocking fields', () => {
+  const dashboard = normalizeAdminDashboardBindings({
+    taskRunsSection: computed(() => buildTaskRunsSectionModel({
+      taskRuns: [],
+      taskRunsLoaded: false,
+      taskRunsError: '加载任务记录失败',
+      loadingRuns: false,
+      retryingTaskId: '',
+      retryingTaskActionKey: '',
+      cancelingTaskId: '',
+      expandedTaskIds: [],
+      nowTs: Date.now(),
+      sourceOptions: [],
+      heartbeatStaleMs: 600000,
+      syncStatus: {
+        badgeLabel: '手动刷新',
+        lastSyncedLabel: '尚未同步'
+      }
+    })),
+    systemSection: computed(() => buildSystemSectionModel({
+      schedulerForm: {
+        enabled: true,
+        intervalSeconds: 7200,
+        defaultSourceId: '',
+        defaultMaxPages: 5,
+        nextRunAt: '',
+        updatedAt: ''
+      },
+      schedulerLoaded: false,
+      schedulerLoading: false,
+      schedulerSaving: false,
+      schedulerConfigError: '加载定时抓取配置失败',
+      sourceOptions: []
+    }))
+  })
+
+  assert.equal(dashboard.taskRunsSection.taskRunsError, '加载任务记录失败')
+  assert.equal(dashboard.systemSection.saveDisabled, true)
+  assert.match(dashboard.systemSection.saveBlockedReason, /先刷新配置/)
+})
+
+test('collectBackendRunningTasks should keep summary-only running tasks when task run snapshot is unavailable', () => {
+  const runningTasks = collectBackendRunningTasks({
+    adminAuthorized: true,
+    taskSummary: {
+      running_tasks: [
+        { id: 'summary-run-1', task_type: 'manual_scrape', status: 'running' },
+        { id: 'summary-run-1', task_type: 'manual_scrape', status: 'running' }
+      ]
+    },
+    taskRuns: []
+  })
+
+  assert.deepEqual(runningTasks, [
+    { id: 'summary-run-1', task_type: 'manual_scrape', status: 'running' }
+  ])
+})
+
+test('buildSystemSectionModel should keep save enabled when a stale scheduler snapshot remains usable after refresh failure', () => {
+  const model = buildSystemSectionModel({
+    schedulerForm: {
+      enabled: true,
+      intervalSeconds: 7200,
+      defaultSourceId: 1,
+      defaultMaxPages: 5,
+      nextRunAt: '2026-04-05T09:00:00Z',
+      updatedAt: '2026-04-05T08:30:00Z'
+    },
+    schedulerLoaded: true,
+    schedulerLoading: false,
+    schedulerSaving: false,
+    schedulerConfigError: '加载定时抓取配置失败',
+    sourceOptions: [{ label: '江苏省人社厅', value: 1, isActive: true }]
+  })
+
+  assert.equal(model.saveDisabled, false)
+  assert.equal(model.saveBlockedReason, '')
+  assert.match(model.schedulerRefreshNotice.description, /仍显示上次成功加载的配置/)
 })

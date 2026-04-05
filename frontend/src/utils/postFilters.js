@@ -79,3 +79,19 @@ export const buildStatsParams = ({
   )
   return params
 }
+
+export const buildEventTypeOptionParams = ({
+  days = 7,
+  searchQuery = '',
+  filters = {},
+  defaultCounselorScope = DEFAULT_COUNSELOR_SCOPE
+} = {}) => {
+  const params = { days }
+  applySharedFilters(params, { ...filters, eventType: '' }, searchQuery)
+  applyCounselorScopeFilter(
+    params,
+    filters.counselorScope || defaultCounselorScope,
+    defaultCounselorScope
+  )
+  return params
+}

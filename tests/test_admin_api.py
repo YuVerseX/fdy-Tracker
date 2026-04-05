@@ -355,6 +355,17 @@ class AdminApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
 
+    def test_cancel_task_run_should_return_409_for_non_cancelable_scrape_task(self):
+        self._login()
+        with patch(
+            "src.api.admin.request_task_run_cancel",
+            side_effect=ValueError("task_not_cancelable"),
+        ):
+            response = self.client.post("/api/admin/task-runs/run-scrape-1/cancel")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("当前任务类型不支持提前终止", response.json()["detail"])
+
     def test_build_admin_progress_callback_should_forward_canonical_stage_contract(self):
         callback = admin_api.build_admin_progress_callback("run-scrape-1")
 
@@ -937,6 +948,33 @@ class AdminApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("手动抓取", response.json()["detail"])
 
+    def test_backfill_base_analysis_task_should_return_404_when_source_missing(self):
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = None
+        self.db.query.return_value = source_query
+
+        with patch(
+            "src.api.admin.ensure_scrape_source_ready",
+            return_value=None,
+        ) as mocked_ready, patch(
+            "src.api.admin._start_task_or_raise_conflict",
+            return_value={"id": "running-base-3", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_base_analysis_in_background",
+            new=AsyncMock(),
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/backfill-base-analysis",
+                json={"source_id": 99, "limit": 20, "only_pending": True},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("数据源不存在", response.json()["detail"])
+        mocked_ready.assert_not_called()
+        mocked_start.assert_not_called()
+        mocked_background.assert_not_called()
+
     def test_backfill_duplicates_task_should_return_409_when_scrape_is_already_running(self):
         running_task = {
             "id": "running-scrape-1",
@@ -1089,6 +1127,28 @@ class AdminApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("手动抓取", response.json()["detail"])
+
+    def test_backfill_attachments_task_should_return_404_when_source_missing(self):
+        with patch(
+            "src.api.admin.ensure_scrape_source_ready",
+            side_effect=admin_api.ScrapeSourceError("数据源不存在", 404),
+        ), patch(
+            "src.api.admin._start_task_or_raise_conflict",
+            return_value={"id": "running-attach-4", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_attachment_backfill_in_background",
+            new=AsyncMock(),
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/backfill-attachments",
+                json={"source_id": 99, "limit": 50},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("数据源不存在", response.json()["detail"])
+        mocked_start.assert_not_called()
+        mocked_background.assert_not_called()
 
     def test_run_ai_analysis_task_should_return_task_run(self):
         with patch("src.api.admin.is_openai_ready", return_value=True), patch(
@@ -1265,6 +1325,64 @@ class AdminApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("手动抓取", response.json()["detail"])
+
+    def test_run_job_extraction_task_should_return_404_when_source_missing(self):
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = None
+        self.db.query.return_value = source_query
+
+        with patch(
+            "src.api.admin.ensure_scrape_source_ready",
+            return_value=None,
+        ) as mocked_ready, patch(
+            "src.api.admin._start_task_or_raise_conflict",
+            return_value={"id": "running-job-missing-1", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_job_extraction_in_background",
+            new=AsyncMock(),
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-job-extraction",
+                json={"source_id": 99, "limit": 5, "only_unindexed": True, "use_ai": False},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("数据源不存在", response.json()["detail"])
+        mocked_ready.assert_not_called()
+        mocked_start.assert_not_called()
+        mocked_background.assert_not_called()
+
+    def test_run_job_extraction_task_should_accept_inactive_source_when_present(self):
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = SimpleNamespace(
+            id=7,
+            name="已停用源",
+            is_active=False,
+        )
+        self.db.query.return_value = source_query
+
+        with patch(
+            "src.api.admin.ensure_scrape_source_ready",
+            side_effect=admin_api.ScrapeSourceError("数据源已停用，不能启动抓取任务", 409),
+        ) as mocked_ready, patch(
+            "src.api.admin._start_task_or_raise_conflict",
+            return_value={"id": "running-job-7", "started_at": "2026-03-24T09:00:00+00:00", "status": "running"},
+        ) as mocked_start, patch(
+            "src.api.admin._run_job_extraction_in_background",
+            new=AsyncMock(),
+        ) as mocked_background:
+            self._login()
+            response = self.client.post(
+                "/api/admin/run-job-extraction",
+                json={"source_id": 7, "limit": 5, "only_unindexed": True, "use_ai": False},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertIn("已提交", response.json()["message"])
+        mocked_ready.assert_not_called()
+        mocked_start.assert_called_once()
+        mocked_background.assert_called_once()
 
     def test_run_job_extraction_task_should_return_409_when_ai_requested_but_not_ready(self):
         with patch("src.api.admin.is_openai_ready", return_value=False):

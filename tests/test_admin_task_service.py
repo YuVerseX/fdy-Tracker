@@ -1102,6 +1102,18 @@ class AdminTaskServiceTestCase(unittest.TestCase):
         self.assertEqual(serialized["phase"], "任务尚未开始，启动前会直接停止")
         self.assertEqual(serialized["details"]["cancel_reason"], "user_requested")
 
+    def test_request_task_run_cancel_should_reject_running_scrape_task(self):
+        running = admin_task_service.start_task_run(
+            task_type="manual_scrape",
+            summary="手动抓取进行中",
+            params={"source_id": 1, "max_pages": 3},
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            admin_task_service.request_task_run_cancel(task_id=running["id"])
+
+        self.assertEqual(str(ctx.exception), "task_not_cancelable")
+
     def test_update_task_run_should_keep_cancel_requested_absorbing_after_progress_update(self):
         created = admin_task_service.start_task_run(
             task_type="ai_analysis",

@@ -58,5 +58,7 @@ test('admin dashboard task sync copy should keep initial sync state neutral befo
   assert.match(stateSource, /同步状态更新中/)
   assert.match(stateSource, /正在获取任务中心状态。/)
   assert.match(stateSource, /runningCountLabel: syncStatus\.pending \? '--' :/)
-  assert.match(stateSource, /if \(!adminAuthorized\.value \|\| !loaded\.taskRuns\) return \[\]/)
+  assert.match(stateSource, /collectBackendRunningTasks\(\{/)
+  assert.match(stateSource, /taskSummary: state\.taskSummary/)
+  assert.doesNotMatch(stateSource, /if \(!adminAuthorized\.value \|\| !loaded\.taskRuns\) return \[\]/)
 })

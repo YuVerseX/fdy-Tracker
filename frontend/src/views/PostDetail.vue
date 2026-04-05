@@ -6,16 +6,33 @@
         <p class="mt-4 text-sm text-slate-600">正在加载招聘详情...</p>
       </div>
 
-      <div v-else-if="error" class="app-surface app-surface--danger app-surface--padding-lg text-center">
-        <p class="text-sm text-rose-700">{{ error }}</p>
-        <button
-          type="button"
-          class="mt-4 app-button app-button--md app-button--warning"
-          @click="fetchPostDetail"
-        >
-          重新加载
-        </button>
-      </div>
+      <AppNotice
+        v-else-if="error"
+        tone="danger"
+        :announce="true"
+        title="招聘详情暂时无法显示"
+        :description="error"
+      >
+        <template #actions>
+          <div class="flex flex-wrap justify-center gap-3">
+            <button
+              type="button"
+              class="app-button app-button--md app-button--secondary"
+              @click="goBack"
+            >
+              返回列表
+            </button>
+            <button
+              v-if="errorStatus !== 404"
+              type="button"
+              class="app-button app-button--md app-button--warning"
+              @click="fetchPostDetail"
+            >
+              重新加载
+            </button>
+          </div>
+        </template>
+      </AppNotice>
 
       <template v-else-if="post">
         <PostHeroSection
@@ -64,6 +81,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AppEmptyState from '../components/ui/AppEmptyState.vue'
+import AppNotice from '../components/ui/AppNotice.vue'
 import AppSectionNav from '../components/ui/AppSectionNav.vue'
 import { getPublicFreshnessHeadline } from '../utils/publicFreshness.js'
 import { getPublicTaskTypeLabel } from '../utils/taskTypeLabels.js'
@@ -92,6 +110,7 @@ const {
   post,
   loading,
   error,
+  errorStatus,
   latestSuccessTask,
   freshnessLoading,
   freshnessUnavailable,
@@ -170,11 +189,6 @@ const infoDisclosureItems = computed(() => buildInfoDisclosureItems({
 }))
 
 const goBack = () => {
-  if (window.history.length > 1) {
-    router.back()
-    return
-  }
-
   router.push({
     name: 'PostList',
     query: { ...route.query }

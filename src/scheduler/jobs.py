@@ -221,11 +221,22 @@ def get_scheduler_runtime_health(db) -> dict[str, Any]:
             issues.append("default_source_inactive")
 
     job = scheduler.get_job(SCRAPE_JOB_ID)
-    next_run_at = job.next_run_time.isoformat() if job and getattr(job, "next_run_time", None) else None
+    job_next_run_time = getattr(job, "next_run_time", None) if job is not None else None
+    if config.enabled:
+        if job is None:
+            issues.append("scrape_job_missing")
+        elif job_next_run_time is None:
+            issues.append("scrape_job_not_scheduled")
+    next_run_at = job_next_run_time.isoformat() if job_next_run_time else None
 
-    ready = config is not None and (
+    ready = (
         not config.enabled
-        or (config.default_source_id and source is not None and bool(source.is_active))
+        or (
+            bool(scheduler.running)
+            and source is not None
+            and bool(source.is_active)
+            and job_next_run_time is not None
+        )
     )
     status = "ok" if not issues else "degraded"
 

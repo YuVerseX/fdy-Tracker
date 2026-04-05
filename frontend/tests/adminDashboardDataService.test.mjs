@@ -58,12 +58,14 @@ function createHarness({ adminApiOverrides = {} } = {}) {
   const sourceOptions = { value: [] }
   const state = {
     taskRuns: [],
+    taskRunsError: '',
     taskSummary: null,
     taskSummaryUnavailable: false,
     analysisSummary: null,
     insightSummary: null,
     jobSummary: null,
     duplicateSummary: null,
+    schedulerConfigError: '',
     expandedTaskIds: [],
     retryingTaskId: '',
     retryingTaskActionKey: '',
@@ -232,6 +234,59 @@ test('fetchSchedulerConfig should keep disabled scheduler source out of manual s
 
   assert.equal(forms.scheduler.defaultSourceId, 2)
   assert.equal(forms.scrape.sourceId, 1)
+})
+
+test('fetchSchedulerConfig should expose section-local scheduler config error when loading fails', async () => {
+  const serverError = new Error('scheduler-failed')
+  serverError.response = { status: 500, data: {} }
+
+  const { service, state, loaded, feedback } = createHarness({
+    adminApiOverrides: {
+      getSchedulerConfig: async () => { throw serverError }
+    }
+  })
+
+  const succeeded = await service.fetchSchedulerConfig()
+
+  assert.equal(succeeded, false)
+  assert.equal(loaded.scheduler, false)
+  assert.equal(state.schedulerConfigError, '加载定时抓取配置失败')
+  assert.equal(feedback.value.type, '')
+  assert.equal(feedback.value.message, '')
+})
+
+test('fetchSchedulerConfig should keep existing loaded scheduler snapshot usable after refresh failure', async () => {
+  const refreshError = new Error('scheduler-refresh-failed')
+  refreshError.response = { status: 500, data: {} }
+
+  const { service, state, loaded, forms, feedback } = createHarness({
+    adminApiOverrides: {
+      getSchedulerConfig: async () => { throw refreshError }
+    }
+  })
+
+  loaded.scheduler = true
+  forms.scheduler.enabled = false
+  forms.scheduler.intervalSeconds = 3600
+  forms.scheduler.defaultSourceId = 9
+  forms.scheduler.defaultMaxPages = 12
+  forms.scheduler.nextRunAt = '2026-04-05T09:00:00Z'
+  forms.scheduler.updatedAt = '2026-04-05T08:30:00Z'
+
+  const succeeded = await service.fetchSchedulerConfig()
+
+  assert.equal(succeeded, false)
+  assert.equal(loaded.scheduler, true)
+  assert.equal(state.schedulerConfigError, '加载定时抓取配置失败')
+  assert.deepEqual(forms.scheduler, {
+    enabled: false,
+    intervalSeconds: 3600,
+    defaultSourceId: 9,
+    defaultMaxPages: 12,
+    nextRunAt: '2026-04-05T09:00:00Z',
+    updatedAt: '2026-04-05T08:30:00Z'
+  })
+  assert.equal(feedback.value.message, '')
 })
 
 test('saveSchedulerConfig should omit empty default source id from request payload', async () => {
@@ -674,8 +729,55 @@ test('fetchTaskRuns should keep contextual fallback copy for 500 responses', asy
   const succeeded = await service.fetchTaskRuns()
 
   assert.equal(succeeded, false)
-  assert.equal(feedback.value.type, 'error')
-  assert.equal(feedback.value.message, '加载任务记录失败')
+  assert.equal(feedback.value.type, '')
+  assert.equal(feedback.value.message, '')
+})
+
+test('fetchTaskRuns should expose section-local task runs error when loading fails', async () => {
+  const serverError = new Error('server-error')
+  serverError.response = { status: 500, data: {} }
+
+  const { service, state, loaded, feedback } = createHarness({
+    adminApiOverrides: {
+      getTaskRuns: async () => { throw serverError }
+    }
+  })
+
+  const succeeded = await service.fetchTaskRuns()
+
+  assert.equal(succeeded, false)
+  assert.equal(loaded.taskRuns, false)
+  assert.equal(state.taskRunsError, '加载任务记录失败')
+  assert.equal(feedback.value.type, '')
+  assert.equal(feedback.value.message, '')
+})
+
+test('fetchTaskRuns should keep previous task run snapshot visible after refresh failure', async () => {
+  const refreshError = new Error('task-runs-refresh-failed')
+  refreshError.response = { status: 500, data: {} }
+
+  const previousSnapshot = [{
+    id: 'run-prev-1',
+    task_type: 'manual_scrape',
+    status: 'running'
+  }]
+
+  const { service, state, loaded, feedback } = createHarness({
+    adminApiOverrides: {
+      getTaskRuns: async () => { throw refreshError }
+    }
+  })
+
+  state.taskRuns = previousSnapshot.slice()
+  loaded.taskRuns = true
+
+  const succeeded = await service.fetchTaskRuns()
+
+  assert.equal(succeeded, false)
+  assert.equal(loaded.taskRuns, true)
+  assert.deepEqual(state.taskRuns, previousSnapshot)
+  assert.equal(state.taskRunsError, '加载任务记录失败')
+  assert.equal(feedback.value.message, '')
 })
 
 test('fetchTaskRuns should canonicalize legacy task statuses and preserve snapshot envelope fields', async () => {
@@ -1000,8 +1102,8 @@ test('refreshOverview should ignore late responses after logout clears admin run
   assert.equal(feedback.value.message, '已退出登录')
 })
 
-test('logoutAdmin should clear stale source options, task forms, and request busy flags', async () => {
-  const { service, forms, sourceOptions, requests } = createHarness({
+test('logoutAdmin should clear stale source options, task forms, request busy flags, and section-local errors', async () => {
+  const { service, forms, sourceOptions, requests, state } = createHarness({
     adminApiOverrides: {
       logout: async () => ({})
     }
@@ -1013,6 +1115,9 @@ test('logoutAdmin should clear stale source options, task forms, and request bus
   forms.aiAnalysis.sourceId = 9
   forms.aiAnalysis.limit = 88
   forms.scheduler.defaultSourceId = 9
+  forms.scheduler.defaultMaxPages = 9
+  state.taskRunsError = '旧的任务记录错误'
+  state.schedulerConfigError = '旧的调度配置错误'
   requests.scrape = true
   requests.aiAnalysis = true
 
@@ -1022,6 +1127,8 @@ test('logoutAdmin should clear stale source options, task forms, and request bus
   assert.deepEqual(forms.scrape, { sourceId: '', maxPages: 5 })
   assert.deepEqual(forms.aiAnalysis, { sourceId: '', limit: 100, onlyUnanalyzed: true })
   assert.deepEqual(forms.scheduler, { enabled: true, intervalSeconds: 7200, defaultSourceId: '', defaultMaxPages: 5, nextRunAt: '', updatedAt: '' })
+  assert.equal(state.taskRunsError, '')
+  assert.equal(state.schedulerConfigError, '')
   assert.equal(requests.scrape, false)
   assert.equal(requests.aiAnalysis, false)
 })

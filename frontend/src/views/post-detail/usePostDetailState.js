@@ -26,6 +26,7 @@ export function usePostDetailState(route) {
   const post = ref(null)
   const loading = ref(false)
   const error = ref('')
+  const errorStatus = ref(0)
   const latestSuccessTask = ref(null)
   const freshnessLoading = ref(false)
   const freshnessUnavailable = ref(false)
@@ -36,6 +37,7 @@ export function usePostDetailState(route) {
     const requestId = ++detailRequestSeq
     loading.value = true
     error.value = ''
+    errorStatus.value = 0
 
     try {
       const response = await postsApi.getPostById(route.params.id)
@@ -44,9 +46,12 @@ export function usePostDetailState(route) {
       void fetchLatestSuccessTask(response?.data?.source?.id || null)
     } catch (requestError) {
       if (requestId !== detailRequestSeq) return
+      freshnessRequestSeq += 1
       post.value = null
       latestSuccessTask.value = null
+      freshnessLoading.value = false
       freshnessUnavailable.value = false
+      errorStatus.value = requestError?.response?.status ?? 0
       error.value = getErrorMessage(requestError)
       console.error('Error fetching post detail:', requestError)
     } finally {
@@ -91,6 +96,7 @@ export function usePostDetailState(route) {
     post,
     loading,
     error,
+    errorStatus,
     latestSuccessTask,
     freshnessLoading,
     freshnessUnavailable,

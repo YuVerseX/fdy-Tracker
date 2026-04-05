@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { postsApi } from '../../api/posts.js'
 import {
   DEFAULT_COUNSELOR_SCOPE,
+  buildEventTypeOptionParams as buildEventTypeOptionRequestParams,
   buildPostParams as buildPostRequestParams,
-  buildStatsParams as buildStatsRequestParams
 } from '../../utils/postFilters.js'
 import { normalizeLatestSuccessTask } from '../../utils/taskFreshness.js'
 
@@ -163,8 +163,8 @@ export function usePostListState(route, router) {
     })
   }
 
-  const buildStatsParams = () => {
-    return buildStatsRequestParams({
+  const buildEventTypeOptionParams = () => {
+    return buildEventTypeOptionRequestParams({
       days: 7,
       searchQuery: searchQuery.value,
       filters: filters.value,
@@ -227,11 +227,19 @@ export function usePostListState(route, router) {
 
       if (requestId !== postsRequestSeq) return
 
-      posts.value = response.data.items || []
-
       const total = response.data.total ?? 0
+      const nextItems = response.data.items || []
+      const nextTotalPages = Math.max(1, Math.ceil(total / pageSize))
+
       totalMatchedPosts.value = total
-      totalPages.value = Math.max(1, Math.ceil(total / pageSize))
+      totalPages.value = nextTotalPages
+
+      if (currentPage.value > nextTotalPages) {
+        posts.value = []
+        error.value = '当前页码没有对应结果，可以返回上一页继续浏览。'
+      } else {
+        posts.value = nextItems
+      }
 
       const scopeKeys = ['any', 'dedicated', 'contains', 'all']
       const totalResponses = await Promise.allSettled(
@@ -282,9 +290,19 @@ export function usePostListState(route, router) {
     const requestId = ++statsRequestSeq
 
     try {
-      const response = await postsApi.getStatsSummary(buildStatsParams())
+      const response = await postsApi.getStatsSummary(buildEventTypeOptionParams())
       if (requestId !== statsRequestSeq) return
-      eventTypeOptions.value = response?.data?.event_type_distribution || []
+
+      const selectedEventType = filters.value.eventType
+      let nextOptions = Array.isArray(response?.data?.event_type_distribution)
+        ? response.data.event_type_distribution
+        : []
+
+      if (selectedEventType && !nextOptions.some((item) => item.event_type === selectedEventType)) {
+        nextOptions = [{ event_type: selectedEventType }, ...nextOptions]
+      }
+
+      eventTypeOptions.value = nextOptions
     } catch (requestError) {
       if (requestId !== statsRequestSeq) return
       console.warn('获取筛选项摘要失败:', requestError)
@@ -332,8 +350,9 @@ export function usePostListState(route, router) {
     handleFilter()
   }
 
-  const goToPage = async (page) => {
-    if (page < 1 || page > totalPages.value) return
+  const goToPage = async (page, { force = false } = {}) => {
+    if (page < 1) return
+    if (!force && page > totalPages.value) return
 
     currentPage.value = page
     syncListRouteQuery()

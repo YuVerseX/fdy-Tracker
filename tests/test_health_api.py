@@ -157,6 +157,61 @@ class HealthApiTestCase(unittest.TestCase):
         self.assertIn("latest_success_too_old", payload["checks"]["freshness"]["issues"])
         self.assertIn("stale_running_tasks_detected", payload["checks"]["tasks"]["issues"])
 
+    def test_health_should_return_error_when_scheduler_job_is_not_scheduled(self):
+        self.db.execute.return_value = 1
+        fresh_success_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+
+        with patch.multiple(
+            "src.api.health.settings",
+            ADMIN_USERNAME="admin",
+            ADMIN_PASSWORD="secret-pass",
+            ADMIN_SESSION_SECRET="x" * 32,
+            ADMIN_SESSION_SECURE=True,
+            API_DOCS_ENABLED=False,
+        ), patch(
+            "src.api.health.get_scheduler_runtime_health",
+            return_value={
+                "status": "degraded",
+                "ready": False,
+                "scheduler_running": True,
+                "enabled": True,
+                "interval_seconds": 3600,
+                "default_source_id": 1,
+                "default_source_scope": "source",
+                "default_max_pages": 5,
+                "source_name": "江苏省人社厅",
+                "next_run_at": None,
+                "issues": ["scrape_job_not_scheduled"],
+            },
+        ), patch(
+            "src.api.health.get_public_task_freshness_summary",
+            return_value={
+                "scope": "source",
+                "requested_source_id": 1,
+                "latest_success_at": fresh_success_at,
+                "latest_success_run": {
+                    "task_type": "scheduled_scrape",
+                    "params": {"source_id": 1},
+                },
+            },
+        ), patch(
+            "src.api.health.get_task_runtime_health_summary",
+            return_value={
+                "running_task_count": 0,
+                "stale_task_count": 0,
+                "latest_heartbeat_at": None,
+                "latest_heartbeat_age_seconds": None,
+                "stale_tasks": [],
+            },
+        ):
+            response = self.client.get("/api/health")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "error")
+        self.assertFalse(payload["ready"])
+        self.assertIn("scrape_job_not_scheduled", payload["checks"]["scheduler"]["issues"])
+
     def test_health_should_keep_top_level_ok_when_only_admin_security_is_degraded(self):
         self.db.execute.return_value = 1
         fresh_success_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()

@@ -155,6 +155,29 @@ test('post detail page should promote headline summary and move structured facts
   assert.match(heroSource, /lg:grid-cols-\[minmax\(0,1\.2fr\)_minmax\(0,0\.95fr\)\]/)
 })
 
+test('post detail error state should keep deterministic recovery actions in AppNotice', () => {
+  const source = readSource('views/PostDetail.vue')
+
+  assert.match(source, /<AppNotice[\s\S]*v-else-if="error"[\s\S]*title="招聘详情暂时无法显示"/)
+  assert.match(source, />\s*返回列表\s*</)
+  assert.match(source, /v-if="errorStatus !== 404"/)
+  assert.match(source, />\s*重新加载\s*</)
+  assert.match(source, /router\.push\(\s*\{\s*name: 'PostList',\s*query: \{ \.\.\.route\.query \}\s*\}\s*\)/)
+  assert.doesNotMatch(source, /window\.history\.length/)
+})
+
+test('post detail state should track errorStatus and clear freshness state on failure', () => {
+  const source = readSource('views/post-detail/usePostDetailState.js')
+
+  assert.match(source, /const errorStatus = ref\(0\)/)
+  assert.match(source, /errorStatus\.value = 0/)
+  assert.match(source, /errorStatus\.value = requestError\?\.response\?\.status \?\? 0/)
+  assert.match(source, /post\.value = null/)
+  assert.match(source, /latestSuccessTask\.value = null/)
+  assert.match(source, /freshnessLoading\.value = false/)
+  assert.match(source, /freshnessUnavailable\.value = false/)
+})
+
 test('buildJobPresentation should use table mode for multiple jobs', () => {
   const view = buildJobPresentation([
     { job_name: '专职辅导员', headcount: '2人' },

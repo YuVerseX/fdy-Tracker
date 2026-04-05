@@ -13,6 +13,7 @@
         v-if="dashboard.feedback.message"
         :tone="dashboard.feedback.type === 'error' ? 'danger' : dashboard.feedback.type"
         :description="dashboard.feedback.message"
+        :announce="true"
       />
 
       <AppNotice
@@ -39,10 +40,12 @@
               v-if="dashboard.adminAuthError"
               tone="warning"
               :description="dashboard.adminAuthError"
+              :announce="true"
             />
             <div>
-              <label class="mb-2 block text-sm font-medium text-slate-700">账号</label>
+              <label for="admin-login-username" class="mb-2 block text-sm font-medium text-slate-700">账号</label>
               <input
+                id="admin-login-username"
                 v-model.trim="dashboard.adminAuthForm.username"
                 type="text"
                 autocomplete="username"
@@ -51,8 +54,9 @@
               >
             </div>
             <div>
-              <label class="mb-2 block text-sm font-medium text-slate-700">密码</label>
+              <label for="admin-login-password" class="mb-2 block text-sm font-medium text-slate-700">密码</label>
               <input
+                id="admin-login-password"
                 v-model="dashboard.adminAuthForm.password"
                 type="password"
                 autocomplete="current-password"
@@ -116,6 +120,7 @@
         <AdminTaskRunsSection
           v-else-if="dashboard.activeAdminSection === 'tasks'"
           :task-runs="dashboard.taskRunsSection.taskRuns"
+          :task-runs-error="dashboard.taskRunsSection.taskRunsError"
           :task-runs-loaded="dashboard.taskRunsSection.taskRunsLoaded"
           :loading-runs="dashboard.taskRunsSection.loadingRuns"
           :retrying-task-id="dashboard.taskRunsSection.retryingTaskId"
@@ -145,6 +150,9 @@
           :notice-class="dashboard.systemSection.noticeClass"
           :status-line="dashboard.systemSection.statusLine"
           :next-run-line="dashboard.systemSection.nextRunLine"
+          :save-disabled="dashboard.systemSection.saveDisabled"
+          :save-blocked-reason="dashboard.systemSection.saveBlockedReason"
+          :scheduler-refresh-notice="dashboard.systemSection.schedulerRefreshNotice"
           :save-scheduler-config="dashboard.saveSchedulerConfig"
           :refresh-scheduler-config="dashboard.refreshSchedulerConfig"
         />

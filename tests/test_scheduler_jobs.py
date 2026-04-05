@@ -169,6 +169,92 @@ class SchedulerJobsTestCase(unittest.TestCase):
         self.assertIn("default_source_inactive", payload["issues"])
         self.assertEqual(payload["next_run_at"], "2026-04-04T10:00:00+00:00")
 
+    def test_get_scheduler_runtime_health_should_report_degraded_when_scheduler_not_running(self):
+        db = MagicMock()
+        config = SimpleNamespace(
+            enabled=True,
+            interval_seconds=1800,
+            default_source_id=9,
+            default_max_pages=5,
+        )
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = SimpleNamespace(
+            id=9,
+            name="江苏省人社厅",
+            is_active=True,
+        )
+        db.query.return_value = source_query
+        fake_job = SimpleNamespace(next_run_time=datetime(2026, 4, 4, 10, 0, tzinfo=timezone.utc))
+
+        with patch("src.scheduler.jobs.peek_scheduler_config", return_value=config), patch(
+            "src.scheduler.jobs.scheduler",
+        ) as mocked_scheduler:
+            mocked_scheduler.running = False
+            mocked_scheduler.get_job.return_value = fake_job
+            payload = scheduler_jobs.get_scheduler_runtime_health(db)
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertFalse(payload["ready"])
+        self.assertIn("scheduler_not_running", payload["issues"])
+        self.assertEqual(payload["next_run_at"], "2026-04-04T10:00:00+00:00")
+
+    def test_get_scheduler_runtime_health_should_report_degraded_when_scrape_job_missing(self):
+        db = MagicMock()
+        config = SimpleNamespace(
+            enabled=True,
+            interval_seconds=1800,
+            default_source_id=9,
+            default_max_pages=5,
+        )
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = SimpleNamespace(
+            id=9,
+            name="江苏省人社厅",
+            is_active=True,
+        )
+        db.query.return_value = source_query
+
+        with patch("src.scheduler.jobs.peek_scheduler_config", return_value=config), patch(
+            "src.scheduler.jobs.scheduler",
+        ) as mocked_scheduler:
+            mocked_scheduler.running = True
+            mocked_scheduler.get_job.return_value = None
+            payload = scheduler_jobs.get_scheduler_runtime_health(db)
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertFalse(payload["ready"])
+        self.assertIn("scrape_job_missing", payload["issues"])
+        self.assertIsNone(payload["next_run_at"])
+
+    def test_get_scheduler_runtime_health_should_report_degraded_when_scrape_job_not_scheduled(self):
+        db = MagicMock()
+        config = SimpleNamespace(
+            enabled=True,
+            interval_seconds=1800,
+            default_source_id=9,
+            default_max_pages=5,
+        )
+        source_query = MagicMock()
+        source_query.filter.return_value.first.return_value = SimpleNamespace(
+            id=9,
+            name="江苏省人社厅",
+            is_active=True,
+        )
+        db.query.return_value = source_query
+        fake_job = SimpleNamespace(next_run_time=None)
+
+        with patch("src.scheduler.jobs.peek_scheduler_config", return_value=config), patch(
+            "src.scheduler.jobs.scheduler",
+        ) as mocked_scheduler:
+            mocked_scheduler.running = True
+            mocked_scheduler.get_job.return_value = fake_job
+            payload = scheduler_jobs.get_scheduler_runtime_health(db)
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertFalse(payload["ready"])
+        self.assertIn("scrape_job_not_scheduled", payload["issues"])
+        self.assertIsNone(payload["next_run_at"])
+
     def test_get_scheduler_runtime_health_should_not_write_when_config_missing(self):
         db = MagicMock()
 

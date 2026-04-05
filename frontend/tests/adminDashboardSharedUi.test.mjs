@@ -69,6 +69,50 @@ test('admin system section should keep long scheduler fields readable at medium 
   assert.match(systemSource, /md:col-span-2 xl:col-span-4/)
 })
 
+test('app notice should only opt into live region semantics when announce is enabled', () => {
+  const source = readSource('components/ui/AppNotice.vue')
+
+  assert.match(source, /announce: \{ type: Boolean, default: false \}/)
+  assert.match(source, /aria-atomic="true"/)
+  assert.match(source, /:role="liveRegionRole"/)
+  assert.match(source, /:aria-live="liveRegionMode"/)
+  assert.match(source, /props\.announce \?/)
+})
+
+test('admin system section and admin login form should wire labels to control ids', () => {
+  const systemSource = readSource('views/admin/sections/AdminSystemSection.vue')
+  const dashboardSource = readSource('views/AdminDashboard.vue')
+
+  assert.match(systemSource, /for="scheduler-default-source"/)
+  assert.match(systemSource, /id="scheduler-default-source"/)
+  assert.match(systemSource, /for="scheduler-interval-seconds"/)
+  assert.match(systemSource, /id="scheduler-interval-seconds"/)
+  assert.match(systemSource, /for="scheduler-default-max-pages"/)
+  assert.match(systemSource, /id="scheduler-default-max-pages"/)
+  assert.match(systemSource, /for="scheduler-enabled"/)
+  assert.match(systemSource, /id="scheduler-enabled"/)
+  assert.match(dashboardSource, /for="admin-login-username"/)
+  assert.match(dashboardSource, /id="admin-login-username"/)
+  assert.match(dashboardSource, /for="admin-login-password"/)
+  assert.match(dashboardSource, /id="admin-login-password"/)
+})
+
+test('admin dashboard notices should only announce dynamic feedback and blocking states', () => {
+  const systemSource = readSource('views/admin/sections/AdminSystemSection.vue')
+  const dashboardSource = readSource('views/AdminDashboard.vue')
+  const activeTaskNoticeBlock = dashboardSource.match(
+    /<AppNotice\s+v-if="dashboard\.adminAuthorized && dashboard\.activeTaskHints\.length > 0"[\s\S]*?\/>/
+  )?.[0] || ''
+
+  assert.match(systemSource, /schedulerRefreshNotice/)
+  assert.match(systemSource, /:announce="true"/)
+  assert.match(systemSource, /:disabled="saveDisabled"/)
+  assert.match(dashboardSource, /dashboard\.feedback\.message[\s\S]*:announce="true"/)
+  assert.match(dashboardSource, /dashboard\.adminAuthError[\s\S]*:announce="true"/)
+  assert.match(dashboardSource, /:scheduler-refresh-notice="dashboard\.systemSection\.schedulerRefreshNotice"/)
+  assert.equal(activeTaskNoticeBlock.includes(':announce="true"'), false)
+})
+
 test('shared metric pill should support semantic tones for status summaries', () => {
   const source = readSource('components/ui/AppMetricPill.vue')
   const styles = readSource('style.css')

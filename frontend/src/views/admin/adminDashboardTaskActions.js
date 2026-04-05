@@ -346,6 +346,7 @@ const getBackendActionDefinitions = (run = {}) => {
   const taskType = run?.task_type || run?.taskType
   if (!Array.isArray(run.actions)) return []
   return run.actions
+    .filter((action) => action?.key !== 'cancel' || CANCELABLE_TASK_TYPES.has(taskType))
     .map((action) => resolveActionDefinition(taskType, action?.key, action?.label))
     .filter(Boolean)
 }

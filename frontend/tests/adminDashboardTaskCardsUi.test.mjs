@@ -82,6 +82,29 @@ test('admin task center should keep loaded task cards visible while a refresh is
   assert.doesNotMatch(runsSectionSource, /v-if="loadingRuns \|\| !taskRunsLoaded"/)
 })
 
+test('admin task center should keep no-snapshot failures separate from empty state and offer a recovery action', () => {
+  const runsSectionSource = readSource('views/admin/sections/AdminTaskRunsSection.vue')
+
+  const failureIndex = runsSectionSource.indexOf('v-else-if="taskRunsError && !taskRunsLoaded"')
+  const emptyIndex = runsSectionSource.indexOf('v-if="taskRuns.length === 0"')
+
+  assert.ok(failureIndex >= 0)
+  assert.ok(emptyIndex >= 0)
+  assert.ok(failureIndex < emptyIndex)
+  assert.match(runsSectionSource, /title="任务记录暂时不可用"/)
+  assert.match(runsSectionSource, /label="重新加载"/)
+  assert.match(runsSectionSource, /:announce="true"/)
+})
+
+test('admin task center should keep stale cards visible and show a refresh warning when a newer poll fails', () => {
+  const runsSectionSource = readSource('views/admin/sections/AdminTaskRunsSection.vue')
+
+  assert.match(runsSectionSource, /v-if="taskRunsError && taskRunsLoaded"/)
+  assert.match(runsSectionSource, /title="任务记录刷新失败"/)
+  assert.match(runsSectionSource, /上次同步到的任务快照/)
+  assert.match(runsSectionSource, /<div v-else class="mt-5 space-y-5 lg:space-y-6">/)
+})
+
 test('admin task run card should bind result empty copy from presentation instead of hardcoded promise text', () => {
   const runCardSource = readSource('views/admin/sections/AdminTaskRunCard.vue')
 

@@ -7,7 +7,13 @@ import {
   ADMIN_SECTION_OPTIONS,
   getAdminRuntimeCopy
 } from '../../utils/adminDashboardMeta.js'
-import { buildAiEnhancementPanels, buildDataProcessingPanels, formatAdminDateTime, getTaskTypeLabel } from '../../utils/adminDashboardViewModels.js'
+import {
+  buildAiEnhancementPanels,
+  buildDataProcessingPanels,
+  formatAdminDateTime,
+  getTaskTypeLabel,
+  isRunningTaskStatus
+} from '../../utils/adminDashboardViewModels.js'
 import { summarizeTaskSnapshotScope } from '../../utils/adminTaskSnapshots.js'
 import { createAdminDashboardDataService } from './adminDashboardDataService.js'
 import { buildAdminHealthState } from './adminDashboardHealth.js'
@@ -40,6 +46,25 @@ export const normalizeAdminSection = (value) => {
 export const normalizeProcessingMode = (value) => (
   PROCESSING_MODE_SET.has(value) ? value : PROCESSING_MODE_ORDER[0]
 )
+export const collectBackendRunningTasks = ({
+  adminAuthorized = false,
+  taskSummary = null,
+  taskRuns = []
+} = {}) => {
+  if (!adminAuthorized) return []
+  const combined = [
+    ...(Array.isArray(taskSummary?.running_tasks) ? taskSummary.running_tasks : []),
+    ...(Array.isArray(taskRuns) ? taskRuns.filter((run) => isRunningTaskStatus(run?.status)) : [])
+  ]
+  const seen = new Set()
+  return combined.filter((run) => {
+    const taskType = run?.task_type || run?.taskType
+    const key = run?.id || `${taskType}-${run?.started_at || run?.startedAt || ''}`
+    if (!taskType || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
 
 export function useAdminDashboardState() {
   const adminAuthorized = ref(false)
@@ -52,12 +77,14 @@ export function useAdminDashboardState() {
   const sourceOptions = ref([])
   const state = reactive({
     taskRuns: [],
+    taskRunsError: '',
     taskSummary: null,
     taskSummaryUnavailable: false,
     analysisSummary: null,
     insightSummary: null,
     jobSummary: null,
     duplicateSummary: null,
+    schedulerConfigError: '',
     expandedTaskIds: [],
     retryingTaskId: '',
     retryingTaskActionKey: '',
@@ -127,21 +154,13 @@ export function useAdminDashboardState() {
     taskRuns: state.taskRuns,
     taskRunsLoaded: loaded.taskRuns
   }))
-  const backendRunningTasks = computed(() => {
-    if (!adminAuthorized.value || !loaded.taskRuns) return []
-    const combined = [
-      ...(Array.isArray(state.taskSummary?.running_tasks) ? state.taskSummary.running_tasks : []),
-      ...state.taskRuns.filter((run) => isRunningTaskStatus(run?.status))
-    ]
-    const seen = new Set()
-    return combined.filter((run) => {
-      const taskType = run?.task_type || run?.taskType
-      const key = run?.id || `${taskType}-${run?.started_at || run?.startedAt || ''}`
-      if (!taskType || seen.has(key)) return false
-      seen.add(key)
-      return true
+  const backendRunningTasks = computed(() => (
+    collectBackendRunningTasks({
+      adminAuthorized: adminAuthorized.value,
+      taskSummary: state.taskSummary,
+      taskRuns: state.taskRuns
     })
-  })
+  ))
   const hasTaskStatusSnapshot = computed(() => (
     loaded.taskRuns ||
     loaded.taskSummary ||
@@ -268,13 +287,21 @@ export function useAdminDashboardState() {
     baseSection: dataProcessingSection.value,
     aiSection: aiEnhancementSection.value
   }))
-  const systemSection = computed(() => buildSystemSectionModel({ schedulerForm: forms.scheduler, schedulerLoaded: loaded.scheduler, schedulerLoading: loading.scheduler, schedulerSaving: loading.schedulerSaving, sourceOptions: sourceOptions.value }))
+  const systemSection = computed(() => buildSystemSectionModel({
+    schedulerForm: forms.scheduler,
+    schedulerLoaded: loaded.scheduler,
+    schedulerLoading: loading.scheduler,
+    schedulerSaving: loading.schedulerSaving,
+    schedulerConfigError: state.schedulerConfigError,
+    sourceOptions: sourceOptions.value
+  }))
   const taskRunsSection = computed(() => {
     const syncStatus = taskSyncStatus.value
     const intervalLabel = `${Math.round(syncStatus.pollIntervalMs / 1000)} 秒`
 
     return buildTaskRunsSectionModel({
       taskRuns: state.taskRuns,
+      taskRunsError: state.taskRunsError,
       taskRunsLoaded: loaded.taskRuns,
       loadingRuns: loading.taskRuns,
       retryingTaskId: state.retryingTaskId,

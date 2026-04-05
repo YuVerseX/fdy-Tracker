@@ -195,17 +195,44 @@
       <AppNotice
         v-else-if="error"
         tone="danger"
+        :announce="true"
         title="招聘列表暂时无法显示"
         :description="error"
       >
         <template #actions>
-          <button
-            type="button"
-            class="app-button app-button--sm app-button--warning"
-            @click="fetchPosts"
-          >
-            重新加载
-          </button>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-if="currentPage > 1"
+              type="button"
+              class="app-button app-button--sm app-button--secondary"
+              @click="goToPage(currentPage - 1, { force: true })"
+            >
+              返回上一页
+            </button>
+            <button
+              v-if="currentPage > 1"
+              type="button"
+              class="app-button app-button--sm app-button--secondary"
+              @click="goToPage(1, { force: true })"
+            >
+              回到第一页
+            </button>
+            <button
+              v-if="hasQueryOrFilters"
+              type="button"
+              class="app-button app-button--sm app-button--secondary"
+              @click="clearFilters"
+            >
+              清空条件
+            </button>
+            <button
+              type="button"
+              class="app-button app-button--sm app-button--warning"
+              @click="fetchPosts"
+            >
+              重新加载
+            </button>
+          </div>
         </template>
       </AppNotice>
 
