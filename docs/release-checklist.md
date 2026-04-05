@@ -59,17 +59,30 @@ python scripts/check_ci_logs.py backend-tests.log --label backend-tests
 
 ## 4. 关键功能冒烟
 
+- [ ] smoke 前置环境变量已显式设置（不依赖 `.env`）：
+  - `ADMIN_USERNAME=smoke-admin`
+  - `ADMIN_PASSWORD=smoke-pass`
+  - `ADMIN_SESSION_SECRET=smoke-session-secret-0123456789abcdefghijkl`
+  - `ADMIN_SESSION_SECURE=false`（仅本地/CI HTTP smoke）
+  - `API_DOCS_ENABLED=false`
 - [ ] Docker 部署入口已通过 smoke：
 
 ```bash
+export ADMIN_USERNAME=smoke-admin
+export ADMIN_PASSWORD=smoke-pass
+export ADMIN_SESSION_SECRET=smoke-session-secret-0123456789abcdefghijkl
+export ADMIN_SESSION_SECURE=false
+export API_DOCS_ENABLED=false
+
 docker compose up -d --build
-python scripts/smoke_deployment.py --base-url http://127.0.0.1:8080 --admin-username smoke-admin --admin-password smoke-pass
+python scripts/smoke_deployment.py --base-url http://127.0.0.1:8080 --admin-username "${ADMIN_USERNAME}" --admin-password "${ADMIN_PASSWORD}"
 docker compose down -v --remove-orphans
 ```
 
 - [ ] `/api/health` 已返回 `ready=true`，并透出 `database / scheduler / freshness / tasks / admin_security`
-- [ ] `/docs`、`/openapi.json`、`/redoc` 默认不可从公网入口访问
+- [ ] `/docs`、`/openapi.json`、`/redoc` 默认关闭（`API_DOCS_ENABLED=false`），不可从公网入口访问
 - [ ] `/admin` 页面已返回 `X-Robots-Tag: noindex` 与 `Cache-Control: no-store`
+- [ ] 本地/CI HTTP smoke 可使用 `ADMIN_SESSION_SECURE=false`，公网部署观察前已恢复 `ADMIN_SESSION_SECURE=true`
 
 - [ ] 管理接口提交返回 `202`
 - [ ] 任务状态覆盖 `queued/pending -> running/processing -> cancel_requested -> success/failed/cancelled`
@@ -84,8 +97,11 @@ docker compose down -v --remove-orphans
 
 - [ ] 合并到 `main`
 - [ ] 如需发版，打 tag（例如 `v1.2.0`）
-- [ ] 确认 GHCR 镜像发布成功（`publish-images.yml`）
-- [ ] 确认 `publish-images.yml` 已对 `docker-compose.ghcr.yml` 跑过镜像 smoke
+- [ ] `publish-images.yml` 先推送 backend/frontend 的 `sha-*` 候选镜像（不直接推 `latest` / release tag）
+- [ ] `publish-images.yml` 使用 `IMAGE_TAG=sha-*` 对 `docker-compose.ghcr.yml` 执行 GHCR smoke
+- [ ] GHCR smoke 通过后再 promote：
+  - default branch -> `latest`
+  - tag 触发 -> `${GITHUB_REF_NAME}`
 - [ ] 部署侧执行拉取与重启（1Panel 或 docker compose）
 
 ## 6. 长跑观察

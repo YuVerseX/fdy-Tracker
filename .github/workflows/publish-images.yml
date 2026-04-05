@@ -36,16 +36,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract backend image metadata
-        id: meta-api
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ steps.prep.outputs.owner_lc }}/fdy-tracker-api
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-            type=sha,prefix=sha-
-
       - name: Build and push backend image
         uses: docker/build-push-action@v6
         with:
@@ -53,20 +43,9 @@ jobs:
           file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta-api.outputs.tags }}
-          labels: ${{ steps.meta-api.outputs.labels }}
+          tags: ghcr.io/${{ steps.prep.outputs.owner_lc }}/fdy-tracker-api:${{ steps.prep.outputs.sha_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Extract frontend image metadata
-        id: meta-web
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ steps.prep.outputs.owner_lc }}/fdy-tracker-web
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-            type=sha,prefix=sha-
 
       - name: Build and push frontend image
         uses: docker/build-push-action@v6
@@ -75,8 +54,7 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta-web.outputs.tags }}
-          labels: ${{ steps.meta-web.outputs.labels }}
+          tags: ghcr.io/${{ steps.prep.outputs.owner_lc }}/fdy-tracker-web:${{ steps.prep.outputs.sha_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -116,3 +94,39 @@ jobs:
       - name: Tear down GHCR compose
         if: always()
         run: docker compose -f docker-compose.ghcr.yml down -v --remove-orphans
+
+      - name: Resolve promote target tag
+        id: promote
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref_type="${{ github.ref_type }}"
+          ref_name="${{ github.ref_name }}"
+          default_branch="${{ github.event.repository.default_branch }}"
+          target_tag=""
+
+          if [[ "${ref_type}" == "tag" ]]; then
+            target_tag="${ref_name}"
+          elif [[ "${ref_name}" == "${default_branch}" ]]; then
+            target_tag="latest"
+          fi
+
+          echo "target_tag=${target_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote backend tags after smoke
+        if: steps.promote.outputs.target_tag != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "ghcr.io/${{ steps.prep.outputs.owner_lc }}/fdy-tracker-api:${{ steps.promote.outputs.target_tag }}" \
+            "ghcr.io/${{ steps.prep.outputs.owner_lc }}/fdy-tracker-api:${{ steps.prep.outputs.sha_tag }}"
+
+      - name: Promote frontend tags after smoke
+        if: steps.promote.outputs.target_tag != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "ghcr.io/${{ steps.prep.outputs.owner_lc }}/fdy-tracker-web:${{ steps.promote.outputs.target_tag }}" \
+            "ghcr.io/${{ steps.prep.outputs.owner_lc }}/fdy-tracker-web:${{ steps.prep.outputs.sha_tag }}"

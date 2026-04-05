@@ -58,7 +58,7 @@ python -m unittest discover -s tests -v
 - `/api/posts/freshness-summary`
 - 前端首页 `/`
 - 管理页入口 `/admin`
-- `/docs`、`/openapi.json`、`/redoc` 默认不对公网暴露
+- `/docs`、`/openapi.json`、`/redoc` 默认关闭（`API_DOCS_ENABLED=false`）
 - 后台登录与关键只读接口：
   - `/api/admin/session/login`
   - `/api/admin/session/me`
@@ -67,11 +67,25 @@ python -m unittest discover -s tests -v
   - `/api/admin/task-runs/summary`
 - `/admin` 页面默认返回 `X-Robots-Tag: noindex` 与 `Cache-Control: no-store`
 
+Smoke 前置环境变量（自包含，不依赖 `.env`）：
+
+- `ADMIN_USERNAME=smoke-admin`
+- `ADMIN_PASSWORD=smoke-pass`
+- `ADMIN_SESSION_SECRET=smoke-session-secret-0123456789abcdefghijkl`
+- `ADMIN_SESSION_SECURE=false`
+- `API_DOCS_ENABLED=false`
+
 命令：
 
 ```bash
+export ADMIN_USERNAME=smoke-admin
+export ADMIN_PASSWORD=smoke-pass
+export ADMIN_SESSION_SECRET=smoke-session-secret-0123456789abcdefghijkl
+export ADMIN_SESSION_SECURE=false
+export API_DOCS_ENABLED=false
+
 docker compose up -d --build
-python scripts/smoke_deployment.py --base-url http://127.0.0.1:8080 --admin-username smoke-admin --admin-password smoke-pass
+python scripts/smoke_deployment.py --base-url http://127.0.0.1:8080 --admin-username "${ADMIN_USERNAME}" --admin-password "${ADMIN_PASSWORD}"
 docker compose down -v --remove-orphans
 ```
 
@@ -79,6 +93,8 @@ docker compose down -v --remove-orphans
 
 - `wait_for_health()` 以 `/api/health.ready == true` 作为就绪条件，不要求顶层 `status` 必须是 `ok`。
 - 新部署实例在尚未完成首轮成功抓取前，`/api/health.status` 可能是 `degraded`，这是允许的。
+- 本地或 CI 的 HTTP smoke 可使用 `ADMIN_SESSION_SECURE=false`；部署到公网并开始外部访问观察前，应恢复 `ADMIN_SESSION_SECURE=true`。
+- `/docs`、`/openapi.json`、`/redoc` 默认关闭，只有在受控内网调试时才临时开启 `API_DOCS_ENABLED=true`。
 - 镜像发布阶段还会额外拉起 `docker-compose.ghcr.yml`，对 GHCR 镜像入口再做一次同口径 smoke。
 
 ### 5) 日志洁净门禁（CI 必跑）
