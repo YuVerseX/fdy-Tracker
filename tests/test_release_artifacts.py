@@ -23,6 +23,15 @@ class ReleaseArtifactsTestCase(unittest.TestCase):
         self.assertIn('--admin-username "${ADMIN_USERNAME}"', content)
         self.assertIn('--admin-password "${ADMIN_PASSWORD}"', content)
 
+    def assert_workflow_step_has_smoke_env(self, workflow: str, step_name: str) -> None:
+        step_block = workflow.split(f"name: {step_name}", maxsplit=1)[1]
+        step_block = step_block.split("\n      - name:", maxsplit=1)[0]
+        for var_name in REQUIRED_SMOKE_ENV_VARS:
+            self.assertIn(f"{var_name}:", step_block)
+        self.assertIn("GHCR_NAMESPACE:", step_block)
+        self.assertIn("IMAGE_TAG:", step_block)
+        self.assertIn("WEB_PORT:", step_block)
+
     def test_publish_workflow_should_run_smoke_before_promote_steps(self):
         workflow = PUBLISH_WORKFLOW_PATH.read_text(encoding="utf-8")
         smoke_idx = workflow.index("name: Smoke GHCR compose deployment")
@@ -35,6 +44,15 @@ class ReleaseArtifactsTestCase(unittest.TestCase):
     def test_publish_workflow_should_use_sha_tag_for_smoke_image_tag(self):
         workflow = PUBLISH_WORKFLOW_PATH.read_text(encoding="utf-8")
         self.assertIn("IMAGE_TAG: ${{ steps.prep.outputs.sha_tag }}", workflow)
+
+    def test_publish_workflow_should_keep_required_env_for_all_ghcr_compose_steps(self):
+        workflow = PUBLISH_WORKFLOW_PATH.read_text(encoding="utf-8")
+        for step_name in (
+            "Smoke GHCR compose deployment",
+            "Dump GHCR compose logs",
+            "Tear down GHCR compose",
+        ):
+            self.assert_workflow_step_has_smoke_env(workflow, step_name)
 
     def test_publish_workflow_should_not_include_latest_before_smoke(self):
         workflow = PUBLISH_WORKFLOW_PATH.read_text(encoding="utf-8")

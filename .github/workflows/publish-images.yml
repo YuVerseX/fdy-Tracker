@@ -85,6 +85,16 @@ jobs:
 
       - name: Dump GHCR compose logs
         if: always()
+        env:
+          GHCR_NAMESPACE: ${{ steps.prep.outputs.owner_lc }}
+          IMAGE_TAG: ${{ steps.prep.outputs.sha_tag }}
+          WEB_PORT: 8081
+          ADMIN_USERNAME: smoke-admin
+          ADMIN_PASSWORD: smoke-pass
+          ADMIN_SESSION_SECRET: smoke-session-secret-0123456789abcdefghijkl
+          ADMIN_SESSION_SECURE: "false"
+          API_DOCS_ENABLED: "false"
+          AI_ANALYSIS_ENABLED: "false"
         run: docker compose -f docker-compose.ghcr.yml logs --no-color | tee ghcr-compose-smoke.log
 
       - name: Fail on dangerous GHCR compose log patterns
@@ -93,6 +103,16 @@ jobs:
 
       - name: Tear down GHCR compose
         if: always()
+        env:
+          GHCR_NAMESPACE: ${{ steps.prep.outputs.owner_lc }}
+          IMAGE_TAG: ${{ steps.prep.outputs.sha_tag }}
+          WEB_PORT: 8081
+          ADMIN_USERNAME: smoke-admin
+          ADMIN_PASSWORD: smoke-pass
+          ADMIN_SESSION_SECRET: smoke-session-secret-0123456789abcdefghijkl
+          ADMIN_SESSION_SECURE: "false"
+          API_DOCS_ENABLED: "false"
+          AI_ANALYSIS_ENABLED: "false"
         run: docker compose -f docker-compose.ghcr.yml down -v --remove-orphans
 
       - name: Resolve promote target tag
