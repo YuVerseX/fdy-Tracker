@@ -4,7 +4,8 @@ import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SAWarning
@@ -20,6 +21,7 @@ from src.services.post_job_service import (
     backfill_post_counselor_flags,
     build_job_snapshot,
     build_post_job_payload,
+    call_base_url_job_extraction,
     count_displayable_jobs,
     filter_displayable_jobs,
     get_job_index_summary,
@@ -61,6 +63,46 @@ class PostJobServiceTestCase(unittest.IsolatedAsyncioTestCase):
     def test_is_dedicated_counselor_title_should_reject_mixed_role_title(self):
         self.assertTrue(is_dedicated_counselor_title("南京大学2026年公开招聘专职辅导员公告"))
         self.assertFalse(is_dedicated_counselor_title("某高校2026年公开招聘专职辅导员及体育教师公告"))
+
+    def test_call_base_url_job_extraction_should_use_shared_outbound_http_client(self):
+        post = SimpleNamespace(
+            id=1,
+            title="南京师范大学招聘公告",
+            content="详见附件",
+            publish_date=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            is_counselor=True,
+            counselor_scope="dedicated",
+            has_counselor_job=True,
+            fields=[],
+            jobs=[],
+            attachments=[],
+            source=SimpleNamespace(name="江苏省人社厅"),
+        )
+        fake_response = MagicMock()
+        fake_response.json.return_value = {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": '{"jobs": []}'}
+                    ],
+                }
+            ]
+        }
+        fake_response.raise_for_status.return_value = None
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.__exit__.return_value = False
+        fake_client.post.return_value = fake_response
+
+        with patch("src.services.post_job_service.build_outbound_http_client", return_value=fake_client), \
+             patch("src.services.post_job_service.settings.OPENAI_BASE_URL", "https://example.com"), \
+             patch("src.services.post_job_service.settings.OPENAI_API_KEY", "test-key"), \
+             patch("src.services.post_job_service.settings.AI_ANALYSIS_MODEL", "gpt-5.4"):
+            result = call_base_url_job_extraction(post, [])
+
+        self.assertEqual(result, [])
+        fake_client.post.assert_called_once()
 
     async def test_sync_post_jobs_should_mark_dedicated_scope_from_title(self):
         post = Post(

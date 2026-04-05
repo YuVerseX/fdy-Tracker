@@ -251,9 +251,11 @@ export function buildSystemSectionModel({
   schedulerLoading,
   schedulerSaving,
   schedulerConfigError,
-  sourceOptions
+  sourceOptions,
+  analysisRuntime
 } = {}) {
   const hasSchedulerSnapshot = schedulerLoaded
+  const hasRuntimeSnapshot = Boolean(analysisRuntime)
   const saveBlockedReason = hasSchedulerSnapshot || schedulerLoading
     ? ''
     : `${schedulerConfigError || '定时抓取配置尚未成功加载'}，请先刷新配置后再保存。`
@@ -293,6 +295,29 @@ export function buildSystemSectionModel({
       meta: '新的默认设置会用于后续自动抓取。'
     }
   ]
+  if (hasRuntimeSnapshot) {
+    summaryCards.push(
+      {
+        label: '代理状态',
+        value: showBoolean(true, analysisRuntime?.proxy_enabled, '已启用', '未启用'),
+        meta: '当前应用级出站代理状态。'
+      },
+      {
+        label: '代理出口',
+        value: analysisRuntime?.proxy_enabled
+          ? [analysisRuntime?.proxy_scheme, analysisRuntime?.proxy_display].filter(Boolean).join(' · ')
+          : '未启用应用级代理',
+        meta: '抓取与智能链路统一复用该出口。'
+      }
+    )
+  }
+  const runtimeFacts = []
+  if (hasRuntimeSnapshot && analysisRuntime?.proxy_scope) {
+    runtimeFacts.push({
+      label: '代理范围',
+      value: analysisRuntime.proxy_scope
+    })
+  }
   const helperNotice = {
     tone: schedulerForm?.enabled ? 'info' : 'warning',
     description: schedulerForm?.enabled
@@ -312,6 +337,7 @@ export function buildSystemSectionModel({
     noticeClass,
     statusBadgeLabel,
     summaryCards,
+    runtimeFacts,
     helperNotice,
     statusLine: `当前状态：${showBoolean(schedulerLoaded, schedulerForm?.enabled, '已启用定时抓取', '已停用定时抓取')}；间隔 ${schedulerLoaded ? formatAdminInterval(schedulerForm?.intervalSeconds) : LOADING_LABEL}；默认抓 ${showCount(schedulerLoaded, schedulerForm?.defaultMaxPages)} 页。`,
     nextRunLine: `下次预计运行：${showText(schedulerLoaded, schedulerForm?.nextRunAt ? formatAdminDateTime(schedulerForm.nextRunAt) : '', NOT_FETCHED_LABEL)}`

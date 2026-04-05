@@ -16,6 +16,10 @@ from src.config import settings
 from src.database.models import Attachment, Post, PostAnalysis, PostField, PostInsight, PostJob
 from src.services.attachment_service import read_attachment_parse_result
 from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
+from src.services.outbound_http_service import (
+    build_openai_http_client,
+    build_outbound_http_client,
+)
 from src.services.task_progress import (
     CancelCheck,
     ProgressCallback,
@@ -1057,7 +1061,10 @@ def get_openai_client() -> OpenAI | None:
     if not settings.OPENAI_API_KEY or OpenAI is None:
         return None
 
-    client_kwargs = {"api_key": settings.OPENAI_API_KEY}
+    client_kwargs = {
+        "api_key": settings.OPENAI_API_KEY,
+        "http_client": build_openai_http_client(timeout=90.0),
+    }
     if settings.OPENAI_BASE_URL:
         client_kwargs["base_url"] = settings.OPENAI_BASE_URL
     return OpenAI(**client_kwargs)
@@ -1093,6 +1100,13 @@ def get_analysis_runtime_status() -> dict[str, Any]:
         "base_url_configured": bool(base_url),
         "base_url": base_url,
         "transport": "base_url_http" if base_url else "sdk_parse",
+        "proxy_enabled": settings.OUTBOUND_PROXY_ENABLED,
+        "proxy_scheme": (settings.OUTBOUND_PROXY_SCHEME or "").upper(),
+        "proxy_display": settings.OUTBOUND_PROXY_DISPLAY,
+        "proxy_scope": (
+            "抓取、附件下载、智能摘要整理、智能岗位识别统一复用"
+            if settings.OUTBOUND_PROXY_ENABLED else "未启用应用级代理"
+        ),
     }
 
 
@@ -1189,21 +1203,21 @@ def call_base_url_analysis(post: Post) -> AnalysisOutcome:
         raise ValueError("OPENAI_BASE_URL 为空，不能走兼容网关模式")
 
     user_prompt = build_post_analysis_payload(post)
-    response = httpx.post(
-        f"{base_url}/v1/responses",
-        headers={
-            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": settings.AI_ANALYSIS_MODEL,
-            "input": [
-                {"role": "system", "content": get_analysis_system_prompt()},
-                {"role": "user", "content": user_prompt},
-            ],
-        },
-        timeout=90.0,
-    )
+    with build_outbound_http_client(timeout=90.0) as client:
+        response = client.post(
+            f"{base_url}/v1/responses",
+            headers={
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.AI_ANALYSIS_MODEL,
+                "input": [
+                    {"role": "system", "content": get_analysis_system_prompt()},
+                    {"role": "user", "content": user_prompt},
+                ],
+            },
+        )
     response.raise_for_status()
     payload = response.json()
     output_text = extract_response_output_text(payload)
@@ -1233,21 +1247,21 @@ def call_base_url_insight(post: Post) -> InsightOutcome:
         raise ValueError("OPENAI_BASE_URL 为空，不能走兼容网关模式")
 
     user_prompt = build_post_insight_payload(post)
-    response = httpx.post(
-        f"{base_url}/v1/responses",
-        headers={
-            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": settings.AI_ANALYSIS_MODEL,
-            "input": [
-                {"role": "system", "content": get_insight_system_prompt()},
-                {"role": "user", "content": user_prompt},
-            ],
-        },
-        timeout=90.0,
-    )
+    with build_outbound_http_client(timeout=90.0) as client:
+        response = client.post(
+            f"{base_url}/v1/responses",
+            headers={
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.AI_ANALYSIS_MODEL,
+                "input": [
+                    {"role": "system", "content": get_insight_system_prompt()},
+                    {"role": "user", "content": user_prompt},
+                ],
+            },
+        )
     response.raise_for_status()
     payload = response.json()
     output_text = extract_response_output_text(payload)

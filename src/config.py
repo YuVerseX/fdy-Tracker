@@ -1,6 +1,8 @@
 """应用配置模块"""
+import importlib.util
 from pathlib import Path
 import secrets
+from urllib.parse import urlsplit
 from loguru import logger
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,6 +10,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEBUG_TRUE_VALUES = {"true", "1", "yes", "on"}
 DEBUG_FALSE_VALUES = {"false", "0", "no", "off"}
 MIN_ADMIN_SESSION_SECRET_LENGTH = 32
+SUPPORTED_OUTBOUND_PROXY_SCHEMES = {"http", "https", "socks5"}
+SOCKS_OUTBOUND_PROXY_SCHEMES = {"socks5"}
 ADMIN_PLACEHOLDER_VALUES = {
     "",
     "__required__",
@@ -49,6 +53,13 @@ class Settings(BaseSettings):
         logger.warning("DEBUG 配置值非法，已回退为 False: {}", value)
         return False
 
+    @field_validator("OUTBOUND_PROXY_URL", mode="before")
+    @classmethod
+    def normalize_outbound_proxy_url(cls, value):
+        if value is None:
+            return ""
+        return str(value).strip()
+
     # 数据库配置
     DATABASE_URL: str = "sqlite:///./data/fdy_tracker.db"
 
@@ -59,6 +70,7 @@ class Settings(BaseSettings):
     REQUEST_DELAY_MAX: float = 3.0  # 最大延迟（秒）
     REQUEST_RETRY_COUNT: int = 2  # 临时错误重试次数
     REQUEST_RETRY_BACKOFF_SECONDS: float = 0.25  # 重试退避基线（秒）
+    OUTBOUND_PROXY_URL: str = ""
 
     # 日志配置
     LOG_LEVEL: str = "INFO"
@@ -79,6 +91,18 @@ class Settings(BaseSettings):
     ADMIN_SESSION_SECURE: bool = True
     API_DOCS_ENABLED: bool = False
     CORS_ALLOWED_ORIGINS: str = "http://127.0.0.1:5173,http://localhost:5173"
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        proxy_meta = self._parse_outbound_proxy_metadata(self.OUTBOUND_PROXY_URL)
+        if (
+            proxy_meta is not None
+            and proxy_meta[0] in SOCKS_OUTBOUND_PROXY_SCHEMES
+            and importlib.util.find_spec("socksio") is None
+        ):
+            raise ValueError(
+                "OUTBOUND_PROXY_URL 使用 socks 代理时需要安装 socksio 依赖"
+            )
 
     # 路径配置
     @property
@@ -105,6 +129,58 @@ class Settings(BaseSettings):
             if item.strip()
         ]
         return origins or ["http://127.0.0.1:5173", "http://localhost:5173"]
+
+    @staticmethod
+    def _parse_outbound_proxy_metadata(proxy_url: str) -> tuple[str, str, int] | None:
+        normalized = (proxy_url or "").strip()
+        if not normalized:
+            return None
+
+        parsed = urlsplit(normalized)
+        scheme = (parsed.scheme or "").strip().lower()
+        if scheme not in SUPPORTED_OUTBOUND_PROXY_SCHEMES:
+            supported = ", ".join(sorted(SUPPORTED_OUTBOUND_PROXY_SCHEMES))
+            raise ValueError(
+                f"OUTBOUND_PROXY_URL 仅支持 {supported}，当前为: {scheme or '<empty>'}"
+            )
+
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("OUTBOUND_PROXY_URL 的 port 非法") from exc
+
+        if not parsed.hostname or port is None:
+            raise ValueError("OUTBOUND_PROXY_URL 必须包含 hostname 和 port")
+        if not (1 <= port <= 65535):
+            raise ValueError("OUTBOUND_PROXY_URL 的 port 必须在 1-65535 范围内")
+
+        return scheme, parsed.hostname, port
+
+    @staticmethod
+    def _format_outbound_proxy_host(hostname: str) -> str:
+        if ":" in hostname and not hostname.startswith("["):
+            return f"[{hostname}]"
+        return hostname
+
+    @property
+    def OUTBOUND_PROXY_ENABLED(self) -> bool:
+        return self._parse_outbound_proxy_metadata(self.OUTBOUND_PROXY_URL) is not None
+
+    @property
+    def OUTBOUND_PROXY_SCHEME(self) -> str:
+        proxy_meta = self._parse_outbound_proxy_metadata(self.OUTBOUND_PROXY_URL)
+        if proxy_meta is None:
+            return ""
+        return proxy_meta[0]
+
+    @property
+    def OUTBOUND_PROXY_DISPLAY(self) -> str:
+        proxy_meta = self._parse_outbound_proxy_metadata(self.OUTBOUND_PROXY_URL)
+        if proxy_meta is None:
+            return ""
+
+        _, hostname, port = proxy_meta
+        return f"{self._format_outbound_proxy_host(hostname)}:{port}"
 
     @staticmethod
     def _is_missing_or_placeholder(value: str | None) -> bool:

@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 import httpx
 from loguru import logger
 from src.config import settings
+from src.services.outbound_http_service import build_outbound_async_client
 from src.services.task_progress import ProgressCallback
 
 RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
@@ -71,7 +72,7 @@ class BaseScraper(ABC):
 
         for attempt in range(1, total_attempts + 1):
             try:
-                async with httpx.AsyncClient(
+                async with build_outbound_async_client(
                     timeout=self.timeout,
                     follow_redirects=True,
                     verify=True,

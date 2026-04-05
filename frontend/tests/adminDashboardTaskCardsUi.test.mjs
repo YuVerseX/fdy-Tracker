@@ -112,6 +112,14 @@ test('admin task run card should bind result empty copy from presentation instea
   assert.doesNotMatch(runCardSource, /开始处理后，这里会出现可核对的结果数量/)
 })
 
+test('admin system section should render proxy runtime facts alongside scheduler facts', () => {
+  const systemSectionSource = readSource('views/admin/sections/AdminSystemSection.vue')
+  const dashboardSource = readSource('views/AdminDashboard.vue')
+
+  assert.match(systemSectionSource, /runtimeFacts/)
+  assert.match(dashboardSource, /:runtime-facts="dashboard\.systemSection\.runtimeFacts"/)
+})
+
 test('admin task run card should describe snapshot sections as snapshot guidance instead of task results', () => {
   const runCardSource = readSource('views/admin/sections/AdminTaskRunCard.vue')
 

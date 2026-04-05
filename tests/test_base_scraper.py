@@ -68,6 +68,25 @@ class BaseScraperFetchTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(capture["clients"][0]["verify"], True)
         self.assertEqual(scraper.request_retry_count, 0)
 
+    async def test_fetch_should_use_shared_outbound_async_client_factory(self):
+        request = httpx.Request("GET", "https://example.com/posts")
+        response = httpx.Response(200, request=request, text="ok")
+        fake_client = FakeAsyncClient([response], {"requests": []})
+
+        with patch("src.scrapers.base.settings", self.settings), patch(
+            "src.scrapers.base.build_outbound_async_client",
+            return_value=fake_client,
+        ) as mocked_factory:
+            scraper = DummyScraper()
+            result = await scraper.fetch("https://example.com/posts")
+
+        self.assertEqual(result.status_code, 200)
+        mocked_factory.assert_called_once_with(
+            timeout=12,
+            follow_redirects=True,
+            verify=True,
+        )
+
     async def test_fetch_should_retry_request_errors_with_backoff(self):
         capture = {"clients": [], "requests": []}
         first_request = httpx.Request("GET", "https://example.com/posts")
@@ -138,6 +157,25 @@ class BaseScraperFetchTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(capture["requests"]), 1)
         self.assertEqual(scraper.request_retry_count, 0)
         mocked_sleep.assert_not_awaited()
+
+
+class OutboundHttpServiceTestCase(unittest.TestCase):
+    def test_build_outbound_async_client_should_disable_trust_env_and_forward_proxy(self):
+        from src.services.outbound_http_service import build_outbound_async_client
+
+        with patch(
+            "src.services.outbound_http_service.settings.OUTBOUND_PROXY_URL",
+            "http://127.0.0.1:7890",
+        ), patch("src.services.outbound_http_service.httpx.AsyncClient") as mocked_async_client:
+            build_outbound_async_client(timeout=12.0, follow_redirects=True)
+
+        mocked_async_client.assert_called_once_with(
+            timeout=12.0,
+            follow_redirects=True,
+            verify=True,
+            proxy="http://127.0.0.1:7890",
+            trust_env=False,
+        )
 
 
 if __name__ == "__main__":

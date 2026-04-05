@@ -146,6 +146,7 @@
           :source-options="dashboard.systemSection.sourceOptions"
           :status-badge-label="dashboard.systemSection.statusBadgeLabel"
           :summary-cards="dashboard.systemSection.summaryCards"
+          :runtime-facts="dashboard.systemSection.runtimeFacts"
           :helper-notice="dashboard.systemSection.helperNotice"
           :notice-class="dashboard.systemSection.noticeClass"
           :status-line="dashboard.systemSection.statusLine"

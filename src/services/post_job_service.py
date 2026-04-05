@@ -35,6 +35,7 @@ from src.services.attachment_service import (
 )
 from src.services.duplicate_service import DUPLICATE_STATUS_DUPLICATE
 from src.services.filter_service import ROLE_EXCLUDE_PATTERNS, _matches_any_pattern
+from src.services.outbound_http_service import build_outbound_http_client
 from src.services.task_progress import (
     CancelCheck,
     ProgressCallback,
@@ -581,21 +582,21 @@ def call_base_url_job_extraction(post: Post, local_jobs: list[dict[str, Any]]) -
     if not base_url:
         return []
 
-    response = httpx.post(
-        f"{base_url}/v1/responses",
-        headers={
-            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": settings.AI_ANALYSIS_MODEL,
-            "input": [
-                {"role": "system", "content": get_job_extraction_system_prompt()},
-                {"role": "user", "content": build_post_job_payload(post, local_jobs)},
-            ],
-        },
-        timeout=90.0,
-    )
+    with build_outbound_http_client(timeout=90.0) as client:
+        response = client.post(
+            f"{base_url}/v1/responses",
+            headers={
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.AI_ANALYSIS_MODEL,
+                "input": [
+                    {"role": "system", "content": get_job_extraction_system_prompt()},
+                    {"role": "user", "content": build_post_job_payload(post, local_jobs)},
+                ],
+            },
+        )
     response.raise_for_status()
     payload = response.json()
     output_text = extract_response_output_text(payload)

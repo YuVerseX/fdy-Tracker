@@ -6,6 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PUBLISH_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish-images.yml"
 TEST_STRATEGY_PATH = REPO_ROOT / "docs" / "test-strategy.md"
 RELEASE_CHECKLIST_PATH = REPO_ROOT / "docs" / "release-checklist.md"
+README_PATH = REPO_ROOT / "README.md"
 
 REQUIRED_SMOKE_ENV_VARS = [
     "ADMIN_USERNAME",
@@ -76,6 +77,13 @@ class ReleaseArtifactsTestCase(unittest.TestCase):
     def test_smoke_env_vars_should_be_explicit_in_release_checklist_doc(self):
         content = RELEASE_CHECKLIST_PATH.read_text(encoding="utf-8")
         self.assert_smoke_doc_is_self_contained(content)
+
+    def test_readme_should_document_outbound_proxy_examples(self):
+        content = README_PATH.read_text(encoding="utf-8")
+        self.assertIn("OUTBOUND_PROXY_URL", content)
+        self.assertIn("http://127.0.0.1:7890", content)
+        self.assertIn("socks5://127.0.0.1:40000", content)
+        self.assertIn("SOCKS5", content)
 
 
 if __name__ == "__main__":

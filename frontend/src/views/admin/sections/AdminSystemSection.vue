@@ -23,7 +23,7 @@
       />
     </div>
 
-    <AppFactList class="mt-4" :items="scheduleFacts" compact />
+    <AppFactList class="mt-4" :items="runtimeFacts" compact />
 
     <div class="mt-4 rounded-lg border px-4 py-3 text-sm" :class="noticeClass">
       <p>{{ statusLine }}</p>
@@ -134,6 +134,7 @@ const props = defineProps({
   sourceOptions: { type: Array, required: true },
   statusBadgeLabel: { type: String, required: true },
   summaryCards: { type: Array, required: true },
+  runtimeFacts: { type: Array, required: true },
   helperNotice: { type: Object, required: true },
   noticeClass: { type: String, required: true },
   statusLine: { type: String, required: true },
@@ -149,7 +150,7 @@ const getSummaryCardValue = (label, fallback = '未获取') => (
   props.summaryCards.find((card) => card.label === label)?.value || fallback
 )
 
-const scheduleFacts = computed(() => [
+const runtimeFacts = computed(() => [
   {
     label: '默认数据源',
     value: props.sourceOptions.find((source) => Number(source.value) === Number(props.schedulerForm.defaultSourceId))?.label || '默认数据源'
@@ -165,6 +166,7 @@ const scheduleFacts = computed(() => [
   {
     label: '下次预计运行',
     value: props.schedulerLoaded ? getSummaryCardValue('下次运行') : '加载中'
-  }
+  },
+  ...props.runtimeFacts
 ])
 </script>

@@ -236,6 +236,38 @@ test('buildSystemSectionModel should expose concise schedule summary and save im
   assert.doesNotMatch(section.helperNotice.description, /环境变量|接口/)
 })
 
+test('buildSystemSectionModel should surface proxy status, exit, and scope in system settings', () => {
+  const section = buildSystemSectionModel({
+    schedulerForm: {
+      enabled: true,
+      intervalSeconds: 7200,
+      defaultSourceId: 1,
+      defaultMaxPages: 5,
+      nextRunAt: '2026-03-31T10:00:00Z'
+    },
+    schedulerLoaded: true,
+    schedulerLoading: false,
+    schedulerSaving: false,
+    sourceOptions: [
+      { label: '江苏省人社厅', value: 1 }
+    ],
+    analysisRuntime: {
+      proxy_enabled: true,
+      proxy_scheme: 'SOCKS5',
+      proxy_display: '127.0.0.1:40000',
+      proxy_scope: '抓取、附件下载、智能摘要整理、智能岗位识别统一复用'
+    }
+  })
+
+  assert.deepEqual(
+    section.summaryCards.map((item) => item.label),
+    ['当前状态', '下次运行', '默认范围', '代理状态', '代理出口']
+  )
+  assert.equal(section.summaryCards[3].value, '已启用')
+  assert.equal(section.summaryCards[4].value, 'SOCKS5 · 127.0.0.1:40000')
+  assert.ok(section.runtimeFacts.some((item) => item.label === '代理范围'))
+})
+
 test('buildTaskRunsSectionModel should expose sync status metadata for the task center header', () => {
   const section = buildTaskRunsSectionModel({
     taskRuns: [],

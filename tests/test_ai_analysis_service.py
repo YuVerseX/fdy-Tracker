@@ -25,6 +25,7 @@ from src.services.ai_analysis_service import (
     coerce_ai_analysis_payload,
     extract_json_object,
     get_analysis_summary,
+    get_openai_client,
     get_analysis_runtime_status,
     get_insight_summary,
     infer_event_type,
@@ -109,6 +110,31 @@ class AIAnalysisServiceTestCase(unittest.TestCase):
         self.assertFalse(runtime["openai_ready"])
         self.assertTrue(runtime["openai_configured"])
 
+    def test_get_analysis_runtime_status_should_include_proxy_metadata(self):
+        with patch("src.services.ai_analysis_service.OpenAI", object), \
+             patch("src.services.ai_analysis_service.settings.AI_ANALYSIS_ENABLED", True), \
+             patch("src.services.ai_analysis_service.settings.OPENAI_API_KEY", "test-key"), \
+             patch("src.services.ai_analysis_service.settings.OPENAI_BASE_URL", ""), \
+             patch("src.services.ai_analysis_service.settings.OUTBOUND_PROXY_URL", "socks5://127.0.0.1:40000"):
+            runtime = get_analysis_runtime_status()
+
+        self.assertTrue(runtime["proxy_enabled"])
+        self.assertEqual(runtime["proxy_scheme"], "SOCKS5")
+        self.assertEqual(runtime["proxy_display"], "127.0.0.1:40000")
+
+    def test_get_openai_client_should_forward_shared_http_client(self):
+        fake_http_client = MagicMock()
+        fake_openai = MagicMock()
+
+        with patch("src.services.ai_analysis_service.OpenAI", return_value=fake_openai) as mocked_openai, \
+             patch("src.services.ai_analysis_service.build_openai_http_client", return_value=fake_http_client), \
+             patch("src.services.ai_analysis_service.settings.OPENAI_API_KEY", "test-key"), \
+             patch("src.services.ai_analysis_service.settings.OPENAI_BASE_URL", ""):
+            client = get_openai_client()
+
+        self.assertIs(client, fake_openai)
+        self.assertIs(mocked_openai.call_args.kwargs["http_client"], fake_http_client)
+
     def test_extract_json_object_should_support_markdown_fence(self):
         payload = extract_json_object("""```json
         {"event_type":"招聘公告","recruitment_stage":"招聘启动"}
@@ -173,7 +199,12 @@ class AIAnalysisServiceTestCase(unittest.TestCase):
         }
         mock_response.raise_for_status.return_value = None
 
-        with patch("src.services.ai_analysis_service.httpx.post", return_value=mock_response), \
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value = fake_client
+        fake_client.__exit__.return_value = False
+        fake_client.post.return_value = mock_response
+
+        with patch("src.services.ai_analysis_service.build_outbound_http_client", return_value=fake_client), \
              patch("src.services.ai_analysis_service.settings.OPENAI_BASE_URL", "https://example.com"), \
              patch("src.services.ai_analysis_service.settings.OPENAI_API_KEY", "test-key"), \
              patch("src.services.ai_analysis_service.settings.AI_ANALYSIS_MODEL", "gpt-5.4"):
@@ -183,6 +214,7 @@ class AIAnalysisServiceTestCase(unittest.TestCase):
         self.assertEqual(outcome.result.event_type, "招聘公告")
         self.assertEqual(outcome.result.city, "南京")
         self.assertEqual(outcome.raw_result["transport"], "base_url_http")
+        fake_client.post.assert_called_once()
 
     def test_call_openai_analysis_should_build_user_prompt_for_sdk_parse(self):
         post = SimpleNamespace(

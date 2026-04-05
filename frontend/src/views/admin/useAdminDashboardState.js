@@ -293,7 +293,8 @@ export function useAdminDashboardState() {
     schedulerLoading: loading.scheduler,
     schedulerSaving: loading.schedulerSaving,
     schedulerConfigError: state.schedulerConfigError,
-    sourceOptions: sourceOptions.value
+    sourceOptions: sourceOptions.value,
+    analysisRuntime: analysisRuntime.value
   }))
   const taskRunsSection = computed(() => {
     const syncStatus = taskSyncStatus.value

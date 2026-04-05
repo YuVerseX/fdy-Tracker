@@ -150,6 +150,29 @@ docker compose down
 - `/admin` 前端入口虽然仍可访问，但不应直接裸露公网；至少要放在 HTTPS 反向代理后，再补 IP 白名单、额外鉴权或等效访问控制。
 - `/api/health` 现在是 readiness 聚合探针；新部署实例在首轮成功抓取前，可能出现 `status=degraded` 但 `ready=true`。
 
+### 统一出站代理（可选）
+
+如果你的 VPS 已经提供本地 HTTP / SOCKS5 代理端口，可以通过 `OUTBOUND_PROXY_URL` 让抓取、附件下载、智能摘要整理、智能岗位识别统一走该出口。
+
+示例：
+
+```text
+OUTBOUND_PROXY_URL=http://127.0.0.1:7890
+```
+
+或：
+
+```text
+OUTBOUND_PROXY_URL=socks5://127.0.0.1:40000
+```
+
+说明：
+
+- 未配置时，服务保持默认直连行为。
+- 当使用 `socks5` 时，运行环境必须安装 `socksio`。
+- 管理台“系统设置”区会显示当前代理状态、脱敏后的代理出口和代理范围。
+- 宿主机级 WARP / 路由改写仍属于系统网络层；`OUTBOUND_PROXY_URL` 只控制应用级显式代理出口。
+
 更完整的 VPS 步骤见 `docs/deploy-vps-docker.md`。
 
 ### GHCR 镜像部署
