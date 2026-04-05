@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { postsApi } from '../../api/posts.js'
 import {
   DEFAULT_COUNSELOR_SCOPE,
+  DEFAULT_PUBLIC_EVENT_TYPE,
   buildEventTypeOptionParams as buildEventTypeOptionRequestParams,
   buildPostParams as buildPostRequestParams,
 } from '../../utils/postFilters.js'
@@ -38,12 +39,23 @@ const parseRouteScope = (value) => {
   return LIST_SCOPE_OPTIONS.includes(normalized) ? normalized : DEFAULT_COUNSELOR_SCOPE
 }
 
+const normalizeEventTypeFilter = (value) => parseQueryText(value) || DEFAULT_PUBLIC_EVENT_TYPE
+
+const createDefaultFilters = () => ({
+  gender: '',
+  education: '',
+  location: '',
+  eventType: DEFAULT_PUBLIC_EVENT_TYPE,
+  counselorScope: DEFAULT_COUNSELOR_SCOPE,
+  hasContent: false
+})
+
 const hasAdvancedFilterSelection = (nextFilters) => {
   return Boolean(
     nextFilters.gender ||
     nextFilters.education ||
     nextFilters.location ||
-    nextFilters.eventType ||
+    nextFilters.eventType !== DEFAULT_PUBLIC_EVENT_TYPE ||
     nextFilters.hasContent
   )
 }
@@ -88,21 +100,14 @@ export function usePostListState(route, router) {
     all: 0
   })
   const eventTypeOptions = ref([])
-  const filters = ref({
-    gender: '',
-    education: '',
-    location: '',
-    eventType: '',
-    counselorScope: DEFAULT_COUNSELOR_SCOPE,
-    hasContent: false
-  })
+  const filters = ref(createDefaultFilters())
 
   const hasActiveFilters = computed(() => {
     return (
       filters.value.gender ||
       filters.value.education ||
       filters.value.location ||
-      filters.value.eventType ||
+      filters.value.eventType !== DEFAULT_PUBLIC_EVENT_TYPE ||
       filters.value.counselorScope !== DEFAULT_COUNSELOR_SCOPE ||
       filters.value.hasContent
     )
@@ -121,7 +126,9 @@ export function usePostListState(route, router) {
     if (filters.value.gender) query.gender = filters.value.gender
     if (filters.value.education) query.education = filters.value.education
     if (filters.value.location) query.location = filters.value.location
-    if (filters.value.eventType) query.event_type = filters.value.eventType
+    if (filters.value.eventType && filters.value.eventType !== DEFAULT_PUBLIC_EVENT_TYPE) {
+      query.event_type = filters.value.eventType
+    }
     if (filters.value.counselorScope !== DEFAULT_COUNSELOR_SCOPE) query.scope = filters.value.counselorScope
     if (filters.value.hasContent) query.has_content = 'true'
     if (currentPage.value > 1) query.page = String(currentPage.value)
@@ -138,10 +145,11 @@ export function usePostListState(route, router) {
 
   const hydrateStateFromRoute = () => {
     const nextFilters = {
+      ...createDefaultFilters(),
       gender: parseQueryText(route.query.gender),
       education: parseQueryText(route.query.education),
       location: parseQueryText(route.query.location),
-      eventType: parseQueryText(route.query.event_type),
+      eventType: normalizeEventTypeFilter(route.query.event_type),
       counselorScope: parseRouteScope(route.query.scope),
       hasContent: parseQueryBoolean(route.query.has_content, false)
     }
@@ -298,11 +306,17 @@ export function usePostListState(route, router) {
         ? response.data.event_type_distribution
         : []
 
-      if (selectedEventType && !nextOptions.some((item) => item.event_type === selectedEventType)) {
+      if (
+        selectedEventType &&
+        selectedEventType !== DEFAULT_PUBLIC_EVENT_TYPE &&
+        !nextOptions.some((item) => item.event_type === selectedEventType)
+      ) {
         nextOptions = [{ event_type: selectedEventType }, ...nextOptions]
       }
 
-      eventTypeOptions.value = nextOptions
+      eventTypeOptions.value = nextOptions.filter(
+        (item) => item?.event_type && item.event_type !== DEFAULT_PUBLIC_EVENT_TYPE
+      )
     } catch (requestError) {
       if (requestId !== statsRequestSeq) return
       console.warn('获取筛选项摘要失败:', requestError)
@@ -338,14 +352,7 @@ export function usePostListState(route, router) {
 
   const clearFilters = () => {
     searchQuery.value = ''
-    filters.value = {
-      gender: '',
-      education: '',
-      location: '',
-      eventType: '',
-      counselorScope: DEFAULT_COUNSELOR_SCOPE,
-      hasContent: false
-    }
+    filters.value = createDefaultFilters()
     showAdvancedFilters.value = false
     handleFilter()
   }

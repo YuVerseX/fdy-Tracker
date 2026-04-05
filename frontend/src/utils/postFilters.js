@@ -1,8 +1,14 @@
 export const DEFAULT_COUNSELOR_SCOPE = 'any'
+export const DEFAULT_PUBLIC_EVENT_TYPE = '招聘公告'
 
 const normalizeSearchQuery = (searchQuery = '') => String(searchQuery || '').trim()
 
-const applySharedFilters = (params, filters = {}, searchQuery = '') => {
+const applySharedFilters = (
+  params,
+  filters = {},
+  searchQuery = '',
+  { injectDefaultEventType = false } = {}
+) => {
   const normalizedSearch = normalizeSearchQuery(searchQuery)
 
   if (normalizedSearch) {
@@ -23,6 +29,8 @@ const applySharedFilters = (params, filters = {}, searchQuery = '') => {
 
   if (filters.eventType) {
     params.event_type = filters.eventType
+  } else if (injectDefaultEventType) {
+    params.event_type = DEFAULT_PUBLIC_EVENT_TYPE
   }
 
   if (filters.hasContent) {
@@ -59,7 +67,7 @@ export const buildPostParams = ({
   defaultCounselorScope = DEFAULT_COUNSELOR_SCOPE
 } = {}) => {
   const params = { skip, limit }
-  applySharedFilters(params, filters, searchQuery)
+  applySharedFilters(params, filters, searchQuery, { injectDefaultEventType: true })
   applyCounselorScopeFilter(params, scope, defaultCounselorScope)
   return params
 }
@@ -71,7 +79,7 @@ export const buildStatsParams = ({
   defaultCounselorScope = DEFAULT_COUNSELOR_SCOPE
 } = {}) => {
   const params = { days }
-  applySharedFilters(params, filters, searchQuery)
+  applySharedFilters(params, filters, searchQuery, { injectDefaultEventType: true })
   applyCounselorScopeFilter(
     params,
     filters.counselorScope || defaultCounselorScope,
@@ -87,7 +95,9 @@ export const buildEventTypeOptionParams = ({
   defaultCounselorScope = DEFAULT_COUNSELOR_SCOPE
 } = {}) => {
   const params = { days }
-  applySharedFilters(params, { ...filters, eventType: '' }, searchQuery)
+  applySharedFilters(params, { ...filters, eventType: '' }, searchQuery, {
+    injectDefaultEventType: false
+  })
   applyCounselorScopeFilter(
     params,
     filters.counselorScope || defaultCounselorScope,

@@ -332,6 +332,49 @@ test('buildSourceNotes should treat summary_source none as missing summary inste
   assert.ok(notes.every((item) => !/来源待确认/.test(item)))
 })
 
+test('buildHeroTags and buildSourceNotes should suppress jobs-pending copy for result-announcement drift records', () => {
+  const postData = {
+    has_content: true,
+    record_completeness: {
+      content: 'available',
+      summary: 'available',
+      jobs: 'pending',
+      attachments: 'unknown'
+    },
+    analysis: {
+      event_type: '结果公示'
+    }
+  }
+
+  const tags = buildHeroTags(postData, [])
+  const notes = buildSourceNotes(postData, [])
+
+  assert.ok(tags.every((item) => item.label !== '岗位待整理'))
+  assert.ok(notes.every((item) => !/岗位信息仍在整理中/.test(item)))
+})
+
+test('buildHeroSummary should stay neutral for result-announcement jobs-pending drift records', () => {
+  const summary = buildHeroSummary({
+    postData: {
+      has_content: true,
+      record_completeness: {
+        content: 'available',
+        summary: 'available',
+        jobs: 'pending',
+        attachments: 'unknown'
+      },
+      analysis: {
+        event_type: '结果公示'
+      }
+    },
+    fields: {},
+    jobItems: []
+  })
+
+  assert.doesNotMatch(summary, /已收录正文和结构化信息/)
+  assert.match(summary, /已收录正文|查看公告原文/)
+})
+
 test('buildHeroSummary should treat summary_source none as missing even when completeness payload drifts', () => {
   const summary = buildHeroSummary({
     postData: {

@@ -138,7 +138,7 @@
                 class="app-select"
                 @change="handleFilter"
               >
-                <option value="">全部</option>
+                <option :value="DEFAULT_PUBLIC_EVENT_TYPE">招聘公告</option>
                 <option
                   v-for="item in eventTypeOptions"
                   :key="item.event_type"
@@ -338,7 +338,7 @@ import {
   getFilterCounselorScopeLabel
 } from '../utils/postListPresentation.js'
 import { getPublicTaskTypeLabel } from '../utils/taskTypeLabels.js'
-import { DEFAULT_COUNSELOR_SCOPE } from '../utils/postFilters.js'
+import { DEFAULT_COUNSELOR_SCOPE, DEFAULT_PUBLIC_EVENT_TYPE } from '../utils/postFilters.js'
 import { usePostListState } from './post-list/usePostListState.js'
 
 const route = useRoute()
@@ -389,7 +389,8 @@ const postCards = computed(() => posts.value.map((post) => buildPostCardView(pos
 const filterChips = computed(() => buildActiveFilterChips({
   searchQuery: searchQuery.value,
   filters: filters.value,
-  defaultCounselorScope: DEFAULT_COUNSELOR_SCOPE
+  defaultCounselorScope: DEFAULT_COUNSELOR_SCOPE,
+  defaultPublicEventType: DEFAULT_PUBLIC_EVENT_TYPE
 }))
 const hasQueryOrFilters = computed(() => Boolean(searchQuery.value.trim()) || hasActiveFilters.value)
 const emptyState = computed(() => buildPostListEmptyState({ hasFilters: hasQueryOrFilters.value }))
@@ -438,7 +439,7 @@ const clearFilterChip = (key) => {
   }
 
   if (key === 'eventType') {
-    filters.value.eventType = ''
+    filters.value.eventType = DEFAULT_PUBLIC_EVENT_TYPE
     handleFilter()
     return
   }

@@ -2,11 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildActiveFilterChips,
   buildPostListFreshnessNotice,
   buildPostCardView,
   buildPostListEmptyState,
   buildPostListMetricCards
 } from '../src/utils/postListPresentation.js'
+import {
+  DEFAULT_COUNSELOR_SCOPE,
+  DEFAULT_PUBLIC_EVENT_TYPE
+} from '../src/utils/postFilters.js'
 
 test('buildPostListMetricCards should keep the summary cards compact and ordered', () => {
   const cards = buildPostListMetricCards({
@@ -147,6 +152,25 @@ test('buildPostCardView should hide summary provenance when backend marks summar
   assert.ok(view.meta.every((item) => item.label !== '摘要来源'))
 })
 
+test('buildPostCardView should suppress jobs-pending badge for result-announcement drift records', () => {
+  const view = buildPostCardView({
+    title: '某高校 2026 年辅导员招聘结果公示',
+    has_content: true,
+    record_completeness: {
+      content: 'available',
+      summary: 'available',
+      jobs: 'pending',
+      attachments: 'unknown'
+    },
+    analysis: {
+      event_type: '结果公示'
+    }
+  })
+
+  assert.ok(view.badges.some((item) => item.label === '结果公示'))
+  assert.ok(view.badges.every((item) => item.label !== '岗位待整理'))
+})
+
 test('buildPostListEmptyState should distinguish filtered results from first-load empty state', () => {
   assert.deepEqual(
     buildPostListEmptyState({ hasFilters: true }),
@@ -208,4 +232,17 @@ test('buildPostListFreshnessNotice should return empty notice model', () => {
     title: '还没有可展示的抓取成功任务记录',
     description: '稍后再来看看。'
   })
+})
+
+test('buildActiveFilterChips should not create an event type chip for the default public event type', () => {
+  const chips = buildActiveFilterChips({
+    filters: {
+      eventType: DEFAULT_PUBLIC_EVENT_TYPE,
+      counselorScope: DEFAULT_COUNSELOR_SCOPE
+    },
+    defaultCounselorScope: DEFAULT_COUNSELOR_SCOPE,
+    defaultPublicEventType: DEFAULT_PUBLIC_EVENT_TYPE
+  })
+
+  assert.deepEqual(chips, [])
 })

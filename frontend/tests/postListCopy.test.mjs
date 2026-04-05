@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { postsApi } from '../src/api/posts.js'
+import { DEFAULT_PUBLIC_EVENT_TYPE } from '../src/utils/postFilters.js'
 import { usePostListState } from '../src/views/post-list/usePostListState.js'
 
 const readSource = (relativePath) => readFileSync(new URL(`../src/${relativePath}`, import.meta.url), 'utf8')
@@ -75,8 +76,37 @@ test('PostList event type option fetch should ignore current selection in stats 
   assert.match(source, /buildEventTypeOptionParams as buildEventTypeOptionRequestParams/)
   assert.match(source, /postsApi\.getStatsSummary\(buildEventTypeOptionParams\(\)\)/)
   assert.match(source, /const selectedEventType = filters\.value\.eventType/)
-  assert.match(source, /selectedEventType && !nextOptions\.some\(\(item\) => item\.event_type === selectedEventType\)/)
+  assert.match(
+    source,
+    /selectedEventType[\s\S]*?selectedEventType !== DEFAULT_PUBLIC_EVENT_TYPE[\s\S]*?!nextOptions\.some\(\(item\) => item\.event_type === selectedEventType\)/
+  )
   assert.match(source, /nextOptions = \[\{ event_type: selectedEventType \}, \.\.\.nextOptions\]/)
+  assert.match(
+    source,
+    /eventTypeOptions\.value = nextOptions\.filter\([\s\S]*?item\?\.event_type && item\.event_type !== DEFAULT_PUBLIC_EVENT_TYPE[\s\S]*?\)/
+  )
+})
+
+test('PostList default event type wiring should keep state and chip clearing aligned with the public default', () => {
+  const stateSource = readSource('views/post-list/usePostListState.js')
+  const pageSource = readSource('views/PostList.vue')
+
+  assert.match(stateSource, /DEFAULT_PUBLIC_EVENT_TYPE/)
+  assert.match(stateSource, /eventType:\s*DEFAULT_PUBLIC_EVENT_TYPE/)
+  assert.match(stateSource, /eventType:\s*normalizeEventTypeFilter\(route\.query\.event_type\)/)
+  assert.match(pageSource, /defaultPublicEventType:\s*DEFAULT_PUBLIC_EVENT_TYPE/)
+  assert.match(pageSource, /filters\.value\.eventType = DEFAULT_PUBLIC_EVENT_TYPE/)
+})
+
+test('PostList event type select should not expose an empty-value all option', () => {
+  const source = readSource('views/PostList.vue')
+
+  assert.match(source, /id="event-type-filter"/)
+  assert.match(source, /<option\s+:value="DEFAULT_PUBLIC_EVENT_TYPE">\s*招聘公告\s*<\/option>/)
+  assert.doesNotMatch(
+    source,
+    /<select[\s\S]*?id="event-type-filter"[\s\S]*?<option value="">全部<\/option>[\s\S]*?<\/select>/
+  )
 })
 
 test('usePostListState should surface recovery notice when a requested page exceeds available pages', async () => {
@@ -119,6 +149,91 @@ test('usePostListState should surface recovery notice when a requested page exce
     } else {
       globalThis.window = originalWindow
     }
+  }
+})
+
+test('usePostListState should normalize an empty route event type back to the public default', () => {
+  const originalGetPosts = postsApi.getPosts
+  const originalGetStatsSummary = postsApi.getStatsSummary
+  const originalError = console.error
+  const originalWarn = console.warn
+
+  postsApi.getPosts = async () => ({
+    data: {
+      items: [],
+      total: 0
+    }
+  })
+  postsApi.getStatsSummary = async () => ({
+    data: {
+      event_type_distribution: []
+    }
+  })
+  console.error = () => {}
+  console.warn = () => {}
+
+  try {
+    const state = usePostListState(
+      { query: { event_type: '' } },
+      {
+        replace: async () => {}
+      }
+    )
+
+    assert.equal(state.filters.value.eventType, DEFAULT_PUBLIC_EVENT_TYPE)
+    assert.equal(state.hasActiveFilters.value, false)
+    assert.equal(state.showAdvancedFilters.value, false)
+  } finally {
+    postsApi.getPosts = originalGetPosts
+    postsApi.getStatsSummary = originalGetStatsSummary
+    console.error = originalError
+    console.warn = originalWarn
+  }
+})
+
+test('usePostListState should keep the default public event type in state without treating it as an active filter', () => {
+  const originalGetPosts = postsApi.getPosts
+  const originalGetStatsSummary = postsApi.getStatsSummary
+  const originalError = console.error
+  const originalWarn = console.warn
+
+  postsApi.getPosts = async () => ({
+    data: {
+      items: [],
+      total: 0
+    }
+  })
+  postsApi.getStatsSummary = async () => ({
+    data: {
+      event_type_distribution: []
+    }
+  })
+  console.error = () => {}
+  console.warn = () => {}
+
+  try {
+    const state = usePostListState(
+      { query: {} },
+      {
+        replace: async () => {}
+      }
+    )
+
+    assert.equal(state.filters.value.eventType, DEFAULT_PUBLIC_EVENT_TYPE)
+    assert.equal(state.hasActiveFilters.value, false)
+
+    state.filters.value.gender = '女'
+    state.filters.value.eventType = '结果公示'
+    state.clearFilters()
+
+    assert.equal(state.filters.value.eventType, DEFAULT_PUBLIC_EVENT_TYPE)
+    assert.equal(state.filters.value.gender, '')
+    assert.equal(state.hasActiveFilters.value, false)
+  } finally {
+    postsApi.getPosts = originalGetPosts
+    postsApi.getStatsSummary = originalGetStatsSummary
+    console.error = originalError
+    console.warn = originalWarn
   }
 })
 

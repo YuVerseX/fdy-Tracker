@@ -245,7 +245,7 @@ def build_record_completeness(post: Post, *, attachments_loaded: bool) -> dict[s
     if job_index_state["has_displayable_jobs"]:
         jobs_status = "available"
     elif job_index_state["pending_extraction"]:
-        jobs_status = "pending"
+        jobs_status = "missing" if is_result_notice_post(post) else "pending"
     else:
         jobs_status = "missing"
 

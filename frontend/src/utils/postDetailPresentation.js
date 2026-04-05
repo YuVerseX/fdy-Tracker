@@ -76,6 +76,9 @@ export function getJobSourcesLabel(values = []) {
 export function getRecordCompletenessFlags(postData = {}) {
   const completeness = postData?.record_completeness || {}
   const provenance = postData?.record_provenance || {}
+  const eventType = normalizeText(postData?.analysis?.event_type || postData?.event_type)
+  const isResultAnnouncement = eventType === '结果公示'
+  const jobsPendingRaw = completeness.jobs === 'pending'
   const contentMissing = completeness.content === 'missing'
   const summaryMissing = completeness.summary === 'missing' || normalizeText(provenance.summary_source) === 'none'
 
@@ -87,7 +90,8 @@ export function getRecordCompletenessFlags(postData = {}) {
     ),
     contentMissing,
     summaryMissing,
-    jobsPending: completeness.jobs === 'pending'
+    jobsPendingRaw,
+    jobsPending: !isResultAnnouncement && jobsPendingRaw
   }
 }
 
@@ -315,7 +319,7 @@ export function buildHeroSummary({ postData = {}, fields = {}, jobItems = [] } =
     return `${parts.join('，')}。`
   }
 
-  if (completeness.contentMissing || completeness.summaryMissing || completeness.jobsPending) {
+  if (completeness.contentMissing || completeness.summaryMissing || completeness.jobsPendingRaw) {
     const followUps = []
     if (completeness.contentMissing) followUps.push('正文待补充')
     if (completeness.jobsPending) followUps.push('岗位待整理')
@@ -328,6 +332,10 @@ export function buildHeroSummary({ postData = {}, fields = {}, jobItems = [] } =
 
     if (completeness.jobsPending) {
       return `当前记录已收录正文，${followUps.join('，')}。`
+    }
+
+    if (completeness.jobsPendingRaw) {
+      return '当前记录已收录正文，可继续查看公告原文。'
     }
 
     if (completeness.summaryMissing) {

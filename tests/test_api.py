@@ -615,6 +615,37 @@ class PostsApiTestCase(unittest.TestCase):
         self.assertEqual(item["record_provenance"]["job_sources"], ["attachment"])
         self.assertIsNone(item["record_provenance"]["duplicate_resolution"])
 
+    def test_get_posts_should_mark_result_notice_jobs_as_missing_instead_of_pending(self):
+        db = self.SessionLocal()
+        try:
+            result_notice = db.query(Post).filter(Post.id == 5).first()
+            result_notice.is_counselor = True
+            db.add(Post(
+                id=888,
+                source_id=1,
+                title="某高校2026年公开招聘专职辅导员公告（待补岗位）",
+                content="公告正文存在，但尚未抽取出岗位列表。",
+                publish_date=datetime(2026, 3, 6, tzinfo=timezone.utc),
+                canonical_url="https://example.com/posts/888",
+                original_url="https://example.com/posts/888",
+                is_counselor=True,
+                confidence_score=0.7,
+                counselor_scope="dedicated",
+                has_counselor_job=False,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        response = self.client.get("/api/posts")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        items_by_id = {item["id"]: item for item in payload["items"]}
+        self.assertEqual(items_by_id[5]["analysis"]["event_type"], "结果公示")
+        self.assertEqual(items_by_id[5]["record_completeness"]["jobs"], "missing")
+        self.assertEqual(items_by_id[888]["record_completeness"]["jobs"], "pending")
+
     def test_get_posts_should_keep_summary_available_when_provider_missing(self):
         db = self.SessionLocal()
         try:
@@ -682,6 +713,22 @@ class PostsApiTestCase(unittest.TestCase):
                 "reason": "source_date_title",
             },
         )
+
+    def test_get_post_detail_should_mark_result_notice_jobs_as_missing_instead_of_pending(self):
+        db = self.SessionLocal()
+        try:
+            result_notice = db.query(Post).filter(Post.id == 5).first()
+            result_notice.is_counselor = True
+            db.commit()
+        finally:
+            db.close()
+
+        response = self.client.get("/api/posts/5")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["analysis"]["event_type"], "结果公示")
+        self.assertEqual(payload["record_completeness"]["jobs"], "missing")
 
     def test_get_post_detail_returns_attachments(self):
         response = self.client.get("/api/posts/1")

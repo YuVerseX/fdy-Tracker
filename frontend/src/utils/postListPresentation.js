@@ -412,7 +412,8 @@ export function buildPostCardView(post = {}, options = {}) {
 export function buildActiveFilterChips({
   searchQuery = '',
   filters = {},
-  defaultCounselorScope = 'any'
+  defaultCounselorScope = 'any',
+  defaultPublicEventType = ''
 } = {}) {
   const chips = []
   const normalizedSearch = normalizeText(searchQuery)
@@ -429,8 +430,9 @@ export function buildActiveFilterChips({
   if (normalizeText(filters.location)) {
     chips.push({ key: 'location', label: '地点', value: normalizeText(filters.location) })
   }
-  if (normalizeText(filters.eventType)) {
-    chips.push({ key: 'eventType', label: '公告类型', value: normalizeText(filters.eventType) })
+  const normalizedEventType = normalizeText(filters.eventType)
+  if (normalizedEventType && normalizedEventType !== normalizeText(defaultPublicEventType)) {
+    chips.push({ key: 'eventType', label: '公告类型', value: normalizedEventType })
   }
   if (filters.counselorScope && filters.counselorScope !== defaultCounselorScope) {
     chips.push({
